@@ -1,0 +1,90 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# ── Package identity ──────────────────────────────────────────────────────────
+[project]
+name = "nexus-a2a"
+version = "0.1.0"
+description = "A developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+  { name = "Your Name", email = "you@example.com" }
+]
+keywords = ["a2a", "agent", "multi-agent", "ai", "llm", "protocol"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# ── Runtime dependencies (shipped with the package) ──────────────────────────
+[dependencies]
+pydantic          = ">=2.0"
+httpx             = ">=0.27"
+starlette         = ">=0.40"
+uvicorn           = ">=0.30"
+python-jose       = ">=3.3"
+a2a-sdk           = ">=0.3"
+
+# ── Optional extras (installed on demand) ────────────────────────────────────
+[project.optional-dependencies]
+# pip install nexus-a2a[redis]
+redis    = ["redis>=5.0"]
+# pip install nexus-a2a[postgres]
+postgres = ["asyncpg>=0.29"]
+# pip install nexus-a2a[all]
+all      = ["redis>=5.0", "asyncpg>=0.29"]
+# pip install nexus-a2a[dev]  ← only for contributors
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.4",
+  "mypy>=1.10",
+  "httpx>=0.27",   # also used in tests for async HTTP mocking
+]
+
+# ── Project links ─────────────────────────────────────────────────────────────
+[project.urls]
+Homepage      = "https://github.com/yourusername/nexus-a2a"
+Documentation = "https://github.com/yourusername/nexus-a2a#readme"
+Issues        = "https://github.com/yourusername/nexus-a2a/issues"
+
+# ── Ruff — linter + formatter (replaces black + flake8) ──────────────────────
+[tool.ruff]
+line-length    = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes (unused imports, undefined names)
+  "I",   # isort (import ordering)
+  "UP",  # pyupgrade (modern Python syntax)
+  "B",   # bugbear (common bugs)
+]
+ignore = [
+  "E501",  # line too long — ruff formatter handles this
+  "UP042",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nexus_a2a"]
+
+# ── Mypy — static type checker ────────────────────────────────────────────────
+[tool.mypy]
+python_version         = "3.11"
+strict                 = true
+ignore_missing_imports = true
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"          # every async test runs without extra decorator
+testpaths    = ["tests"]

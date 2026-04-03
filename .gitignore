@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.pypirc
+
+# Virtual environment (uv creates this)
+.venv/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Type checking cache
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Test coverage
+.coverage
+htmlcov/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
