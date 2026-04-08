@@ -21,7 +21,7 @@ from __future__ import annotations
 import functools
 import inspect
 from collections.abc import Callable
-from typing import Any, Callable, TypeVar, overload, cast
+from typing import Any, TypeVar, cast, overload
 
 from nexus_a2a.models.agent import (
     AgentAuthentication,

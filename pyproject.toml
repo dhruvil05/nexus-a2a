@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 # ── Package identity ──────────────────────────────────────────────────────────
 [project]
 name = "nexus-a2a"
-version = "0.1.0"
+version = "0.2.0"
 description = "A developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [
-  { name = "Your Name", email = "you@example.com" }
+  { name = "HongZiro" }
 ]
 keywords = ["a2a", "agent", "multi-agent", "ai", "llm", "protocol"]
 classifiers = [
@@ -52,9 +52,9 @@ dev = [
 
 # ── Project links ─────────────────────────────────────────────────────────────
 [project.urls]
-Homepage      = "https://github.com/yourusername/nexus-a2a"
-Documentation = "https://github.com/yourusername/nexus-a2a#readme"
-Issues        = "https://github.com/yourusername/nexus-a2a/issues"
+Homepage      = "https://github.com/dhruvil05/nexus-a2a"
+Documentation = "https://github.com/dhruvil05/nexus-a2a#readme"
+Issues        = "https://github.com/dhruvil05/nexus-a2a/issues"
 
 # ── Ruff — linter + formatter (replaces black + flake8) ──────────────────────
 [tool.ruff]
