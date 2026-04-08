@@ -218,7 +218,7 @@ manager = TaskManager(store=InMemoryTaskStore())
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/nexus-a2a.git
+git clone https://github.com/dhruvil05/nexus-a2a.git
 cd nexus-a2a
 
 # Install all dependencies including dev tools
