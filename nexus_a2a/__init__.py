@@ -9,7 +9,7 @@ Public API for Phase 1. Import everything you need from here:
 """
 
 # ── Version ───────────────────────────────────────────────────────────────────
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 # ── Decorator — the primary developer entry point ─────────────────────────────
 # ── Phase 2: Core engine ──────────────────────────────────────────────────────
@@ -42,6 +42,23 @@ from nexus_a2a.models.task import (
     Task,
     TaskState,
 )
+
+# ── Phase 3: Security ─────────────────────────────────────────────────────────
+from nexus_a2a.security.auth import (
+    AgentCredentialConfig,
+    AuthError,
+    AuthManager,
+    ExpiredCredentialsError,
+    InvalidCredentialsError,
+    MissingCredentialsError,
+)
+from nexus_a2a.security.rate_limiter import RateLimitConfig, RateLimiter, RateLimitError
+from nexus_a2a.security.trust import (
+    AgentNotAllowedError,
+    SkillNotAllowedError,
+    TrustBoundary,
+)
+from nexus_a2a.security.validator import PayloadValidator, ValidatorConfig
 from nexus_a2a.storage.task_store import InMemoryTaskStore
 from nexus_a2a.transport.http_client import (
     A2AHttpClient,
@@ -71,6 +88,21 @@ __all__ = [
     "A2AHttpClient",
     "AgentUnreachableError",
     "RemoteAgentError",
+    # Phase 3 — Security
+    "AuthManager",
+    "AgentCredentialConfig",
+    "AuthError",
+    "MissingCredentialsError",
+    "InvalidCredentialsError",
+    "ExpiredCredentialsError",
+    "TrustBoundary",
+    "AgentNotAllowedError",
+    "SkillNotAllowedError",
+    "RateLimiter",
+    "RateLimitConfig",
+    "RateLimitError",
+    "PayloadValidator",
+    "ValidatorConfig",
     # Task models
     "Task",
     "TaskState",

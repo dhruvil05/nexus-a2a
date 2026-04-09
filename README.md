@@ -3,7 +3,7 @@
 > Developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease.
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org)
-[![Version](https://img.shields.io/badge/version-0.2.0-teal)](https://github.com/dhruvil05/nexus-a2a)
+[![Version](https://img.shields.io/badge/version-0.3.0-teal)](https://github.com/dhruvil05/nexus-a2a)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](https://github.com/dhruvil05/nexus-a2a)
 
@@ -202,13 +202,104 @@ manager = TaskManager(store=InMemoryTaskStore())
 
 ---
 
+---
+
+### `AuthManager`
+Verifies credentials on every inbound request. Each agent can use its own scheme.
+
+```python
+from nexus_a2a.security.auth import AuthManager, AgentCredentialConfig
+from nexus_a2a.models.agent import AuthScheme
+
+auth = AuthManager()
+
+# Register an agent that expects an API key
+auth.register_agent(
+    "http://research-agent:8001",
+    AgentCredentialConfig(scheme=AuthScheme.API_KEY, api_key="secret-key"),
+)
+
+# Verify an inbound request
+claims = await auth.verify("http://research-agent:8001", headers=request.headers)
+
+# Build headers for outbound calls automatically
+headers = auth.build_auth_headers("http://research-agent:8001")
+```
+
+---
+
+### `TrustBoundary`
+Enforces which agents are allowed to call which other agents. Default policy: **deny all**.
+
+```python
+from nexus_a2a.security.trust import TrustBoundary
+
+trust = TrustBoundary()
+
+# Allow orchestrator to call research agent (all skills)
+trust.allow("http://orchestrator:8000", "http://research-agent:8001")
+
+# Allow orchestrator to call summary agent — but ONLY the 'summarise' skill
+trust.allow("http://orchestrator:8000", "http://summary-agent:8002",
+            skills=["summarise"])
+
+# Block a rogue agent entirely
+trust.block("http://untrusted:9999")
+
+# Check before routing — raises AgentNotAllowedError or SkillNotAllowedError
+trust.check(caller_url="http://orchestrator:8000",
+            target_url="http://research-agent:8001",
+            skill_id="web_search")
+```
+
+---
+
+### `RateLimiter`
+Token bucket rate limiter — per agent, configurable burst and sustained rate.
+
+```python
+from nexus_a2a.security.rate_limiter import RateLimiter, RateLimitConfig
+
+limiter = RateLimiter(default_config=RateLimitConfig(rate=10, burst=20))
+
+# Tighter limit for a heavy agent
+limiter.set_limit("http://heavy-agent:8003", RateLimitConfig(rate=2, burst=5))
+
+# Check on every request — raises RateLimitError if exceeded
+await limiter.check("http://heavy-agent:8003")
+
+# Non-raising version
+allowed = await limiter.is_allowed("http://heavy-agent:8003")
+```
+
+---
+
+### `PayloadValidator`
+Validates and sanitises every inbound Message before agent logic runs.
+
+```python
+from nexus_a2a.security.validator import PayloadValidator, ValidatorConfig
+
+validator = PayloadValidator(
+    config=ValidatorConfig(max_bytes=512_000, max_parts=10)
+)
+
+# Validate and sanitise — raises on violations, returns clean Message
+clean_message = validator.validate(incoming_message)
+
+# Parse from raw dict (e.g. HTTP request body) and validate
+clean_message = validator.validate_dict(request_body_dict)
+```
+
+---
+
 ## Roadmap
 
 | Version | Phase | Status |
 |---|---|---|
 | `v0.1.0` | Models + `@agent` decorator | ✅ Done |
 | `v0.2.0` | TaskManager, Registry, HTTP transport | ✅ Done |
-| `v0.3.0` | Security — Auth, TrustBoundary, RateLimiter, Validator | 🔨 Next |
+| `v0.3.0` | Security — Auth, TrustBoundary, RateLimiter, Validator | ✅ Done |
 | `v0.4.0` | Orchestration — sequential, parallel, DAG workflows + SSE streaming | 📋 Planned |
 | `v1.0.0` | Framework adapters (LangGraph, CrewAI, ADK) + observability | 📋 Planned |
 

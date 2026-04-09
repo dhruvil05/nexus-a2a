@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Dict, cast
+from typing import Any, cast
 
 import httpx
 
@@ -271,21 +271,21 @@ class A2AHttpClient:
                 code=err.get("code", -1),
                 message=err.get("message", "Unknown error"),
             )
-        return cast(Dict[str, Any], body.get("result", {}))
+        return cast(dict[str, Any], body.get("result", {}))
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Send a POST request and return the parsed JSON body."""
         client = self._require_client()
         response = await client.post(path, json=payload)
         response.raise_for_status()
-        return cast(Dict[str, Any], response.json())
+        return cast(dict[str, Any], response.json())
 
     async def _get(self, url: str) -> dict[str, Any]:
         """Send a GET request to an absolute URL and return the parsed JSON body."""
         client = self._require_client()
         response = await client.get(url)
         response.raise_for_status()
-        return cast(Dict[str, Any], response.json())
+        return cast(dict[str, Any], response.json())
 
     def _require_client(self) -> httpx.AsyncClient:
         """Assert the client is open (used inside async with block)."""
