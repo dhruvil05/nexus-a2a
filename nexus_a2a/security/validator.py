@@ -22,10 +22,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic import ValidationError
-
-from typing import Dict, Any
 
 from nexus_a2a.models.task import Message, Part, PartType
 
@@ -168,7 +167,7 @@ class PayloadValidator:
         )
         return message
 
-    def validate_dict(self, raw: Dict[str, Any]) -> Message:
+    def validate_dict(self, raw: dict[str, Any]) -> Message:
         """
         Parse a raw dict into a Message and validate it.
         Useful when receiving JSON payloads from HTTP requests.

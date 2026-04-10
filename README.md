@@ -3,7 +3,7 @@
 > Developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease.
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org)
-[![Version](https://img.shields.io/badge/version-0.3.0-teal)](https://github.com/dhruvil05/nexus-a2a)
+[![Version](https://img.shields.io/badge/version-0.4.0-teal)](https://github.com/dhruvil05/nexus-a2a)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](https://github.com/dhruvil05/nexus-a2a)
 
@@ -38,7 +38,7 @@ Requires Python 3.11 or higher.
 
 ---
 
-## What's inside — v0.2.0
+## What's in treasure
 
 ### `@agent` decorator
 Turn any class into an A2A-compatible agent. The decorator auto-generates
@@ -293,6 +293,132 @@ clean_message = validator.validate_dict(request_body_dict)
 
 ---
 
+---
+
+### `AgentNetwork` — the top-level API
+Ties everything together. Register agents, send tasks, run workflows.
+
+```python
+from nexus_a2a import AgentNetwork, Message
+
+network = AgentNetwork()
+
+# Register agents
+await network.add("http://research-agent:8001")
+await network.add("http://summary-agent:8002")
+
+# Send a single task (auto-routes by skill)
+task = await network.send(
+    message=Message.user_text("Find AI papers from 2025"),
+    skill_id="web_search",
+)
+
+# Sequential — output of each agent feeds the next
+result = await network.sequential(
+    agent_urls=["http://research-agent:8001", "http://summary-agent:8002"],
+    message=Message.user_text("Research and summarise AI papers"),
+)
+
+# Parallel — all agents get the same input, run concurrently
+result = await network.parallel(
+    agent_urls=["http://agent-a:8001", "http://agent-b:8002"],
+    message=Message.user_text("Analyse this"),
+)
+
+# Subscribe to network events
+@network.on("task.completed")
+async def on_done(event: str, data: dict) -> None:
+    print(f"Task {data['task_id']} finished")
+```
+
+---
+
+### `Orchestrator` — multi-agent workflows
+Three execution modes: sequential, parallel, and DAG (dependency graph).
+
+```python
+from nexus_a2a.core.orchestrator import Orchestrator, DAGNode
+
+orch = Orchestrator(runner=my_runner)
+
+# DAG: A runs first, then B and C in parallel, then D
+result = await orch.dag(
+    nodes=[
+        DAGNode("http://fetch:8001"),
+        DAGNode("http://parse:8002", depends_on=["http://fetch:8001"]),
+        DAGNode("http://enrich:8003", depends_on=["http://fetch:8001"]),
+        DAGNode("http://store:8004",
+                depends_on=["http://parse:8002", "http://enrich:8003"]),
+    ],
+    initial_message=Message.user_text("Process document"),
+)
+print(result.succeeded)      # True
+print(result.total_sec)      # wall-clock time
+print(result.failed_steps)   # [] if all succeeded
+```
+
+---
+
+### `EventBus` — async pub/sub
+In-process event broadcasting between agents and application code.
+
+```python
+from nexus_a2a.network import EventBus
+
+bus = EventBus()
+
+async def on_task_done(event: str, data: dict) -> None:
+    print(f"Task {data['task_id']} completed")
+
+bus.subscribe("task.completed", on_task_done)
+await bus.publish("task.completed", {"task_id": "abc-123"})
+bus.unsubscribe("task.completed", on_task_done)
+```
+
+---
+
+### SSE streaming
+Stream live task updates from a remote agent as they happen.
+
+```python
+from nexus_a2a.transport.sse import SSEStreamer, StreamEventType
+
+streamer = SSEStreamer("http://agent:8001")
+async with streamer.stream(task_id="abc-123") as events:
+    async for event in events:
+        if event.type == StreamEventType.ARTIFACT_CHUNK:
+            print(event.data.get("content", ""), end="", flush=True)
+        if event.is_terminal:
+            break
+```
+
+---
+
+### Webhooks — async push notifications
+For long-running tasks where the client cannot hold an open connection.
+
+```python
+from nexus_a2a.transport.webhook import WebhookDispatcher, WebhookConfig
+
+dispatcher = WebhookDispatcher(
+    config=WebhookConfig(signing_secret="my-secret", max_retries=3)
+)
+await dispatcher.dispatch(
+    url="https://client.example.com/hooks/nexus",
+    task=completed_task,
+    event="task_completed",
+)
+
+# On the receiving end — verify the signature
+is_valid = WebhookDispatcher.verify_signature(
+    payload=request.body,
+    signature=request.headers["X-Nexus-Signature-256"],
+    secret="my-secret",
+)
+```
+
+---
+
 ## Roadmap
 
 | Version | Phase | Status |
@@ -300,7 +426,7 @@ clean_message = validator.validate_dict(request_body_dict)
 | `v0.1.0` | Models + `@agent` decorator | ✅ Done |
 | `v0.2.0` | TaskManager, Registry, HTTP transport | ✅ Done |
 | `v0.3.0` | Security — Auth, TrustBoundary, RateLimiter, Validator | ✅ Done |
-| `v0.4.0` | Orchestration — sequential, parallel, DAG workflows + SSE streaming | 📋 Planned |
+| `v0.4.0` | Orchestration — sequential, parallel, DAG workflows + SSE streaming | ✅ Done |
 | `v1.0.0` | Framework adapters (LangGraph, CrewAI, ADK) + observability | 📋 Planned |
 
 ---

@@ -9,9 +9,20 @@ Public API for Phase 1. Import everything you need from here:
 """
 
 # ── Version ───────────────────────────────────────────────────────────────────
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # ── Decorator — the primary developer entry point ─────────────────────────────
+# ── Phase 4: Orchestration + streaming ───────────────────────────────────────
+from nexus_a2a.core.orchestrator import (
+    DAGNode,
+    Orchestrator,
+    OrchestratorError,
+    OrchestratorResult,
+    StepResult,
+    WorkflowCycleError,
+    WorkflowStepError,
+)
+
 # ── Phase 2: Core engine ──────────────────────────────────────────────────────
 from nexus_a2a.core.registry import AgentRegistry
 from nexus_a2a.core.task_manager import (
@@ -42,6 +53,7 @@ from nexus_a2a.models.task import (
     Task,
     TaskState,
 )
+from nexus_a2a.network import AgentNetwork, EventBus
 
 # ── Phase 3: Security ─────────────────────────────────────────────────────────
 from nexus_a2a.security.auth import (
@@ -64,6 +76,17 @@ from nexus_a2a.transport.http_client import (
     A2AHttpClient,
     AgentUnreachableError,
     RemoteAgentError,
+)
+from nexus_a2a.transport.sse import (
+    SSEFormatter,
+    SSEStreamer,
+    StreamEvent,
+    StreamEventType,
+)
+from nexus_a2a.transport.webhook import (
+    WebhookConfig,
+    WebhookDeliveryError,
+    WebhookDispatcher,
 )
 
 # ── What gets exported when someone does: from nexus_a2a import * ─────────────
@@ -103,6 +126,23 @@ __all__ = [
     "RateLimitError",
     "PayloadValidator",
     "ValidatorConfig",
+    # Phase 4 — Orchestration + streaming
+    "AgentNetwork",
+    "EventBus",
+    "Orchestrator",
+    "DAGNode",
+    "OrchestratorResult",
+    "StepResult",
+    "OrchestratorError",
+    "WorkflowCycleError",
+    "WorkflowStepError",
+    "SSEStreamer",
+    "SSEFormatter",
+    "StreamEvent",
+    "StreamEventType",
+    "WebhookDispatcher",
+    "WebhookConfig",
+    "WebhookDeliveryError",
     # Task models
     "Task",
     "TaskState",

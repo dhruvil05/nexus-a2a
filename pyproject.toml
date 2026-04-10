@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 # ── Package identity ──────────────────────────────────────────────────────────
 [project]
 name = "nexus-a2a"
-version = "0.3.0"
+version = "0.4.0"
 description = "A developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease."
 readme = "README.md"
 license = { text = "MIT" }
