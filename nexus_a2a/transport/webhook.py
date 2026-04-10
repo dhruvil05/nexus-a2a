@@ -26,9 +26,10 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
-from typing import Any, Dict
+
 from nexus_a2a.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -278,7 +279,7 @@ class WebhookDispatcher:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _build_payload(self, task: Task, event: str) -> Dict[str, Any]:
+    def _build_payload(self, task: Task, event: str) -> dict[str, Any]:
         """Build the JSON payload to deliver."""
         return {
             "event":   event,
@@ -288,7 +289,7 @@ class WebhookDispatcher:
             "task":    task.model_dump(mode="json"),
         }
 
-    def _build_headers(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_headers(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Build request headers, including HMAC signature if configured."""
         headers: dict[str, str] = {
             "Content-Type": "application/json",

@@ -3,7 +3,7 @@
 > Developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease.
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org)
-[![Version](https://img.shields.io/badge/version-0.4.0-teal)](https://github.com/dhruvil05/nexus-a2a)
+[![Version](https://img.shields.io/badge/version-1.0.0-teal)](https://github.com/dhruvil05/nexus-a2a)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](https://github.com/dhruvil05/nexus-a2a)
 
@@ -419,6 +419,105 @@ is_valid = WebhookDispatcher.verify_signature(
 
 ---
 
+---
+
+### Framework adapters — plug in any agent framework
+Wrap any existing agent with one class. No protocol knowledge needed.
+
+```python
+# LangGraph
+from nexus_a2a.adapters.langgraph import LangGraphAdapter
+adapter = LangGraphAdapter(agent=compiled_graph)
+
+# CrewAI
+from nexus_a2a.adapters.crewai import CrewAIAdapter
+adapter = CrewAIAdapter(agent=my_crew, input_key="topic")
+
+# Google ADK
+from nexus_a2a.adapters.google_adk import GoogleADKAdapter
+adapter = GoogleADKAdapter(agent=adk_agent, app_name="my_app")
+
+# AutoGen
+from nexus_a2a.adapters.autogen import AutoGenAdapter
+adapter = AutoGenAdapter(agent=assistant, max_turns=1)
+
+# Custom framework — implement BaseAdapter
+from nexus_a2a.adapters.base import BaseAdapter, AdapterResult
+class MyAdapter(BaseAdapter):
+    framework_name = "myframework"
+    async def execute(self, task: Task) -> AdapterResult:
+        text   = self.extract_input(task)
+        output = await self.agent.run(text)
+        return self.make_result(str(output))
+
+# Use any adapter with TaskManager
+result = await adapter.execute(task)
+await manager.complete(task.id, artifact=result.to_artifact())
+```
+
+---
+
+### `RedisTaskStore` — production storage
+Drop-in replacement for `InMemoryTaskStore`. Persistent and distributed.
+
+```python
+from nexus_a2a.storage.redis_store import RedisTaskStore
+from nexus_a2a import TaskManager
+
+async with RedisTaskStore(url="redis://localhost:6379", ttl=3600) as store:
+    manager = TaskManager(store=store)
+    task    = await manager.create(Message.user_text("Hello"))
+```
+
+---
+
+### `AuditLogger` — structured audit trail
+Every significant event written as JSON lines (NDJSON format).
+Plug into Datadog, Loki, CloudWatch, or any log aggregator.
+
+```python
+from nexus_a2a.storage.audit_logger import AuditLogger
+
+audit = AuditLogger()   # writes to stdout by default
+# or write to a file:
+audit = AuditLogger(stream=open("audit.ndjson", "a"))
+
+audit.task_created(task)
+audit.agent_called("http://research-agent:8001", task.id, skill_id="search")
+audit.auth_failure("http://agent:8001", reason="expired token")
+audit.workflow_completed("sequential", total_sec=3.2, steps=3, succeeded=True)
+
+# Inspect in tests
+entries = audit.entries_by_event(AuditEvent.AUTH_FAILURE)
+```
+
+---
+
+### `MetricsCollector` — operational metrics
+Track latency, error rates, and counters. Export to OpenTelemetry.
+
+```python
+from nexus_a2a.storage.metrics import MetricsCollector
+
+metrics = MetricsCollector()
+
+metrics.record_task_created()
+with metrics.record_agent_call("http://agent:8001"):
+    result = await client.send_message(message)
+
+snap = metrics.snapshot()
+print(snap.tasks_completed)
+print(snap.avg_latency("http://agent:8001"))
+print(snap.p99_latency("http://agent:8001"))
+
+# OpenTelemetry export
+from opentelemetry import metrics as otel_metrics
+meter   = otel_metrics.get_meter("nexus-a2a")
+metrics = MetricsCollector.with_otel(meter)
+```
+
+---
+
 ## Roadmap
 
 | Version | Phase | Status |
@@ -427,7 +526,7 @@ is_valid = WebhookDispatcher.verify_signature(
 | `v0.2.0` | TaskManager, Registry, HTTP transport | ✅ Done |
 | `v0.3.0` | Security — Auth, TrustBoundary, RateLimiter, Validator | ✅ Done |
 | `v0.4.0` | Orchestration — sequential, parallel, DAG workflows + SSE streaming | ✅ Done |
-| `v1.0.0` | Framework adapters (LangGraph, CrewAI, ADK) + observability | 📋 Planned |
+| `v1.0.0` | Framework adapters (LangGraph, CrewAI, ADK) + observability | ✅ Done |
 
 ---
 

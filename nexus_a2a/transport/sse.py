@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import AsyncIterator, Dict, Any
+from typing import Any
 
 import httpx
 
@@ -57,7 +58,7 @@ class StreamEvent:
         raw:     The original raw SSE line (useful for debugging).
     """
     type: StreamEventType
-    data: Dict[str, Any]       = field(default_factory=dict)
+    data: dict[str, Any]       = field(default_factory=dict)
     raw:  str        = ""
 
     @property
@@ -211,7 +212,7 @@ class SSEFormatter:
     """
 
     @staticmethod
-    def event(event_type: StreamEventType, data: Dict[str, Any]) -> str:
+    def event(event_type: StreamEventType, data: dict[str, Any]) -> str:
         """
         Format a typed event as an SSE data line.
 

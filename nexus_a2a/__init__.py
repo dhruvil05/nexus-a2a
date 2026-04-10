@@ -9,9 +9,23 @@ Public API for Phase 1. Import everything you need from here:
 """
 
 # ── Version ───────────────────────────────────────────────────────────────────
-__version__ = "0.4.0"
+__version__ = "1.0.0"
 
 # ── Decorator — the primary developer entry point ─────────────────────────────
+from nexus_a2a.adapters.autogen import AutoGenAdapter
+
+# ── Phase 5: Adapters + observability ────────────────────────────────────────
+from nexus_a2a.adapters.base import (
+    AdapterConfigError,
+    AdapterError,
+    AdapterExecutionError,
+    AdapterResult,
+    BaseAdapter,
+)
+from nexus_a2a.adapters.crewai import CrewAIAdapter
+from nexus_a2a.adapters.google_adk import GoogleADKAdapter
+from nexus_a2a.adapters.langgraph import LangGraphAdapter
+
 # ── Phase 4: Orchestration + streaming ───────────────────────────────────────
 from nexus_a2a.core.orchestrator import (
     DAGNode,
@@ -71,6 +85,9 @@ from nexus_a2a.security.trust import (
     TrustBoundary,
 )
 from nexus_a2a.security.validator import PayloadValidator, ValidatorConfig
+from nexus_a2a.storage.audit_logger import AuditEntry, AuditEvent, AuditLogger
+from nexus_a2a.storage.metrics import MetricsCollector, MetricsSnapshot
+from nexus_a2a.storage.redis_store import RedisTaskStore
 from nexus_a2a.storage.task_store import InMemoryTaskStore
 from nexus_a2a.transport.http_client import (
     A2AHttpClient,
@@ -143,6 +160,22 @@ __all__ = [
     "WebhookDispatcher",
     "WebhookConfig",
     "WebhookDeliveryError",
+    # Phase 5 — Adapters + observability
+    "BaseAdapter",
+    "AdapterResult",
+    "AdapterError",
+    "AdapterConfigError",
+    "AdapterExecutionError",
+    "LangGraphAdapter",
+    "CrewAIAdapter",
+    "GoogleADKAdapter",
+    "AutoGenAdapter",
+    "RedisTaskStore",
+    "AuditLogger",
+    "AuditEvent",
+    "AuditEntry",
+    "MetricsCollector",
+    "MetricsSnapshot",
     # Task models
     "Task",
     "TaskState",
