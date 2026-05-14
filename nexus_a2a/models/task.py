@@ -240,7 +240,7 @@ class Task(BaseModel):
         TaskState.SUBMITTED:      {TaskState.WORKING, TaskState.CANCELLED},
         TaskState.WORKING:        {TaskState.COMPLETED, TaskState.FAILED,
                                    TaskState.INPUT_REQUIRED, TaskState.CANCELLED},
-        TaskState.INPUT_REQUIRED: {TaskState.WORKING, TaskState.CANCELLED},
+        TaskState.INPUT_REQUIRED: {TaskState.WORKING, TaskState.FAILED, TaskState.CANCELLED},
         TaskState.COMPLETED:      set(),   # terminal
         TaskState.FAILED:         set(),   # terminal
         TaskState.CANCELLED:      set(),   # terminal
