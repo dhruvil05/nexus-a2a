@@ -23,6 +23,7 @@ from nexus_a2a.transport.http_client import (
     A2AHttpClient,
     AgentUnreachableError,
     RemoteAgentError,
+    RetryConfig,
 )
 from nexus_a2a.core.registry import AgentRegistry
 
@@ -254,6 +255,7 @@ class TestA2AHttpClient:
 
     async def test_rpc_error_raises_remote_agent_error(self):
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
         mock_response.json = MagicMock(return_value=_rpc_error(-32601, "Method not found"))
 
@@ -264,7 +266,7 @@ class TestA2AHttpClient:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            async with A2AHttpClient("http://localhost:9001", max_retries=1) as client:
+            async with A2AHttpClient("http://localhost:9001", retry=RetryConfig(max_retries=1)) as client:
                 client._client = instance
                 with pytest.raises(RemoteAgentError, match="Method not found"):
                     await client._rpc("message/send", {})
@@ -277,7 +279,7 @@ class TestA2AHttpClient:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            async with A2AHttpClient("http://localhost:9001", max_retries=2) as client:
+            async with A2AHttpClient("http://localhost:9001", retry=RetryConfig(max_retries=2)) as client:
                 client._client = instance
                 with pytest.raises(AgentUnreachableError):
                     await client._rpc("message/send", {})

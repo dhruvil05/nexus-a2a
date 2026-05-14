@@ -1,15 +1,18 @@
 """
 nexus_a2a/network.py
 
-Two public classes that tie Phase 2-4 together into a clean developer API:
+Two public classes that tie all layers into a clean developer API:
 
   EventBus     — async pub/sub between agents within a network.
   AgentNetwork — the top-level object developers use to build a
                  multi-agent network (register agents, send tasks,
                  run workflows).
 
-This is the file that makes the package feel like a coherent product
-rather than a collection of components.
+v1.1 additions:
+  - dead_letter_queue: built-in DLQ wired to the network
+  - tracing: trace ID propagated on every send()
+  - Circuit breaker per agent connection
+  - on_task_timeout hook
 """
 
 from __future__ import annotations
@@ -19,11 +22,18 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from nexus_a2a.core.dead_letter import DeadLetterQueue
+from nexus_a2a.core.input_handler import InputHandler
 from nexus_a2a.core.orchestrator import DAGNode, Orchestrator, OrchestratorResult
 from nexus_a2a.core.registry import AgentRegistry
 from nexus_a2a.core.task_manager import TaskManager
 from nexus_a2a.models.task import Message, Task
-from nexus_a2a.transport.http_client import A2AHttpClient
+from nexus_a2a.transport.http_client import (
+    A2AHttpClient,
+    CircuitBreaker,
+    RetryConfig,
+)
+from nexus_a2a.transport.tracing import Tracer
 
 logger = logging.getLogger(__name__)
 
@@ -190,16 +200,39 @@ class AgentNetwork:
     EVENT_TASK_SENT        = "task.sent"
     EVENT_TASK_COMPLETED   = "task.completed"
     EVENT_TASK_FAILED      = "task.failed"
+    EVENT_TASK_TIMEOUT     = "task.timeout"       # NEW v1.1
     EVENT_WORKFLOW_DONE    = "workflow.done"
+    EVENT_CIRCUIT_OPENED   = "circuit.opened"     # NEW v1.1
+    EVENT_DLQ_CAPTURED     = "dlq.captured"       # NEW v1.1
 
     def __init__(
         self,
-        task_manager: TaskManager | None = None,
-        bus: EventBus | None = None,
+        task_manager:    TaskManager | None    = None,
+        bus:             EventBus | None       = None,
+        timeout_sec:     float | None          = None,
+        retry:           RetryConfig | None    = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         self.registry     = AgentRegistry()
-        self.task_manager = task_manager or TaskManager()
+        self.task_manager = task_manager or TaskManager(
+            timeout_sec=timeout_sec,
+            on_timeout=self._on_task_timeout,
+        )
         self.bus          = bus or EventBus()
+        self._retry       = retry or RetryConfig()
+        self._cb          = circuit_breaker
+
+        # v1.1: DLQ and InputHandler wired to the network
+        self.dead_letter_queue = DeadLetterQueue(
+            runner=self._run_agent,
+            max_retries=3,
+        )
+        self.input_handler = InputHandler(self.task_manager)
+
+        # If task_manager was provided externally, still wire our timeout handler
+        if task_manager is not None and self.task_manager._on_timeout is None:
+            self.task_manager._on_timeout = self._on_task_timeout
+
         self._orchestrator: Orchestrator | None = None   # created lazily
 
     # ── Agent management ──────────────────────────────────────────────────────
@@ -235,46 +268,55 @@ class AgentNetwork:
 
     async def send(
         self,
-        message: Message,
-        skill_id: str | None = None,
-        agent_url: str | None = None,
+        message:    Message,
+        skill_id:   str | None = None,
+        agent_url:  str | None = None,
+        trace_id:   str | None = None,
     ) -> Task:
         """
         Send a message to an agent and return the resulting Task.
 
-        If agent_url is not provided, the registry picks the first healthy
-        agent that advertises the requested skill_id.
+        v1.1: trace_id is auto-generated if not provided and propagated
+        to the remote agent. Circuit breaker and retry apply automatically.
 
         Args:
             message:   The message to send.
-            skill_id:  Optional — route to an agent with this skill.
-            agent_url: Optional — send directly to this agent URL.
+            skill_id:  Route to an agent with this skill.
+            agent_url: Send directly to this agent URL.
+            trace_id:  Trace ID to propagate. Auto-generated if None.
 
         Returns:
             The Task returned by the remote agent.
-
-        Raises:
-            ValueError: No suitable agent found.
-            AgentUnreachableError: Agent did not respond.
         """
-        url = agent_url or self._resolve_agent(skill_id)
+        url      = agent_url or self._resolve_agent(skill_id)
+        trace_id = trace_id or Tracer.new_trace_id()
 
         await self.bus.publish(self.EVENT_TASK_SENT, {
             "agent_url": url,
             "skill_id":  skill_id,
+            "trace_id":  trace_id,
         })
 
         try:
-            async with A2AHttpClient(url) as client:
+            async with A2AHttpClient(
+                url,
+                retry=self._retry,
+                circuit_breaker=self._cb,
+                trace_id=trace_id,
+            ) as client:
                 task = await client.send_message(message, skill_id=skill_id)
 
-            await self.bus.publish(self.EVENT_TASK_COMPLETED, {"task_id": task.id})
+            await self.bus.publish(self.EVENT_TASK_COMPLETED, {
+                "task_id":  task.id,
+                "trace_id": trace_id,
+            })
             return task
 
         except Exception as exc:
             await self.bus.publish(self.EVENT_TASK_FAILED, {
                 "agent_url": url,
                 "error":     str(exc),
+                "trace_id":  trace_id,
             })
             raise
 
@@ -365,8 +407,27 @@ class AgentNetwork:
         return await self.registry.check_all_health()
 
     def summary(self) -> dict[str, Any]:
-        """Return a summary of the network state."""
-        return self.registry.summary()
+        """Return a summary of the network state including DLQ."""
+        base = self.registry.summary()
+        base["dlq"] = {
+            "pending": self.dead_letter_queue.pending_count(),
+            "total":   self.dead_letter_queue.count(),
+        }
+        return base
+
+    # ── v1.1: timeout callback ────────────────────────────────────────────────
+
+    async def _on_task_timeout(self, task: Task) -> None:
+        """Called by TaskManager watchdog when a task times out."""
+        await self.bus.publish(self.EVENT_TASK_TIMEOUT, {
+            "task_id":  task.id,
+            "skill_id": task.skill_id,
+        })
+        # Capture into DLQ automatically
+        await self.dead_letter_queue.capture(
+            task,
+            skill_id=task.skill_id,
+        )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -404,6 +465,10 @@ class AgentNetwork:
         return self._orchestrator
 
     async def _run_agent(self, agent_url: str, message: Message) -> Task:
-        """The runner callable passed to the Orchestrator."""
-        async with A2AHttpClient(agent_url) as client:
+        """The runner callable passed to the Orchestrator and DLQ."""
+        async with A2AHttpClient(
+            agent_url,
+            retry=self._retry,
+            circuit_breaker=self._cb,
+        ) as client:
             return await client.send_message(message)

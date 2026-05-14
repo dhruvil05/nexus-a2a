@@ -9,7 +9,7 @@ Public API for Phase 1. Import everything you need from here:
 """
 
 # ── Version ───────────────────────────────────────────────────────────────────
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ── Decorator — the primary developer entry point ─────────────────────────────
 from nexus_a2a.adapters.autogen import AutoGenAdapter
@@ -25,6 +25,12 @@ from nexus_a2a.adapters.base import (
 from nexus_a2a.adapters.crewai import CrewAIAdapter
 from nexus_a2a.adapters.google_adk import GoogleADKAdapter
 from nexus_a2a.adapters.langgraph import LangGraphAdapter
+from nexus_a2a.core.dead_letter import DeadLetterQueue, DLQEntry, ReplayResult
+from nexus_a2a.core.input_handler import (
+    InputHandler,
+    InputTimeoutError,
+    NoInputWaiterError,
+)
 
 # ── Phase 4: Orchestration + streaming ───────────────────────────────────────
 from nexus_a2a.core.orchestrator import (
@@ -78,6 +84,11 @@ from nexus_a2a.security.auth import (
     InvalidCredentialsError,
     MissingCredentialsError,
 )
+from nexus_a2a.security.capability_guard import (
+    CapabilityGuard,
+    CapabilityMismatchError,
+    CapabilityNotSupportedError,
+)
 from nexus_a2a.security.rate_limiter import RateLimitConfig, RateLimiter, RateLimitError
 from nexus_a2a.security.trust import (
     AgentNotAllowedError,
@@ -92,7 +103,11 @@ from nexus_a2a.storage.task_store import InMemoryTaskStore
 from nexus_a2a.transport.http_client import (
     A2AHttpClient,
     AgentUnreachableError,
+    CircuitBreaker,
+    CircuitOpenError,
+    CircuitState,
     RemoteAgentError,
+    RetryConfig,
 )
 from nexus_a2a.transport.sse import (
     SSEFormatter,
@@ -100,6 +115,9 @@ from nexus_a2a.transport.sse import (
     StreamEvent,
     StreamEventType,
 )
+
+# ── v1.1.0: reliability + DX upgrades ────────────────────────────────────────
+from nexus_a2a.transport.tracing import TRACE_ID_HEADER, Span, Trace, Tracer, TraceStore
 from nexus_a2a.transport.webhook import (
     WebhookConfig,
     WebhookDeliveryError,

@@ -574,12 +574,15 @@ class TestMetricsCollector:
         assert snap.avg_latency("http://unknown:8001") is None
 
     def test_record_agent_call_context_manager(self):
-        m = MetricsCollector()
-        with m.record_agent_call("http://a:8001"):
-            time.sleep(0.01)
+        # Use controlled monotonic values — no real sleep, no flake
+        monotonic_values = iter([0.0, 0.05])  # start=0.0, end=0.05 → 50ms
+        with patch("nexus_a2a.storage.metrics.time.monotonic", side_effect=monotonic_values):
+            m = MetricsCollector()
+            with m.record_agent_call("http://a:8001"):
+                pass  # no sleep needed — monotonic is mocked
         snap = m.snapshot()
         assert snap.total_calls() == 1
-        assert snap.avg_latency("http://a:8001") >= 0.01
+        assert snap.avg_latency("http://a:8001") == 0.05
 
     def test_record_agent_call_records_error_on_exception(self):
         m = MetricsCollector()
