@@ -1,0 +1,207 @@
+# .github/workflows/security.yml
+#
+# Security — weekly dependency audit + GitHub CodeQL static analysis.
+#
+# Jobs:
+#   audit   — pip-audit scans for CVEs in all dependencies
+#   codeql  — GitHub CodeQL scans Python source for code vulnerabilities
+#   sbom    — generate Software Bill of Materials (SBOM) as a release asset
+#
+# Schedule: every Monday at 08:00 UTC
+# Also runs on push to main (catches new vulns in newly added deps)
+#
+# Alerts go to:
+#   - GitHub Security tab (CodeQL)
+#   - Job failure notification (pip-audit)
+#
+# Secrets required: none (uses GITHUB_TOKEN)
+
+name: Security
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"    # Every Monday at 08:00 UTC
+  push:
+    branches: ["master"]
+    paths:
+      - "pyproject.toml"    # Re-scan when dependencies change
+      - "nexus_a2a/**"      # Re-scan when source changes
+  workflow_dispatch:         # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: read
+  security-events: write     # Required for CodeQL to upload SARIF results
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.4.18"
+
+jobs:
+# ── Dependency audit ──────────────────────────────────────────────────────────
+  audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install package with all extras
+        run: uv pip install --system -e ".[all,dev]"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run pip-audit (fail on any vulnerability)
+        run: |
+          pip-audit \
+            --strict \
+            --output=json \
+            --output-file=audit-results.json \
+            || (cat audit-results.json && exit 1)
+
+      - name: Upload audit results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-results
+          path: audit-results.json
+          retention-days: 30
+
+      - name: Show clean audit summary on success
+        if: success()
+        run: echo "✅ No known vulnerabilities found in dependencies."
+
+# ── CodeQL analysis ───────────────────────────────────────────────────────────
+  codeql:
+    name: CodeQL analysis
+    runs-on: ubuntu-latest
+
+    # Required for CodeQL to upload results to the Security tab
+    permissions:
+      actions:  read
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          # Use the security-extended query suite for deeper analysis
+          queries: security-extended
+          config: |
+            paths:
+              - nexus_a2a
+            paths-ignore:
+              - tests
+              - dist
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install package (so CodeQL can analyse imports)
+        run: uv pip install --system -e ".[all]"
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
+          # Upload SARIF to GitHub Security tab automatically
+
+# ── SBOM generation ───────────────────────────────────────────────────────────
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    # Only run on master branch (not on PRs — avoid noisy artifacts)
+    if: github.ref == 'refs/heads/master'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install package with all extras
+        run: uv pip install --system -e ".[all,dev]"
+
+      - name: Install CycloneDX SBOM generator
+        run: pip install cyclonedx-bom
+
+      - name: Generate SBOM (CycloneDX JSON format)
+        run: |
+          cyclonedx-py environment \
+            --output-format json \
+            --output-file nexus-a2a-sbom.json
+          echo "SBOM generated:"
+          python -c "
+          import json
+          with open('nexus-a2a-sbom.json') as f:
+              sbom = json.load(f)
+          comps = sbom.get('components', [])
+          print(f'  Components: {len(comps)}')
+          for c in comps[:5]:
+              print(f'  - {c.get(\"name\")} {c.get(\"version\", \"\")}')
+          if len(comps) > 5:
+              print(f'  ... and {len(comps)-5} more')
+          "
+
+      - name: Upload SBOM as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: nexus-a2a-sbom.json
+          retention-days: 90
+
+# ── Dependency freshness check ────────────────────────────────────────────────
+  freshness:
+    name: Check for outdated dependencies
+    runs-on: ubuntu-latest
+    # Informational only — doesn't fail the workflow
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install package with all extras
+        run: uv pip install --system -e ".[all,dev]"
+
+      - name: Check for outdated packages
+        run: |
+          echo "=== Outdated packages ==="
+          pip list --outdated --format=columns || true
+          echo ""
+          echo "Note: This is informational only. Update dependencies in pyproject.toml when appropriate."
