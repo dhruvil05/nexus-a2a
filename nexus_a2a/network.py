@@ -205,6 +205,69 @@ class AgentNetwork:
     EVENT_CIRCUIT_OPENED   = "circuit.opened"     # NEW v1.1
     EVENT_DLQ_CAPTURED     = "dlq.captured"       # NEW v1.1
 
+    @classmethod
+    def from_config(cls, path: str = "nexus.toml") -> "AgentNetwork":
+        """
+        Build a fully wired AgentNetwork from a nexus.toml file.
+
+        All components (storage backend, retry policy, circuit breaker,
+        auth, logging) are instantiated from the config automatically.
+        NEXUS_* environment variables override any TOML values — ideal
+        for container deployments.
+
+        Example::
+
+            network = AgentNetwork.from_config("nexus.toml")
+            # Done — registry, task manager, DLQ, tracing all wired.
+
+        Args:
+            path: Path to nexus.toml. Defaults to 'nexus.toml' in the
+                  current working directory.
+
+        Returns:
+            A ready-to-use AgentNetwork instance.
+
+        Raises:
+            ConfigError: Invalid config or missing required fields.
+        """
+        from nexus_a2a.config import NexusConfig
+        from nexus_a2a.core.task_manager import TaskManager
+
+        cfg = NexusConfig.from_file(path)
+
+        # Apply log level from config
+        cfg.configure_logging()
+
+        # Build storage backend (memory / redis / postgres)
+        store = cfg.build_task_store()
+
+        # Build retry + circuit breaker from reliability config
+        retry   = cfg.build_retry_config()
+        breaker = cfg.build_circuit_breaker()
+
+        # Build task manager with timeout watchdog
+        manager = TaskManager(
+            store=store,
+            timeout_sec=cfg.reliability.task_timeout_sec,
+        )
+
+        network = cls(
+            task_manager=manager,
+            retry=retry,
+            circuit_breaker=breaker,
+        )
+
+        # Store config reference so callers can inspect it
+        network._config = cfg  # type: ignore[attr-defined]
+
+        logger.info(
+            "AgentNetwork loaded from config: agent='%s' storage='%s' auth='%s'",
+            cfg.agent.name,
+            cfg.storage.backend,
+            cfg.security.auth_scheme,
+        )
+        return network
+
     def __init__(
         self,
         task_manager:    TaskManager | None    = None,

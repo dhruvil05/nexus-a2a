@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 # ── Package identity ──────────────────────────────────────────────────────────
 [project]
 name = "nexus-a2a"
-version = "1.0.0"
+version = "1.2.0"
 description = "A developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease."
 readme = "README.md"
 license = { text = "MIT" }
@@ -88,3 +88,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"          # every async test runs without extra decorator
 testpaths    = ["tests"]
+markers      = [
+    "integration: tests requiring a real external service (deselect with -m 'not integration')",
+]

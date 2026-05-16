@@ -1,0 +1,167 @@
+# .github/workflows/ci.yml
+#
+# Continuous Integration — runs on every push and pull request.
+#
+# Jobs:
+#   lint     — ruff check + ruff format (no auto-fix, just fail)
+#   typecheck — mypy strict mode
+#   test     — pytest matrix (Python 3.11 × 3.12, Ubuntu + Windows)
+#   coverage — upload coverage to Codecov (main branch only)
+#
+# Secrets required: none (public repo; Codecov uses GITHUB_TOKEN)
+# Optional secret:  NEXUS_TEST_PG_DSN  — if set, integration tests also run
+
+name: CI
+
+on:
+  push:
+    branches: ["master", "develop", "release/**"]
+  pull_request:
+    branches: ["master", "develop"]
+
+# Cancel superseded runs on the same branch/PR to save runner minutes
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin uv version for reproducibility
+  UV_VERSION: "0.4.18"
+
+# ── Lint ──────────────────────────────────────────────────────────────────────
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install dev dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run ruff linter
+        run: ruff check nexus_a2a tests
+
+      - name: Run ruff formatter (check only)
+        run: ruff format --check nexus_a2a tests
+
+# ── Type check ────────────────────────────────────────────────────────────────
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install dev dependencies
+        run: uv pip install --system -e ".[dev,all]"
+
+      - name: Run mypy
+        run: mypy nexus_a2a
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+  test:
+    name: Test (Python ${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false    # keep running other matrix legs even if one fails
+      matrix:
+        python-version: ["3.11", "3.12"]
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install package + dev dependencies
+        run: uv pip install --system -e ".[dev,all]"
+
+      - name: Run unit tests (excluding integration)
+        run: >
+          pytest
+          -m "not integration"
+          --tb=short
+          -q
+          --cov=nexus_a2a
+          --cov-report=xml:coverage.xml
+          --cov-report=term-missing
+        env:
+          # Expose optional PG DSN for integration tests if available
+          NEXUS_TEST_PG_DSN: ${{ secrets.NEXUS_TEST_PG_DSN }}
+
+      - name: Run integration tests (if DSN available)
+        if: env.NEXUS_TEST_PG_DSN != ''
+        run: pytest -m integration --tb=short -q
+        env:
+          NEXUS_TEST_PG_DSN: ${{ secrets.NEXUS_TEST_PG_DSN }}
+
+      - name: Upload coverage (master branch, ubuntu, Python 3.12 only)
+        if: >
+          github.ref == 'refs/heads/master' &&
+          matrix.os == 'ubuntu-latest' &&
+          matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false   # don't break CI on Codecov outage
+
+# ── Build check ───────────────────────────────────────────────────────────────
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Build wheel + sdist
+        run: uv build
+
+      - name: Verify wheel installs cleanly
+        run: |
+          uv pip install --system dist/*.whl
+          python -c "import nexus_a2a; print('nexus-a2a', nexus_a2a.__version__, 'imports OK')"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
+          retention-days: 7
