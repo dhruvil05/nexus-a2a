@@ -9,7 +9,7 @@ Public API for Phase 1. Import everything you need from here:
 """
 
 # ── Version ───────────────────────────────────────────────────────────────────
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # ── Decorator — the primary developer entry point ─────────────────────────────
 from nexus_a2a.adapters.autogen import AutoGenAdapter
@@ -122,6 +122,40 @@ from nexus_a2a.transport.webhook import (
     WebhookConfig,
     WebhookDeliveryError,
     WebhookDispatcher,
+)
+
+# ── v1.2: PostgresTaskStore ──────────────────────────────────────────────────
+from nexus_a2a.storage.postgres_store import PostgresTaskStore
+
+# ── v1.2: MutualTLS ──────────────────────────────────────────────────────────
+from nexus_a2a.security.mtls import (
+    CertInfo,
+    MtlsCertificateError,
+    MtlsConfigError,
+    MtlsError,
+    MutualTLSConfig,
+    build_client_ssl_context,
+    build_server_ssl_context,
+    verify_peer_certificate,
+)
+
+# ── v1.2: GracefulShutdown ───────────────────────────────────────────────────
+from nexus_a2a.core.graceful_shutdown import GracefulShutdown
+
+# ── v1.2: AgentServer ────────────────────────────────────────────────────────
+from nexus_a2a.core.agent_server import AgentServer
+
+# ── v1.2: Config ─────────────────────────────────────────────────────────────
+from nexus_a2a.config import (
+    AgentConfig,
+    ConfigError,
+    NetworkConfig,
+    NexusConfig,
+    ObservabilityConfig,
+    ReliabilityConfig,
+    SecurityConfig,
+    SkillConfig,
+    StorageConfig,
 )
 
 # ── What gets exported when someone does: from nexus_a2a import * ─────────────
