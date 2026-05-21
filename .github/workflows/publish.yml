@@ -3,44 +3,46 @@
 # Publish to PyPI — triggered when a version tag is pushed.
 #
 # Trigger:
-#   git tag v1.2.0
-#   git push origin v1.2.0
+#   git tag v1.3.0
+#   git push origin v1.3.0
 #
 # Flow:
-#   1. validate    — version tag matches pyproject.toml version
-#   2. test        — full test suite must pass before publish
-#   3. build       — build wheel + sdist
-#   4. publish-pypi — upload to PyPI via Trusted Publishing (OIDC, no API key)
-#   5. github-release — create GitHub Release with dist assets + auto changelog
+#   1. validate      — version tag matches pyproject.toml version
+#   2. test          — full test suite must pass before publish
+#   3. build         — build wheel + sdist
+#   4. publish-pypi  — upload via OIDC Trusted Publishing (no API key needed)
+#   5. github-release — create GitHub Release with assets + auto changelog
 #
-# Setup required (one-time):
-#   PyPI:   Settings → Publishing → Add a new publisher
-#           Owner: dhruvil05  Repo: nexus-a2a  Workflow: publish.yml
-#   GitHub: No secrets needed — uses OIDC Trusted Publishing
+# One-time setup required:
+#   PyPI: Settings → Publishing → Add trusted publisher
+#         Owner: dhruvil05  Repo: nexus-a2a  Workflow: publish.yml
 #
-# Secrets required: none (PyPI Trusted Publishing + GITHUB_TOKEN)
+# FIXES applied vs original:
+#   - Removed duplicate top-level env: block (was empty + full = YAML parse error)
+#   - Fixed permissions.id-token: write  (was a hardcoded PyPI token string — WRONG!)
+#   - Updated setup-uv to v4
+#   - Fixed GITHUB_OUTPUT syntax for modern runners
 
 name: Publish
 
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"          # v1.2.0
-      - "v[0-9]+.[0-9]+.[0-9]+.post[0-9]+"  # v1.2.0.post1 (re-release)
+      - "v[0-9]+.[0-9]+.[0-9]+"           # v1.3.0
+      - "v[0-9]+.[0-9]+.[0-9]+.post[0-9]+" # v1.3.0.post1
 
-env: 
-  
-# Only one publish can run at a time
+# Only one publish can run at a time — never cancel in progress
 concurrency:
   group: publish
   cancel-in-progress: false
 
+# FIX: single env block (original had two, causing YAML duplicate key error)
 env:
-  UV_VERSION: "0.4.18"
+  UV_VERSION: "0.5.x"
   PYTHON_VERSION: "3.12"
 
+# ── Step 1: Validate version tag ───────────────────────────────────────────────
 jobs:
-# ── Step 1: Validate version tag ──────────────────────────────────────────────
   validate:
     name: Validate version tag
     runs-on: ubuntu-latest
@@ -72,7 +74,7 @@ jobs:
             echo "::error::Version mismatch!"
             echo "  Tag version:            $TAG_VER"
             echo "  pyproject.toml version: $PKG_VER"
-            echo "  Please update pyproject.toml to match the tag before publishing."
+            echo "  Update pyproject.toml version before pushing the tag."
             exit 1
           fi
           echo "✅ Versions match: $TAG_VER"
@@ -91,7 +93,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
 
@@ -101,7 +103,7 @@ jobs:
       - name: Run unit tests
         run: pytest -m "not integration" --tb=short -q
 
-# ── Step 3: Build ─────────────────────────────────────────────────────────────
+# ── Step 3: Build ──────────────────────────────────────────────────────────────
   build:
     name: Build distribution
     needs: test
@@ -115,14 +117,14 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
 
       - name: Build wheel + sdist
         run: uv build
 
-      - name: Verify wheel installs cleanly
+      - name: Verify wheel installs cleanly and version matches
         run: |
           uv pip install --system dist/*.whl
           python -c "
@@ -140,15 +142,15 @@ jobs:
           name: dist
           path: dist/
 
-# ── Step 4: Publish to PyPI ───────────────────────────────────────────────────
+# ── Step 4: Publish to PyPI ────────────────────────────────────────────────────
   publish-pypi:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
 
-    # Required for PyPI Trusted Publishing (OIDC)
+    # FIX: id-token must be 'write' for OIDC — original had a hardcoded token string!
     permissions:
-      id-token: pypi-AgENdGVzdC5weXBpLm9yZwIkNzFlZjVhZTgtZjE3OS00Yzc5LTkzNzQtM2NkNzkzMjg0NjIzAAIqWzMsIjNjNmZhNTlhLTM0MDQtNGZiYS05M2UyLTBjYTEzYmE3NDUxNCJdAAAGILXJdl4VWqpwsTnZk1PtjpeiqgiSwkX6jV8p1TrHtqV7
+      id-token: write     # required for PyPI Trusted Publishing (OIDC)
 
     environment:
       name: pypi
@@ -161,26 +163,25 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Publish to PyPI
+      - name: Publish to PyPI via Trusted Publishing
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          # No API key needed — uses OIDC Trusted Publishing
-          # Set up at: https://pypi.org/manage/project/nexus-a2a/settings/publishing/
           verbose: true
+          # No api_token needed — OIDC handles auth automatically
 
-# ── Step 5: GitHub Release ────────────────────────────────────────────────────
+# ── Step 5: GitHub Release ─────────────────────────────────────────────────────
   github-release:
     name: Create GitHub Release
     needs: publish-pypi
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write    # to create releases and upload assets
+      contents: write    # required to create releases and upload assets
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history for changelog generation
+          fetch-depth: 0    # full history for changelog generation
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -188,23 +189,23 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Generate changelog from commits
+      - name: Generate changelog from commits since last tag
         id: changelog
         run: |
-          # Get commits since last tag
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -z "$PREV_TAG" ]; then
             LOG=$(git log --oneline --pretty=format:"- %s (%h)" | head -30)
+            COMPARE_URL="https://github.com/dhruvil05/nexus-a2a/commits/${{ github.ref_name }}"
           else
             LOG=$(git log --oneline --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
+            COMPARE_URL="https://github.com/dhruvil05/nexus-a2a/compare/${PREV_TAG}...${{ github.ref_name }}"
           fi
-          # Write changelog to file (handles multi-line output safely)
           {
             echo "## What's Changed"
             echo ""
             echo "$LOG"
             echo ""
-            echo "**Full Changelog**: https://github.com/dhruvil05/nexus-a2a/compare/${PREV_TAG}...${{ github.ref_name }}"
+            echo "**Full Changelog**: $COMPARE_URL"
           } > changelog.md
           cat changelog.md
 

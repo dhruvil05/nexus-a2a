@@ -1,202 +1,510 @@
 # nexus-a2a
 
-> Developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease.
+> **Production-grade Agent-to-Agent communication for Python.**
+> One decorator. Zero boilerplate. Any AI framework.
 
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org)
-[![Version](https://img.shields.io/badge/version-1.2.0-teal)](https://github.com/dhruvil05/nexus-a2a)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Status](https://img.shields.io/badge/status-alpha-orange)](https://github.com/dhruvil05/nexus-a2a)
-[![CI](https://github.com/dhruvil05/nexus-a2a/actions/workflows/ci.yml/badge.svg)](https://github.com/dhruvil05/nexus-a2a/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/nexus-a2a)](https://pypi.org/project/nexus-a2a/)
+[![Python](https://img.shields.io/pypi/pyversions/nexus-a2a)](https://pypi.org/project/nexus-a2a/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/dhruvil05/nexus-a2a/actions/workflows/ci.yml/badge.svg)](https://github.com/dhruvil05/nexus-a2a/actions)
 
 ---
 
 ## What is nexus-a2a?
 
-`nexus-a2a` removes the boilerplate of the [A2A protocol](https://a2a-protocol.org) so you can connect AI agents together in minutes instead of days.
+nexus-a2a is a Python library that lets AI agents talk to each other over HTTP using the [A2A protocol](https://google.github.io/A2A/). It handles discovery, routing, authentication, retries, circuit breaking, tracing, and failure recovery — so you focus on what your agent actually does.
 
-Instead of manually writing Agent Cards, JSON-RPC servers, task lifecycle managers, and discovery clients — you use a single decorator and a few intuitive classes.
-
-```python
-from nexus_a2a import agent, AgentNetwork
-
-@agent(name="Researcher", description="Searches the web.", url="http://localhost:8001")
-class ResearchAgent:
-    async def run(self, task):
-        return f"Results for: {task.latest_message().text()}"
 ```
-
-That's it. No boilerplate. No protocol plumbing.
+Agent A  ──HTTP/JSON-RPC──▶  Agent B  ──▶  Agent C
+   │                             │
+   └── auto-retry           DLQ on fail
+   └── circuit breaker      trace ID
+   └── mTLS                 rate limit
+```
 
 ---
 
-## Install
+## Table of Contents
+
+- [Installation](#installation)
+- [Quickstart](#quickstart)
+- [Core Concepts](#core-concepts)
+- [Building Agents](#building-agents)
+- [Sending Tasks](#sending-tasks)
+- [Agent Registry & Discovery](#agent-registry--discovery)
+- [Orchestration](#orchestration)
+- [Security](#security)
+- [Storage Backends](#storage-backends)
+- [Reliability](#reliability)
+- [Streaming & Webhooks](#streaming--webhooks)
+- [Framework Adapters](#framework-adapters)
+- [Observability & CLI](#observability--cli)
+- [Configuration (nexus.toml)](#configuration-nexustoml)
+- [Error Handling Reference](#error-handling-reference)
+- [Testing](#testing)
+
+---
+
+## Installation
 
 ```bash
+# Core
 pip install nexus-a2a
+
+# With Redis task store
+pip install "nexus-a2a[redis]"
+
+# With PostgreSQL task store
+pip install "nexus-a2a[postgres]"
+
+# Everything
+pip install "nexus-a2a[all]"
+
+# For contributors / testing
+pip install "nexus-a2a[dev]"
 ```
 
-With optional storage backends:
-
-```bash
-pip install nexus-a2a[redis]      # RedisTaskStore
-pip install nexus-a2a[postgres]   # PostgresTaskStore
-pip install nexus-a2a[all]        # all extras
-```
-
-Requires Python 3.11 or higher.
+Requires **Python 3.11+**.
 
 ---
 
-## What's in the box
+## Quickstart
 
-### `@agent` decorator
-
-Turn any class into an A2A-compatible agent. The decorator auto-generates
-an `AgentCard` from the class metadata and validates the class has a proper
-`async def run()` method.
+### 1. Define your agent
 
 ```python
-from nexus_a2a import agent, get_card, AgentSkill
+from nexus_a2a import agent
+from nexus_a2a.models.task import Task
 
 @agent(
     name="SummaryAgent",
-    description="Summarises long documents into key points.",
-    url="http://localhost:8002",
-    skills=[
-        AgentSkill(id="summarise", name="Summarise", description="Summarises text.")
-    ],
-    streaming=True,
+    description="Summarises text passed to it.",
+    skills=[{
+        "id": "summarise",
+        "name": "Summarise",
+        "description": "Returns a one-paragraph summary.",
+        "tags": ["nlp", "text"],
+    }],
+    url="http://localhost:8001",
 )
 class SummaryAgent:
-    async def run(self, task):
+    async def run(self, task: Task) -> str:
         text = task.latest_message().text()
-        return f"Summary of: {text[:100]}..."
-
-card = get_card(SummaryAgent)
-print(card.name)           # SummaryAgent
-print(card.skill_ids())    # ['summarise']
+        return f"Summary: {text[:100]}..."
 ```
 
----
-
-### `NexusConfig` — zero-config wiring from `nexus.toml`
-
-Define your entire agent network in a single TOML file. Every component
-(storage, retry, auth, logging) is wired automatically.
-
-```toml
-# nexus.toml
-[agent]
-name        = "ResearchAgent"
-url         = "http://localhost:8001"
-description = "Searches the web."
-
-[[agent.skills]]
-id   = "web_search"
-name = "Web Search"
-
-[network]
-agents = ["http://summary-agent:8002"]
-
-[reliability]
-task_timeout_sec = 60
-max_retries      = 3
-
-[security]
-auth_scheme = "jwt"
-auth_secret = "your-secret-key"   # or use NEXUS_AUTH_SECRET env var
-
-[storage]
-backend = "postgres"
-url     = "postgresql://user:pass@localhost/nexus"
-
-[observability]
-log_level = "INFO"
-```
-
-```python
-from nexus_a2a import AgentNetwork
-
-# One line — fully wired network
-network = AgentNetwork.from_config("nexus.toml")
-```
-
-Environment variables always override TOML values — ideal for containers:
+### 2. Start the server
 
 ```bash
-NEXUS_AGENT_NAME=ResearchAgent
-NEXUS_AUTH_SECRET=my-secret
-NEXUS_STORAGE_BACKEND=redis
-NEXUS_STORAGE_URL=redis://redis:6379
-NEXUS_LOG_LEVEL=WARNING
+nexus run --module mypackage.agent:SummaryAgent
+# or
+python -m mypackage.agent
 ```
 
----
-
-### `AgentServer` — built-in health and metrics endpoints
-
-Expose Kubernetes-compatible probes and Prometheus metrics in one line.
-
-```python
-from nexus_a2a import AgentServer
-
-server = AgentServer(network=network, port=8080)
-await server.start()
-
-# GET /health   → liveness probe  (always 200 if process alive)
-# GET /ready    → readiness probe (200 when store + registry healthy)
-# GET /metrics  → Prometheus text format
-# GET /info     → JSON summary of network state
-```
-
-Kubernetes config:
-
-```yaml
-livenessProbe:
-  httpGet:
-    path: /health
-    port: 8080
-readinessProbe:
-  httpGet:
-    path: /ready
-    port: 8080
-```
-
----
-
-### `GracefulShutdown` — zero-task-loss shutdown
-
-Handles SIGTERM (Kubernetes pod eviction) and SIGINT (Ctrl-C). Drains
-in-flight tasks before shutting down — no lost work on deploy.
+### 3. Send a task from another agent
 
 ```python
 import asyncio
-from nexus_a2a import AgentNetwork, AgentServer, GracefulShutdown
+from nexus_a2a.models.task import Message
+from nexus_a2a.transport.http_client import A2AHttpClient
 
 async def main():
-    network = AgentNetwork.from_config("nexus.toml")
-    server  = AgentServer(network=network, port=8080)
-
-    async with GracefulShutdown(network=network, server=server) as sd:
-        await server.start()
-        await sd.wait()   # blocks until SIGTERM or SIGINT
+    async with A2AHttpClient("http://localhost:8001") as client:
+        task = await client.send_message(Message.user_text("Summarise this long document..."))
+        print(task.state)            # TaskState.COMPLETED
+        print(task.artifacts[0].parts[0].content)
 
 asyncio.run(main())
 ```
 
-Drain behaviour:
-- Waits up to `drain_timeout_sec` (default 30s) for active tasks to finish.
-- Force-cancels any still-running tasks after the timeout.
-- Stops `AgentServer`, stops `TaskManager` watchdog, fires `network.shutdown` event.
+---
+
+## Core Concepts
+
+### Task state machine
+
+Every task follows a strict state machine. Invalid transitions raise `ValueError`.
+
+```
+SUBMITTED ──▶ WORKING ──▶ COMPLETED
+                │ ──────▶ FAILED        (requires error= message)
+                │ ──────▶ INPUT_REQUIRED ──▶ WORKING
+                └───────▶ CANCELLED
+```
+
+```python
+from nexus_a2a.models.task import Task, TaskState, Message
+
+task = Task.create(initial_message=Message.user_text("hello"))
+# task.state == TaskState.SUBMITTED
+
+task.transition(TaskState.WORKING)
+task.transition(TaskState.COMPLETED)
+
+# ❌ This raises — can't skip WORKING
+task2 = Task.create(initial_message=Message.user_text("x"))
+task2.transition(TaskState.FAILED)               # ValueError!
+task2.transition(TaskState.WORKING)              # ✓
+task2.transition(TaskState.FAILED, error="oops") # ✓
+```
+
+### Message and Part
+
+```python
+from nexus_a2a.models.task import Message, Part, PartType, MessageRole
+
+# Shortcut (most common)
+msg = Message.user_text("What is the weather today?")
+
+# Full form
+msg = Message(
+    role=MessageRole.USER,
+    parts=[
+        Part(type=PartType.TEXT, content="What is the weather today?"),
+    ],
+)
+
+# Read text back
+print(msg.text())   # "What is the weather today?"
+```
 
 ---
 
-### `MutualTLS` — agent-to-agent mTLS
+## Building Agents
 
-Both agents must present a valid certificate before any data is exchanged.
+### `@agent` decorator
+
+The primary way to define an agent. Auto-generates an `AgentCard`.
 
 ```python
-from nexus_a2a import MutualTLSConfig, build_client_ssl_context, build_server_ssl_context
+from nexus_a2a import agent
+from nexus_a2a.models.task import Task
+
+@agent(
+    name="ResearchAgent",
+    description="Searches the web and returns summarised results.",
+    version="1.0.0",
+    url="http://localhost:8001",
+    skills=[
+        {
+            "id": "web_search",
+            "name": "Web Search",
+            "description": "Searches the web for a given query.",
+            "tags": ["search", "web"],
+            "examples": ["Find latest AI papers", "Search Python asyncio docs"],
+        }
+    ],
+    streaming=False,
+    push_notifications=False,
+)
+class ResearchAgent:
+    async def run(self, task: Task) -> str:
+        query = task.latest_message().text()
+        # ... call search API ...
+        return f"Results for: {query}"
+```
+
+Use `@agent` without arguments — class name and docstring become defaults:
+
+```python
+@agent
+class QuickAgent:
+    """A fast agent that does quick tasks."""
+    async def run(self, task: Task) -> str:
+        return "done"
+```
+
+Access the generated card:
+
+```python
+card = ResearchAgent.get_agent_card()
+print(card.name)           # "ResearchAgent"
+print(card.skills[0].id)   # "web_search"
+
+# Or via helper
+from nexus_a2a import get_card
+card = get_card(ResearchAgent)
+```
+
+---
+
+## Sending Tasks
+
+### A2AHttpClient
+
+```python
+from nexus_a2a.transport.http_client import (
+    A2AHttpClient,
+    RetryConfig,
+    CircuitBreaker,
+)
+from nexus_a2a.models.task import Message, TaskState
+
+async with A2AHttpClient(
+    "http://localhost:8001",
+    timeout=30.0,
+    retry=RetryConfig(
+        max_retries=3,
+        base_delay=0.5,
+        max_delay=30.0,
+        jitter=True,
+        retry_on={500, 502, 503, 504},
+    ),
+) as client:
+
+    # Send a task
+    task = await client.send_message(Message.user_text("hello"))
+    assert task.state == TaskState.COMPLETED
+
+    # Fetch an existing task
+    task = await client.get_task(task.id)
+
+    # Cancel a task
+    cancelled = await client.cancel_task(task.id)
+
+    # Fetch the agent's card
+    card = await client.fetch_agent_card()
+    print(card.name, card.skills)
+```
+
+### Circuit Breaker
+
+Prevents hammering a failing agent. Automatically opens after N failures
+and lets a test request through after the recovery window.
+
+```python
+from nexus_a2a.transport.http_client import CircuitBreaker, CircuitOpenError
+
+cb = CircuitBreaker(
+    failure_threshold=5,    # open after 5 consecutive failures
+    recovery_timeout=30.0,  # try again after 30 s
+    success_threshold=2,    # close after 2 successes
+)
+
+async with A2AHttpClient("http://localhost:8001", circuit_breaker=cb) as client:
+    try:
+        task = await client.send_message(Message.user_text("ping"))
+    except CircuitOpenError as e:
+        print(f"Circuit is OPEN. Retry after {e.retry_after:.0f}s")
+```
+
+---
+
+## Agent Registry & Discovery
+
+```python
+from nexus_a2a.core.registry import AgentRegistry
+
+registry = AgentRegistry(
+    card_ttl_seconds=300.0,       # re-fetch card after 5 min
+    health_check_timeout=5.0,
+)
+
+# Register by URL (fetches AgentCard automatically)
+card = await registry.register_url("http://localhost:8001")
+
+# Register multiple
+for url in ["http://agent-a:8001", "http://agent-b:8002"]:
+    await registry.register_url(url)
+
+# List all registered agents
+cards = registry.list_all()          # list[AgentCard]
+healthy = registry.list_healthy()    # only healthy ones
+
+# Find agents that have a specific skill
+matches = registry.find_by_skill("web_search")   # list[AgentCard]
+
+# Lookup by name or URL
+card = registry.get_by_name("ResearchAgent")
+card = registry.get_by_url("http://localhost:8001")
+
+# Health checks
+health_map = await registry.check_all_health()  # {"http://...": True/False}
+is_up = await registry.check_health("http://localhost:8001")
+
+# Summary
+print(registry.summary())
+# {"total": 3, "healthy": 2, "unhealthy": 1, "skills": [...]}
+```
+
+---
+
+## Orchestration
+
+### Sequential pipeline
+
+Each agent's output becomes the next agent's input.
+
+```python
+from nexus_a2a.core.orchestrator import Orchestrator
+from nexus_a2a.transport.http_client import A2AHttpClient
+from nexus_a2a.models.task import Message, TaskState
+
+async def runner(url: str, message: Message) -> Task:
+    async with A2AHttpClient(url) as client:
+        return await client.send_message(message)
+
+orchestrator = Orchestrator(runner=runner, stop_on_error=True)
+
+result = await orchestrator.sequential(
+    agent_urls=["http://agent-a:8001", "http://agent-b:8002", "http://agent-c:8003"],
+    initial_message=Message.user_text("Research quantum computing trends"),
+)
+
+print(result.succeeded)        # True / False
+print(result.total_sec)        # wall-clock seconds
+print(result.final_output)     # last Task produced
+
+for step in result.steps:
+    print(step.agent_url, step.duration_sec)
+    if step.succeeded:
+        print("  ✓", step.task.state)
+    else:
+        print("  ✗", step.error)
+```
+
+### Parallel
+
+All agents receive the same input simultaneously.
+
+```python
+result = await orchestrator.parallel(
+    agent_urls=["http://agent-a:8001", "http://agent-b:8002"],
+    message=Message.user_text("Summarise this document"),
+)
+
+for step in result.steps:
+    print(step.agent_url, "→", step.task.artifacts[0].parts[0].content)
+```
+
+### DAG (Directed Acyclic Graph)
+
+Dependency-aware execution. Agents with no pending dependencies run concurrently.
+
+```python
+from nexus_a2a.core.orchestrator import DAGNode
+
+nodes = [
+    DAGNode(agent_url="http://fetcher:8001",    depends_on=[]),
+    DAGNode(agent_url="http://parser:8002",     depends_on=["http://fetcher:8001"]),
+    DAGNode(agent_url="http://summariser:8003", depends_on=["http://fetcher:8001"]),
+    DAGNode(agent_url="http://reporter:8004",   depends_on=["http://parser:8002",
+                                                             "http://summariser:8003"]),
+]
+
+result = await orchestrator.dag(
+    nodes=nodes,
+    initial_message=Message.user_text("Process this dataset"),
+)
+```
+
+---
+
+## Security
+
+### Authentication
+
+Three schemes supported. Each registered agent can use a different scheme.
+
+```python
+from nexus_a2a.security.auth import AuthManager, AgentCredentialConfig
+from nexus_a2a.models.agent import AuthScheme
+
+auth = AuthManager()
+
+# API Key
+auth.register("http://agent-a:8001", AgentCredentialConfig(
+    scheme=AuthScheme.API_KEY,
+    api_key="my-secret-key",
+    header_name="X-API-Key",    # default
+))
+
+# JWT
+auth.register("http://agent-b:8002", AgentCredentialConfig(
+    scheme=AuthScheme.JWT,
+    jwt_secret="super-secret",
+))
+token = auth.issue_jwt("http://agent-b:8002", expires_in=3600)
+
+# No auth (dev/testing)
+auth.register("http://agent-c:8003", AgentCredentialConfig(
+    scheme=AuthScheme.NONE,
+))
+
+# Verify an incoming request
+from nexus_a2a.security.auth import AuthError
+try:
+    await auth.verify("http://agent-a:8001", headers={"X-API-Key": "my-secret-key"})
+except AuthError as e:
+    print("Auth failed:", e)
+```
+
+### Rate Limiting
+
+Token-bucket algorithm. In-process, zero dependencies.
+
+```python
+from nexus_a2a.security.rate_limiter import RateLimiter, RateLimitConfig, RateLimitError
+
+limiter = RateLimiter()
+limiter.configure("http://agent-a:8001", RateLimitConfig(
+    rate=10.0,    # 10 requests per second (sustained)
+    burst=20,     # allow bursts up to 20
+))
+
+try:
+    await limiter.check("http://agent-a:8001")
+except RateLimitError as e:
+    print(f"Slow down! Retry in {e.retry_after:.2f}s")
+```
+
+### Trust Boundaries
+
+Default-deny permission matrix between agents.
+
+```python
+from nexus_a2a.security.trust import TrustBoundary
+
+trust = TrustBoundary()
+
+# Allow specific pairs
+trust.allow("http://orchestrator:8000", "http://worker-a:8001")
+trust.allow("http://orchestrator:8000", "http://worker-b:8002")
+
+# Wildcard: orchestrator can talk to anything
+trust.allow("http://orchestrator:8000", "*")
+
+# Block a specific agent
+trust.block("http://untrusted:9999", "*")
+
+# Check before sending
+if trust.is_allowed("http://orchestrator:8000", "http://worker-a:8001"):
+    await client.send_message(msg)
+```
+
+### Payload Validation
+
+```python
+from nexus_a2a.security.validator import PayloadValidator
+
+validator = PayloadValidator(
+    max_size_bytes=1_000_000,   # 1 MB
+    max_parts=50,
+)
+
+from nexus_a2a.security.validator import ValidationError
+try:
+    validator.validate(message)
+except ValidationError as e:
+    print("Invalid payload:", e)
+```
+
+### Mutual TLS (mTLS)
+
+Both agents verify each other's certificates.
+
+```python
+from nexus_a2a.security.mtls import MutualTLSConfig, build_client_ssl_context
 
 config = MutualTLSConfig(
     cert_file="/certs/agent.crt",
@@ -204,294 +512,581 @@ config = MutualTLSConfig(
     ca_file="/certs/ca.crt",
 )
 
-# Outbound calls (httpx client)
-ssl_ctx = build_client_ssl_context(config)
-async with httpx.AsyncClient(verify=ssl_ctx) as client:
-    resp = await client.post("https://other-agent:8443/tasks/send", ...)
-
-# Inbound connections (uvicorn server)
-ssl_ctx = build_server_ssl_context(config)
-uvicorn.run(app, host="0.0.0.0", port=8443, ssl=ssl_ctx)
-```
-
-Load certs from environment variables (Kubernetes Secrets):
-
-```python
+# Or from environment variables (NEXUS_MTLS_CERT, NEXUS_MTLS_KEY, NEXUS_MTLS_CA)
 config = MutualTLSConfig.from_env()
-# Reads: NEXUS_MTLS_CERT_PEM, NEXUS_MTLS_KEY_PEM, NEXUS_MTLS_CA_PEM (base64)
-# Or:    NEXUS_MTLS_CERT_FILE, NEXUS_MTLS_KEY_FILE, NEXUS_MTLS_CA_FILE (paths)
+
+ssl_ctx = build_client_ssl_context(config)
+
+import httpx
+async with httpx.AsyncClient(verify=ssl_ctx) as http:
+    # all requests use mTLS
+    pass
 ```
 
 ---
 
-### `TaskManager`
+## Storage Backends
 
-Creates and drives tasks through their full lifecycle.
-Every state transition is validated — illegal moves raise clear errors.
-
-```
-SUBMITTED → WORKING → COMPLETED
-                     → FAILED
-                     → CANCELLED
-           → INPUT_REQUIRED → (client replies) → WORKING
-```
+### In-Memory (default)
 
 ```python
-from nexus_a2a import TaskManager, Message, Artifact, Part, PartType
+from nexus_a2a.storage.task_store import InMemoryTaskStore
 
-manager = TaskManager()
+store = InMemoryTaskStore()
+```
 
-task = await manager.create(
-    initial_message=Message.user_text("Search for AI papers from 2025"),
-    skill_id="web_search",
+### Redis
+
+```python
+from nexus_a2a.storage.redis_store import RedisTaskStore
+
+store = RedisTaskStore(
+    url="redis://localhost:6379",
+    ttl_seconds=86400,    # tasks expire after 24h
 )
+await store.connect()
+```
+
+### PostgreSQL
+
+```python
+from nexus_a2a.storage.postgres_store import PostgresTaskStore
+
+store = PostgresTaskStore(dsn="postgresql://user:pass@localhost/nexus")
+await store.connect()   # creates tables if not present
+```
+
+### Task Manager
+
+Wraps any store with lifecycle operations and a watchdog that auto-fails stuck tasks.
+
+```python
+from nexus_a2a.core.task_manager import TaskManager
+
+manager = TaskManager(
+    store=store,
+    timeout_sec=120.0,    # auto-fail tasks stuck in WORKING after 2 min
+)
+
+task = await manager.create(message=Message.user_text("hello"))
 await manager.start(task.id)
-await manager.complete(
-    task.id,
-    artifact=Artifact(
-        name="search_results",
-        parts=[Part(type=PartType.TEXT, content="Found 10 papers...")],
-    ),
-)
-task = await manager.get(task.id)
-print(task.state)   # TaskState.COMPLETED
+await manager.complete(task.id, artifact_text="done")
+
+# Or fail with reason
+await manager.fail(task.id, error="API call timed out")
 ```
 
 ---
 
-### `AgentNetwork` — the top-level API
+## Reliability
 
-Ties everything together. Register agents, send tasks, run workflows.
+### Dead Letter Queue (DLQ)
+
+Failed tasks land in the DLQ for inspection and replay.
 
 ```python
-from nexus_a2a import AgentNetwork, Message
+from nexus_a2a.core.dead_letter import DeadLetterQueue
 
-network = AgentNetwork()
+dlq = DeadLetterQueue(
+    max_retries=3,
+    retry_delay=2.0,       # seconds between retries (exponential backoff)
+    max_queue_size=500,
+)
 
-await network.add("http://research-agent:8001")
-await network.add("http://summary-agent:8002")
-
-# Send a single task (auto-routes by skill)
-task = await network.send(
-    message=Message.user_text("Find AI papers from 2025"),
+# Capture a failed task
+entry = await dlq.capture(
+    task,
+    agent_url="http://worker:8001",
     skill_id="web_search",
 )
 
-# Sequential — output of each agent feeds the next
-result = await network.sequential(
-    agent_urls=["http://research-agent:8001", "http://summary-agent:8002"],
-    message=Message.user_text("Research and summarise AI papers"),
+# Inspect
+print(dlq.count())           # total entries
+print(dlq.pending_count())   # not yet replayed
+entries = dlq.all_entries()  # list[DLQEntry]
+pending = dlq.pending_entries()
+
+# Filter by skill
+web_failures = [e for e in dlq.all_entries() if e.skill_id == "web_search"]
+
+# Replay a single task
+result = await dlq.replay(task_id="abc-123")
+print(result.succeeded, result.error)
+
+# Replay all pending
+results = await dlq.replay_all()
+
+# Replay filtered by skill or agent
+results = await dlq.replay_where(skill_id="web_search")
+results = await dlq.replay_where(agent_url="http://worker:8001")
+
+# Failure hook
+@dlq.on_failure
+async def on_fail(entry):
+    print(f"Task {entry.task_id} failed: {entry.error}")
+
+# Clean up replayed entries
+removed = dlq.clear_replayed()
+print(f"Cleaned {removed} entries")
+```
+
+### Input Required (Human-in-the-Loop)
+
+Pause a task, wait for human input, then resume.
+
+```python
+from nexus_a2a.core.input_handler import InputHandler
+
+handler = InputHandler()
+
+# Pause and wait for input (async — does not block other tasks)
+await handler.request_input(task.id, prompt="Please provide your API key:")
+response = await handler.wait_for_input(task.id, timeout=300.0)
+
+# From another process / API endpoint — resume the task
+await handler.provide_input(task.id, "user-provided-api-key")
+```
+
+### Graceful Shutdown
+
+```python
+from nexus_a2a.core.graceful_shutdown import GracefulShutdown
+
+shutdown = GracefulShutdown(
+    manager=task_manager,
+    drain_timeout=30.0,    # wait up to 30s for WORKING tasks to finish
 )
 
-# Parallel — all agents run concurrently
-result = await network.parallel(
-    agent_urls=["http://agent-a:8001", "http://agent-b:8002"],
-    message=Message.user_text("Analyse this"),
-)
+# Registers SIGTERM and SIGINT handlers automatically
+shutdown.register()
 
-@network.on("task.completed")
-async def on_done(event: str, data: dict) -> None:
-    print(f"Task {data['task_id']} finished")
+# Manual shutdown (e.g. from a test or lifecycle hook)
+await shutdown.shutdown()
 ```
 
 ---
 
-### Storage backends
+## Streaming & Webhooks
 
-Three backends — swap without changing any other code.
+### SSE Streaming
 
 ```python
-from nexus_a2a import InMemoryTaskStore, TaskManager
-manager = TaskManager(store=InMemoryTaskStore())   # development
+from nexus_a2a.transport.sse import SSEStreamer, SSEFormatter
+
+# Server side — send events
+formatter = SSEFormatter()
+
+# Emit task status
+data = formatter.task_status(task_id="abc", state="working")
+data = formatter.artifact_chunk(task_id="abc", chunk="partial text...")
+data = formatter.done(task_id="abc")
+
+# Client side — consume events
+async with A2AHttpClient("http://localhost:8001") as client:
+    async for event in SSEStreamer(client).stream(message):
+        print(event.type, event.data)
 ```
 
-```python
-from nexus_a2a import RedisTaskStore, TaskManager
-async with RedisTaskStore(url="redis://localhost:6379", ttl=3600) as store:
-    manager = TaskManager(store=store)   # persistent, distributed
-```
+### Webhooks
+
+HMAC-SHA256 signed delivery with exponential backoff retries.
 
 ```python
-from nexus_a2a import PostgresTaskStore, TaskManager
-async with PostgresTaskStore(dsn="postgresql://user:pass@localhost/nexus") as store:
-    manager = TaskManager(store=store)   # ACID, full SQL queryability
-    active  = await store.list_by_state("working")
-    history = await store.list_by_context("ctx-abc-123")
-    await store.delete_older_than(days=30)
-```
+from nexus_a2a.transport.webhook import WebhookDispatcher
 
-Or let `nexus.toml` wire the right backend automatically — see `NexusConfig` above.
-
----
-
-### Security
-
-```python
-# Auth — JWT or API key per agent
-from nexus_a2a.security.auth import AuthManager, AgentCredentialConfig
-from nexus_a2a.models.agent import AuthScheme
-
-auth = AuthManager()
-auth.register_agent(
-    "http://research-agent:8001",
-    AgentCredentialConfig(scheme=AuthScheme.API_KEY, api_key="secret-key"),
+dispatcher = WebhookDispatcher(
+    secret="your-webhook-secret",
+    max_retries=3,
 )
-claims  = await auth.verify("http://research-agent:8001", headers=request.headers)
-headers = auth.build_auth_headers("http://research-agent:8001")
-```
 
-```python
-# TrustBoundary — declare which agents may call which
-from nexus_a2a.security.trust import TrustBoundary
+# Dispatch — auto-retries on 5xx, skips 4xx (client error = no retry)
+await dispatcher.dispatch(
+    url="https://your-app.com/webhooks/nexus",
+    event="task.completed",
+    payload={"task_id": "abc-123", "result": "..."},
+)
 
-trust = TrustBoundary()
-trust.allow("http://orchestrator:8000", "http://research-agent:8001")
-trust.allow("http://orchestrator:8000", "http://summary-agent:8002",
-            skills=["summarise"])
-trust.block("http://untrusted:9999")
-trust.check(caller_url="http://orchestrator:8000",
-            target_url="http://research-agent:8001",
-            skill_id="web_search")
-```
+# Non-raising version (logs failures silently)
+await dispatcher.dispatch_silent(url=..., event=..., payload=...)
 
-```python
-# RateLimiter — token bucket, per agent
-from nexus_a2a.security.rate_limiter import RateLimiter, RateLimitConfig
-
-limiter = RateLimiter(default_config=RateLimitConfig(rate=10, burst=20))
-await limiter.check("http://agent:8001")
+# Verify incoming webhook on your server
+is_valid = dispatcher.verify_signature(
+    payload=request.body,
+    signature=request.headers["X-Nexus-Signature-256"],
+)
 ```
 
 ---
 
-### Framework adapters
+## Framework Adapters
+
+Wrap existing agents from popular frameworks with zero changes to your existing code.
+
+### LangGraph
 
 ```python
-from nexus_a2a.adapters.langgraph  import LangGraphAdapter
-from nexus_a2a.adapters.crewai     import CrewAIAdapter
+from nexus_a2a.adapters.langgraph import LangGraphAdapter
+
+adapter = LangGraphAdapter(graph=compiled_graph)
+result = await adapter.run(task)
+print(result.text)
+```
+
+### CrewAI
+
+```python
+from nexus_a2a.adapters.crewai import CrewAIAdapter
+
+adapter = CrewAIAdapter(crew=my_crew)
+result = await adapter.run(task)
+```
+
+### AutoGen
+
+```python
+from nexus_a2a.adapters.autogen import AutoGenAdapter
+
+adapter = AutoGenAdapter(agent=my_autogen_agent)
+result = await adapter.run(task)
+```
+
+### Google ADK
+
+```python
 from nexus_a2a.adapters.google_adk import GoogleADKAdapter
-from nexus_a2a.adapters.autogen    import AutoGenAdapter
 
-adapter = LangGraphAdapter(agent=compiled_graph)
-result  = await adapter.execute(task)
-await manager.complete(task.id, artifact=result.to_artifact())
+adapter = GoogleADKAdapter(agent=my_adk_agent)
+result = await adapter.run(task)
 ```
 
 ---
 
-### SSE streaming
+## Observability & CLI
 
-```python
-from nexus_a2a.transport.sse import SSEStreamer, StreamEventType
+### `nexus` CLI
 
-async with SSEStreamer("http://agent:8001").stream(task_id="abc-123") as events:
-    async for event in events:
-        if event.type == StreamEventType.ARTIFACT_CHUNK:
-            print(event.data.get("content", ""), end="", flush=True)
-        if event.is_terminal:
-            break
+Install with the package, then:
+
+```bash
+# Ping an agent — name, version, skills, latency, health
+nexus ping http://localhost:8001
+
+# Inspect full AgentCard
+nexus inspect http://localhost:8001
+
+# Network status table (all agents, queue depth, DLQ count)
+nexus status --network
+
+# Trace a task — call tree with per-hop latency
+nexus trace abc-123-task-id
+nexus trace abc-123-task-id --agent http://localhost:8001
+
+# Replay DLQ entries
+nexus replay --failed
+nexus replay --failed --skill web_search
+nexus replay --failed --last 1h
+nexus replay --failed --dry-run        # preview without replaying
+
+# Start agent server
+nexus run
+nexus run --host 0.0.0.0 --port 8080
+
+# JSON output for all commands
+nexus --format json status --network
 ```
 
----
-
-### Observability
+### Audit Logger
 
 ```python
 from nexus_a2a.storage.audit_logger import AuditLogger
-audit = AuditLogger()
-audit.task_created(task)
-audit.auth_failure("http://agent:8001", reason="expired token")
+import sys
+
+logger = AuditLogger(
+    stream=sys.stdout,         # or open("audit.ndjson", "a")
+    buffer_size=100,           # flush every 100 events
+)
+
+# 8 event types: task_created, task_started, task_completed,
+# task_failed, task_cancelled, message_sent, auth_failed, rate_limited
+await logger.log("task_completed", {
+    "task_id": task.id,
+    "agent_url": "http://worker:8001",
+    "duration_sec": 1.23,
+})
 ```
+
+### Metrics
 
 ```python
 from nexus_a2a.storage.metrics import MetricsCollector
+
 metrics = MetricsCollector()
-with metrics.record_agent_call("http://agent:8001"):
-    result = await client.send_message(message)
-snap = metrics.snapshot()
-print(snap.p99_latency("http://agent:8001"))
+
+# Record events
+await metrics.record_task_completed(agent_url="http://worker:8001", duration_sec=1.2)
+await metrics.record_task_failed(agent_url="http://worker:8001")
+await metrics.record_auth_failure(agent_url="http://worker:8001")
+
+# Query
+print(metrics.task_count())               # total tasks
+print(metrics.error_rate())               # 0.0 – 1.0
+print(metrics.avg_latency_sec())          # float
+print(metrics.p99_latency_sec())          # float
+
+# Prometheus text format (expose via /metrics endpoint)
+text = metrics.to_prometheus()
+```
+
+### Distributed Tracing
+
+```python
+from nexus_a2a.transport.tracing import Tracer, TraceStore
+
+tracer = Tracer()
+trace_store = TraceStore(max_traces=1000)
+
+# Start a trace
+trace_id = tracer.new_trace_id()
+
+# Use in client — automatically injected into X-Nexus-Trace-ID header
+async with A2AHttpClient(
+    "http://localhost:8001",
+    trace_id=trace_id,
+    trace_store=trace_store,
+) as client:
+    task = await client.send_message(Message.user_text("hello"))
+
+# Retrieve trace
+trace = trace_store.get(trace_id)
+print(tracer.format_tree(trace))
 ```
 
 ---
 
-## Data models
+## Configuration (nexus.toml)
 
-| Model | Purpose |
+Zero-config wiring from a single TOML file.
+
+```toml
+[agent]
+name        = "ResearchAgent"
+description = "Searches the web and summarises results."
+version     = "1.0.0"
+url         = "http://localhost:8001"
+
+[[agent.skills]]
+id          = "web_search"
+name        = "Web Search"
+description = "Searches the web for a given query."
+tags        = ["search", "web"]
+
+[storage]
+backend = "redis"               # memory | redis | postgres
+url     = "redis://localhost:6379"
+
+[security]
+auth_scheme     = "api_key"     # none | api_key | jwt
+auth_secret     = "my-secret"
+mtls_cert_file  = "/certs/agent.crt"
+mtls_key_file   = "/certs/agent.key"
+mtls_ca_file    = "/certs/ca.crt"
+
+[reliability]
+task_timeout_sec = 120.0
+dlq_max_size     = 500
+dlq_max_retries  = 3
+
+[observability]
+log_level  = "INFO"
+tracing    = true
+
+[network]
+agents = [
+    "http://agent-a:8001",
+    "http://agent-b:8002",
+]
+```
+
+Load programmatically:
+
+```python
+from nexus_a2a.network import AgentNetwork
+
+network = AgentNetwork.from_config("nexus.toml")
+```
+
+**Environment variable overrides** (container-friendly):
+
+| Variable | Overrides |
 |---|---|
-| `AgentCard` | Agent's identity, capabilities, and skills |
-| `AgentSkill` | A single capability an agent advertises |
-| `Task` | The core unit of work — stateful, trackable |
-| `TaskState` | `submitted` → `working` → `completed` / `failed` / `cancelled` |
-| `Message` | One turn of conversation between client and agent |
-| `Part` | Smallest content unit: text, JSON, or file |
-| `Artifact` | Immutable final output produced by an agent |
+| `NEXUS_AGENT_NAME` | `[agent].name` |
+| `NEXUS_AGENT_URL` | `[agent].url` |
+| `NEXUS_AUTH_SCHEME` | `[security].auth_scheme` |
+| `NEXUS_AUTH_SECRET` | `[security].auth_secret` |
+| `NEXUS_STORAGE_BACKEND` | `[storage].backend` |
+| `NEXUS_STORAGE_URL` | `[storage].url` |
+| `NEXUS_TASK_TIMEOUT` | `[reliability].task_timeout_sec` |
+| `NEXUS_LOG_LEVEL` | `[observability].log_level` |
 
 ---
 
-## Error types
+## Error Handling Reference
 
-| Error | When it's raised |
-|---|---|
-| `TaskNotFoundError` | Accessing a task ID that doesn't exist |
-| `TaskAlreadyDoneError` | Mutating a task in a terminal state |
-| `AgentUnreachableError` | Remote agent didn't respond after all retries |
-| `RemoteAgentError` | Remote agent returned a JSON-RPC error |
-| `AgentCardFetchError` | Agent card endpoint returned invalid data |
-| `ConfigError` | Invalid or missing `nexus.toml` field |
-| `MtlsConfigError` | mTLS config missing cert, key, or CA |
-| `MtlsCertificateError` | Peer certificate failed verification |
+Every error in nexus-a2a is typed. Catch specific exceptions rather than bare `Exception`.
+
+### Transport errors
+
+```python
+from nexus_a2a.transport.http_client import (
+    AgentUnreachableError,   # agent is down / DNS failure
+    AgentCardFetchError,     # /.well-known/agent-card.json failed
+    RemoteAgentError,        # agent returned JSON-RPC error
+    CircuitOpenError,        # circuit breaker is OPEN
+    TransportError,          # base class for all transport errors
+)
+
+try:
+    task = await client.send_message(msg)
+except CircuitOpenError as e:
+    print(f"Circuit open. Retry in {e.retry_after}s")
+except AgentUnreachableError as e:
+    print(f"Cannot reach {e.url}: {e.reason}")
+except RemoteAgentError as e:
+    print(f"Agent error {e.code}: {e.message}")
+except TransportError as e:
+    print(f"Transport error: {e}")
+```
+
+### Auth errors
+
+```python
+from nexus_a2a.security.auth import (
+    AuthError,                   # base
+    MissingCredentialsError,     # no credentials in request
+    InvalidCredentialsError,     # wrong key / bad token
+    ExpiredCredentialsError,     # JWT expired
+)
+
+try:
+    await auth.verify(url, headers)
+except ExpiredCredentialsError:
+    new_token = auth.issue_jwt(url, expires_in=3600)
+except InvalidCredentialsError as e:
+    print(f"Auth failed: {e.reason}")
+```
+
+### Rate limit errors
+
+```python
+from nexus_a2a.security.rate_limiter import RateLimitError
+
+try:
+    await limiter.check(agent_url)
+except RateLimitError as e:
+    await asyncio.sleep(e.retry_after)
+    await limiter.check(agent_url)   # retry
+```
+
+### Task state errors
+
+```python
+from nexus_a2a.core.task_manager import TaskNotFoundError, TaskAlreadyDoneError
+
+try:
+    await manager.complete(task_id)
+except TaskNotFoundError:
+    print("Task does not exist")
+except TaskAlreadyDoneError:
+    print("Task already in terminal state")
+```
+
+### Orchestration errors
+
+```python
+from nexus_a2a.core.orchestrator import (
+    OrchestratorError,      # base
+    WorkflowCycleError,     # DAG has a cycle
+    WorkflowStepError,      # individual step failed
+)
+
+try:
+    result = await orchestrator.dag(nodes, initial_message)
+except WorkflowCycleError as e:
+    print(f"Cycle detected: {e.cycle}")
+```
+
+### Config errors
+
+```python
+from nexus_a2a.config import ConfigError
+
+try:
+    network = AgentNetwork.from_config("nexus.toml")
+except ConfigError as e:
+    print(f"Bad config at key '{e.key}': {e}")
+```
 
 ---
 
-## Roadmap
+## Testing
 
-| Version | Phase | Status |
-|---|---|---|
-| `v0.1.0` | Models + `@agent` decorator | ✅ Done |
-| `v0.2.0` | TaskManager, Registry, HTTP transport | ✅ Done |
-| `v0.3.0` | Security — Auth, TrustBoundary, RateLimiter, Validator | ✅ Done |
-| `v0.4.0` | Orchestration — sequential, parallel, DAG + SSE streaming | ✅ Done |
-| `v1.0.0` | Framework adapters (LangGraph, CrewAI, ADK) + observability | ✅ Done |
-| `v1.1.0` | Reliability — CircuitBreaker, retry, InputHandler, DeadLetterQueue, Tracer | ✅ Done |
-| `v1.2.0` | Infrastructure — `nexus.toml` config, AgentServer, GracefulShutdown, mTLS, PostgreSQL | ✅ Done |
+### Integration tests
 
----
+Real in-process agents on random ports — no HTTP mocking.
 
-## Development setup
+```python
+import pytest
+from starlette.applications import Starlette
+import uvicorn
+
+# See tests/integration/conftest.py for full fixture helpers
+# Run with:
+pytest tests/integration/
+```
+
+### Run all tests
 
 ```bash
-git clone https://github.com/dhruvil05/nexus-a2a.git
-cd nexus-a2a
+# Unit + integration
+pytest
 
-# Install all dependencies including dev tools
-uv pip install -e ".[dev,all]"
+# Skip integration (faster CI)
+pytest -m "not integration"
 
-# Run tests (unit only)
-pytest tests/ -m "not integration" -v
+# With coverage
+pytest --cov=nexus_a2a --cov-report=term-missing
 
-# Run integration tests (requires PostgreSQL)
-NEXUS_TEST_PG_DSN="postgresql://user:pass@localhost/nexus_test" \
-  pytest tests/ -m integration -v
-
-# Lint
-ruff check nexus_a2a/
-
-# Type check
-mypy nexus_a2a/
-
-# Build distribution
-uv build
+# Specific test file
+pytest tests/integration/test_sequential_pipeline.py -v
 ```
+
+### Type checking and linting
+
+```bash
+mypy nexus_a2a --strict
+ruff check nexus_a2a
+ruff format nexus_a2a
+```
+
+---
+
+## What's in each version
+
+| Version | What it added |
+|---|---|
+| **v0.1.0** | `@agent` decorator, `Task` state machine, `Message`/`Part`/`Artifact` models |
+| **v0.2.0** | `InMemoryTaskStore`, `TaskManager`, `A2AHttpClient`, `AgentRegistry` |
+| **v0.3.0** | `AuthManager`, `TrustBoundary`, `RateLimiter`, `PayloadValidator` |
+| **v0.4.0** | `Orchestrator` (sequential/parallel/dag), SSE streaming, `WebhookDispatcher`, `AgentNetwork` |
+| **v1.0.0** | LangGraph/CrewAI/AutoGen/GoogleADK adapters, `RedisTaskStore`, `AuditLogger`, `MetricsCollector` |
+| **v1.1.0** | Task timeout watchdog, `InputHandler`, `DeadLetterQueue`, `CircuitBreaker`, `Tracer`, `CapabilityGuard` |
+| **v1.2.0** | `GracefulShutdown`, `AgentServer` (K8s probes), mTLS, `PostgresTaskStore`, `nexus.toml`, CI/CD workflows |
+| **v1.3.0** | `nexus` CLI (ping/inspect/status/trace/replay/run), integration test suite, `CHANGELOG.md` |
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
 
----
-
-## Contributing
-
-Issues and pull requests are welcome.
-Please open an issue first to discuss any significant changes.
+Built by [HongZiro](https://github.com/dhruvil05).

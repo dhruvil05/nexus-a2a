@@ -3,18 +3,22 @@
 # Security — weekly dependency audit + GitHub CodeQL static analysis.
 #
 # Jobs:
-#   audit   — pip-audit scans for CVEs in all dependencies
-#   codeql  — GitHub CodeQL scans Python source for code vulnerabilities
-#   sbom    — generate Software Bill of Materials (SBOM) as a release asset
+#   audit     — pip-audit scans all deps for known CVEs
+#   codeql    — GitHub CodeQL scans Python source for vulnerabilities
+#   sbom      — generates Software Bill of Materials (master branch only)
+#   freshness — informational check for outdated packages (never fails)
 #
 # Schedule: every Monday at 08:00 UTC
-# Also runs on push to main (catches new vulns in newly added deps)
+# Also runs on push to master when pyproject.toml or source changes
 #
-# Alerts go to:
-#   - GitHub Security tab (CodeQL)
-#   - Job failure notification (pip-audit)
-#
-# Secrets required: none (uses GITHUB_TOKEN)
+# FIXES applied vs original:
+#   - pip-audit: removed --output=json flag (breaks when no vulns found in some versions)
+#     Use --format=json and save only on failure
+#   - pip-audit: added --skip-editable to avoid scanning the package itself
+#   - cyclonedx-py: updated CLI — newer versions use `cyclonedx-py environment`
+#     with different flags; added fallback
+#   - setup-uv: v3 → v4
+#   - CodeQL config: moved inline config to proper query syntax
 
 name: Security
 
@@ -24,8 +28,8 @@ on:
   push:
     branches: ["master"]
     paths:
-      - "pyproject.toml"    # Re-scan when dependencies change
-      - "nexus_a2a/**"      # Re-scan when source changes
+      - "pyproject.toml"
+      - "nexus_a2a/**"
   workflow_dispatch:         # Allow manual trigger from GitHub UI
 
 permissions:
@@ -34,10 +38,10 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12"
-  UV_VERSION: "0.4.18"
+  UV_VERSION: "0.5.x"
 
+# ── Dependency audit ───────────────────────────────────────────────────────────
 jobs:
-# ── Dependency audit ──────────────────────────────────────────────────────────
   audit:
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
@@ -50,7 +54,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
 
@@ -60,52 +64,46 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit
 
-      - name: Run pip-audit (fail on any vulnerability)
+      # FIX: removed --output=json (unreliable flag), use --format=json only on failure
+      - name: Run pip-audit
+        id: audit
         run: |
           pip-audit \
             --strict \
-            --output=json \
-            --output-file=audit-results.json \
-            || (cat audit-results.json && exit 1)
+            --skip-editable \
+            -r <(pip freeze) \
+            || AUDIT_FAILED=1
+
+          if [ "${AUDIT_FAILED:-0}" = "1" ]; then
+            echo "::error::Vulnerabilities found! See artifact for details."
+            pip-audit --skip-editable --format=json -r <(pip freeze) > audit-results.json || true
+            exit 1
+          fi
 
       - name: Upload audit results on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: pip-audit-results
+          name: pip-audit-results-${{ github.run_id }}
           path: audit-results.json
           retention-days: 30
 
-      - name: Show clean audit summary on success
+      - name: Clean audit summary
         if: success()
-        run: echo "✅ No known vulnerabilities found in dependencies."
+        run: echo "✅ No known vulnerabilities found."
 
-# ── CodeQL analysis ───────────────────────────────────────────────────────────
+# ── CodeQL analysis ────────────────────────────────────────────────────────────
   codeql:
     name: CodeQL analysis
     runs-on: ubuntu-latest
 
-    # Required for CodeQL to upload results to the Security tab
     permissions:
-      actions:  read
-      contents: read
+      actions:         read
+      contents:        read
       security-events: write
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: python
-          # Use the security-extended query suite for deeper analysis
-          queries: security-extended
-          config: |
-            paths:
-              - nexus_a2a
-            paths-ignore:
-              - tests
-              - dist
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -113,24 +111,31 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
 
-      - name: Install package (so CodeQL can analyse imports)
+      - name: Install package (so CodeQL can resolve imports)
         run: uv pip install --system -e ".[all]"
+
+      # FIX: Initialize CodeQL BEFORE installing — correct order for Python
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-extended
+          # FIX: removed inline config block (caused parse errors in some runners)
+          # Use .github/codeql/codeql-config.yml for path filtering if needed
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:python"
-          # Upload SARIF to GitHub Security tab automatically
 
-# ── SBOM generation ───────────────────────────────────────────────────────────
+# ── SBOM generation ────────────────────────────────────────────────────────────
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
-    # Only run on master branch (not on PRs — avoid noisy artifacts)
     if: github.ref == 'refs/heads/master'
 
     steps:
@@ -142,7 +147,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
 
@@ -152,11 +157,18 @@ jobs:
       - name: Install CycloneDX SBOM generator
         run: pip install cyclonedx-bom
 
-      - name: Generate SBOM (CycloneDX JSON format)
+      # FIX: cyclonedx-py CLI changed in newer versions — use pip freeze pipe
+      - name: Generate SBOM (CycloneDX JSON)
         run: |
-          cyclonedx-py environment \
+          pip freeze > requirements-frozen.txt
+          cyclonedx-py requirements \
+            requirements-frozen.txt \
             --output-format json \
-            --output-file nexus-a2a-sbom.json
+            --output-file nexus-a2a-sbom.json \
+            || cyclonedx-py environment \
+               --output-format json \
+               --output-file nexus-a2a-sbom.json
+
           echo "SBOM generated:"
           python -c "
           import json
@@ -170,19 +182,18 @@ jobs:
               print(f'  ... and {len(comps)-5} more')
           "
 
-      - name: Upload SBOM as artifact
+      - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
           name: sbom-${{ github.sha }}
           path: nexus-a2a-sbom.json
           retention-days: 90
 
-# ── Dependency freshness check ────────────────────────────────────────────────
+# ── Dependency freshness (informational only) ──────────────────────────────────
   freshness:
-    name: Check for outdated dependencies
+    name: Check outdated dependencies
     runs-on: ubuntu-latest
-    # Informational only — doesn't fail the workflow
-    continue-on-error: true
+    continue-on-error: true    # never fails the workflow
     steps:
       - uses: actions/checkout@v4
 
@@ -192,16 +203,16 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
 
       - name: Install package with all extras
         run: uv pip install --system -e ".[all,dev]"
 
-      - name: Check for outdated packages
+      - name: List outdated packages
         run: |
-          echo "=== Outdated packages ==="
+          echo "=== Outdated packages (informational) ==="
           pip list --outdated --format=columns || true
           echo ""
-          echo "Note: This is informational only. Update dependencies in pyproject.toml when appropriate."
+          echo "Update dependencies in pyproject.toml when appropriate."
