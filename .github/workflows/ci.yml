@@ -124,9 +124,9 @@ jobs:
           --cov-report=xml:coverage-${{ matrix.python-version }}.xml
           --cov-report=term-missing
 
-      # FIX: use secrets context (not env context) to check if PG DSN is set
+      # FIX: secrets context NOT allowed in `if:` — GitHub blocks it. Use env var trick instead.
       - name: Run integration tests (if PG DSN secret is set)
-        if: ${{ secrets.NEXUS_TEST_PG_DSN != '' }}
+        if: ${{ env.NEXUS_TEST_PG_DSN != '' }}
         run: pytest -m integration --tb=short -q
         env:
           NEXUS_TEST_PG_DSN: ${{ secrets.NEXUS_TEST_PG_DSN }}
