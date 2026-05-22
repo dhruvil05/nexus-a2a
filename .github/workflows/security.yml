@@ -64,19 +64,22 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit
 
-      # FIX: removed --output=json (unreliable flag), use --format=json only on failure
+      # FIX: pip freeze includes nexus-a2a even with --skip-editable, causing
+      # "Dependency not found on PyPI" error since it is not published yet.
+      # Solution: filter out nexus-a2a from freeze output before passing to pip-audit.
       - name: Run pip-audit
         id: audit
         run: |
           pip-audit \
             --strict \
             --skip-editable \
-            -r <(pip freeze) \
+            -r <(pip freeze | grep -v "^nexus-a2a") \
             || AUDIT_FAILED=1
 
           if [ "${AUDIT_FAILED:-0}" = "1" ]; then
             echo "::error::Vulnerabilities found! See artifact for details."
-            pip-audit --skip-editable --format=json -r <(pip freeze) > audit-results.json || true
+            pip-audit --skip-editable --format=json \
+              -r <(pip freeze | grep -v "^nexus-a2a") > audit-results.json || true
             exit 1
           fi
 
