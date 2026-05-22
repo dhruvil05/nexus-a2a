@@ -1,24 +1,16 @@
 # .github/workflows/security.yml
 #
-# Security — weekly dependency audit + GitHub CodeQL static analysis.
+# Security — weekly CVE scan + CodeQL static analysis + SBOM generation.
 #
 # Jobs:
-#   audit     — pip-audit scans all deps for known CVEs
-#   codeql    — GitHub CodeQL scans Python source for vulnerabilities
-#   sbom      — generates Software Bill of Materials (master branch only)
-#   freshness — informational check for outdated packages (never fails)
+#   audit     — pip-audit scans all third-party deps for known CVEs
+#               (nexus-a2a itself is filtered out — not on PyPI yet)
+#   codeql    — GitHub CodeQL static analysis on Python source
+#   sbom      — CycloneDX Software Bill of Materials (master branch only)
+#   freshness — informational outdated package check (never fails CI)
 #
 # Schedule: every Monday at 08:00 UTC
 # Also runs on push to master when pyproject.toml or source changes
-#
-# FIXES applied vs original:
-#   - pip-audit: removed --output=json flag (breaks when no vulns found in some versions)
-#     Use --format=json and save only on failure
-#   - pip-audit: added --skip-editable to avoid scanning the package itself
-#   - cyclonedx-py: updated CLI — newer versions use `cyclonedx-py environment`
-#     with different flags; added fallback
-#   - setup-uv: v3 → v4
-#   - CodeQL config: moved inline config to proper query syntax
 
 name: Security
 
@@ -30,21 +22,22 @@ on:
     paths:
       - "pyproject.toml"
       - "nexus_a2a/**"
-  workflow_dispatch:         # Allow manual trigger from GitHub UI
+  workflow_dispatch:        # Allow manual trigger from GitHub UI
 
 permissions:
   contents: read
-  security-events: write     # Required for CodeQL to upload SARIF results
+  security-events: write    # Required for CodeQL SARIF upload
 
 env:
   PYTHON_VERSION: "3.12"
   UV_VERSION: "0.5.x"
 
-# ── Dependency audit ───────────────────────────────────────────────────────────
+# ── Dependency audit ──────────────────────────────────────────────────────────
 jobs:
   audit:
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -64,24 +57,25 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit
 
-      # FIX: pip freeze includes nexus-a2a even with --skip-editable, causing
-      # "Dependency not found on PyPI" error since it is not published yet.
-      # Solution: filter out nexus-a2a from freeze output before passing to pip-audit.
+      # KEY FIX: pipe freeze through grep to remove nexus-a2a itself.
+      # pip-audit would fail with "Dependency not found on PyPI" because
+      # nexus-a2a is a local editable install and not published yet.
       - name: Run pip-audit
         id: audit
         run: |
           pip-audit \
             --strict \
             --skip-editable \
-            -r <(pip freeze | grep -v "^nexus-a2a") \
+            -r <(pip freeze | grep -v "^nexus.a2a") \
             || AUDIT_FAILED=1
 
           if [ "${AUDIT_FAILED:-0}" = "1" ]; then
             echo "::error::Vulnerabilities found! See artifact for details."
             pip-audit --skip-editable --format=json \
-              -r <(pip freeze | grep -v "^nexus-a2a") > audit-results.json || true
+              -r <(pip freeze | grep -v "^nexus.a2a") > audit-results.json || true
             exit 1
           fi
+          echo "✅ No known vulnerabilities found."
 
       - name: Upload audit results on failure
         if: failure()
@@ -91,11 +85,7 @@ jobs:
           path: audit-results.json
           retention-days: 30
 
-      - name: Clean audit summary
-        if: success()
-        run: echo "✅ No known vulnerabilities found."
-
-# ── CodeQL analysis ────────────────────────────────────────────────────────────
+# ── CodeQL static analysis ────────────────────────────────────────────────────
   codeql:
     name: CodeQL analysis
     runs-on: ubuntu-latest
@@ -118,24 +108,21 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
 
-      - name: Install package (so CodeQL can resolve imports)
+      - name: Install package so CodeQL can resolve imports
         run: uv pip install --system -e ".[all]"
 
-      # FIX: Initialize CodeQL BEFORE installing — correct order for Python
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: python
           queries: security-extended
-          # FIX: removed inline config block (caused parse errors in some runners)
-          # Use .github/codeql/codeql-config.yml for path filtering if needed
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:python"
 
-# ── SBOM generation ────────────────────────────────────────────────────────────
+# ── SBOM generation (master branch only) ─────────────────────────────────────
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
@@ -160,25 +147,24 @@ jobs:
       - name: Install CycloneDX SBOM generator
         run: pip install cyclonedx-bom
 
-      # FIX: cyclonedx-py CLI changed in newer versions — use pip freeze pipe
+      # Try new CLI (cyclonedx-py environment) then fall back to old CLI
       - name: Generate SBOM (CycloneDX JSON)
         run: |
-          pip freeze > requirements-frozen.txt
+          pip freeze | grep -v "^nexus.a2a" > requirements-frozen.txt
           cyclonedx-py requirements \
             requirements-frozen.txt \
             --output-format json \
             --output-file nexus-a2a-sbom.json \
-            || cyclonedx-py environment \
-               --output-format json \
-               --output-file nexus-a2a-sbom.json
+          || cyclonedx-py environment \
+             --output-format json \
+             --output-file nexus-a2a-sbom.json
 
-          echo "SBOM generated:"
           python -c "
           import json
           with open('nexus-a2a-sbom.json') as f:
               sbom = json.load(f)
           comps = sbom.get('components', [])
-          print(f'  Components: {len(comps)}')
+          print(f'SBOM generated with {len(comps)} components')
           for c in comps[:5]:
               print(f'  - {c.get(\"name\")} {c.get(\"version\", \"\")}')
           if len(comps) > 5:
@@ -192,11 +178,12 @@ jobs:
           path: nexus-a2a-sbom.json
           retention-days: 90
 
-# ── Dependency freshness (informational only) ──────────────────────────────────
+# ── Dependency freshness (informational, never fails) ─────────────────────────
   freshness:
     name: Check outdated dependencies
     runs-on: ubuntu-latest
-    continue-on-error: true    # never fails the workflow
+    continue-on-error: true
+
     steps:
       - uses: actions/checkout@v4
 
@@ -215,7 +202,7 @@ jobs:
 
       - name: List outdated packages
         run: |
-          echo "=== Outdated packages (informational) ==="
+          echo "=== Outdated packages (informational only) ==="
           pip list --outdated --format=columns || true
           echo ""
-          echo "Update dependencies in pyproject.toml when appropriate."
+          echo "Update pyproject.toml when appropriate."

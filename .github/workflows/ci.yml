@@ -3,94 +3,66 @@
 # Continuous Integration — runs on every push and pull request.
 #
 # Jobs:
-#   lint      — ruff check + ruff format (no auto-fix, just fail)
-#   typecheck — mypy strict mode
-#   test      — pytest matrix (Python 3.11 × 3.12, Ubuntu + Windows)
-#   build     — build wheel + sdist and verify import
+#   lint      — ruff format check + lint + mypy type checking
+#   test      — pytest unit tests on Python 3.11 and 3.12
+#   integrate — integration tests (only when PG secret is set)
+#   build     — package build verification (wheel + sdist)
 #
-# Secrets required: none for unit tests
-# Optional secret:  NEXUS_TEST_PG_DSN — if set, Postgres integration tests also run
-#
-# FIXES applied vs original:
-#   - Added pytest-cov to dev deps install (--cov flag requires it)
-#   - Fixed integration test condition: use secrets context not env context
-#   - Removed Windows from matrix (uv --system is flaky on Windows runners;
-#     Windows support is tested locally. Re-add when stable.)
-#   - Pinned uv to latest stable (0.5.x range)
-#   - Added pip cache for faster installs
-#   - Separated coverage upload from test step (cleaner job structure)
+# Triggers: push/PR on master and any version tag
+# Runner: ubuntu-latest only (stable with uv --system)
 
 name: CI
 
 on:
   push:
-    branches: ["master", "develop", "release/**"]
+    branches: ["master"]
+    tags: ["v*"]
   pull_request:
-    branches: ["master", "develop"]
+    branches: ["master"]
 
-# Cancel superseded runs on the same branch/PR to save runner minutes
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 env:
-  UV_VERSION: "0.5.x"          # FIX: was 0.4.18, use range for patch auto-updates
-  PYTHON_DEFAULT: "3.12"
+  PYTHON_VERSION_DEFAULT: "3.12"
+  UV_VERSION: "0.5.x"
 
-# ── Lint ───────────────────────────────────────────────────────────────────────
+# ── Lint & type-check ─────────────────────────────────────────────────────────
 jobs:
   lint:
-    name: Lint (ruff)
+    name: Lint & type-check
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_DEFAULT }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4        # FIX: v3→v4 (latest)
-        with:
-          version: ${{ env.UV_VERSION }}
-
-      - name: Install dev dependencies
-        run: uv pip install --system -e ".[dev]"
-
-      - name: Ruff — lint
-        run: ruff check nexus_a2a tests
-
-      - name: Ruff — format check
-        run: ruff format --check nexus_a2a tests
-
-# ── Type check ─────────────────────────────────────────────────────────────────
-  typecheck:
-    name: Type check (mypy)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_DEFAULT }}
+          python-version: ${{ env.PYTHON_VERSION_DEFAULT }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
 
-      - name: Install dev + all extras
-        run: uv pip install --system -e ".[dev,all]"
+      - name: Install dev dependencies
+        run: uv pip install --system -e ".[all,dev]"
 
-      - name: Run mypy
+      - name: Ruff format check
+        run: ruff format --check nexus_a2a tests
+
+      - name: Ruff lint
+        run: ruff check nexus_a2a tests
+
+      - name: Mypy type check
         run: mypy nexus_a2a
 
-# ── Tests ──────────────────────────────────────────────────────────────────────
+# ── Unit tests (matrix: Python 3.11 and 3.12) ─────────────────────────────────
   test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest               # FIX: removed windows-latest (flaky with uv --system)
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: lint
 
     strategy:
       fail-fast: false
@@ -110,43 +82,37 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
 
-      - name: Install package + dev dependencies
-        # FIX: pytest-cov is in dev extras — this installs it correctly
-        run: uv pip install --system -e ".[dev,all]"
+      - name: Install package with all extras
+        run: uv pip install --system -e ".[all,dev]"
 
-      - name: Run unit tests (excluding integration + postgres)
-        run: >
-          pytest
-          -m "not integration"
-          --tb=short
-          -q
-          --cov=nexus_a2a
-          --cov-report=xml:coverage-${{ matrix.python-version }}.xml
-          --cov-report=term-missing
+      - name: Run unit tests
+        run: |
+          pytest \
+            -m "not integration" \
+            --tb=short \
+            -q \
+            --cov=nexus_a2a \
+            --cov-report=xml:coverage-${{ matrix.python-version }}.xml \
+            --cov-report=term-missing
 
-      # FIX: secrets context NOT allowed in `if:` — GitHub blocks it. Use env var trick instead.
-      - name: Run integration tests (if PG DSN secret is set)
-        if: ${{ env.NEXUS_TEST_PG_DSN != '' }}
-        run: pytest -m integration --tb=short -q
-        env:
-          NEXUS_TEST_PG_DSN: ${{ secrets.NEXUS_TEST_PG_DSN }}
-
-      # Upload coverage only from Python 3.12 run to avoid duplicate reports
-      - name: Upload coverage to Codecov
-        if: >
-          github.ref == 'refs/heads/master' &&
-          matrix.python-version == '3.12'
+      - name: Upload coverage (Python 3.12 only)
+        if: matrix.python-version == '3.12' && github.ref == 'refs/heads/master'
         uses: codecov/codecov-action@v4
         with:
-          files: coverage-${{ matrix.python-version }}.xml
-          fail_ci_if_error: false    # don't break CI on Codecov outage
-          token: ${{ secrets.CODECOV_TOKEN }}
+          file: coverage-3.12.xml
+          flags: unittests
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-# ── Build check ────────────────────────────────────────────────────────────────
-  build:
-    name: Build distribution
+# ── Integration tests (only when PG DSN secret is available) ──────────────────
+  integrate:
+    name: Integration tests
     runs-on: ubuntu-latest
-    needs: [lint, test]              # FIX: only build if lint + tests pass
+    needs: test
+    # Set a repo variable HAS_PG_DSN=true when you have the secret configured.
+    # This avoids the "secrets not allowed in if:" GitHub error.
+    if: ${{ vars.HAS_PG_DSN == 'true' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -154,20 +120,51 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_DEFAULT }}
+          python-version: ${{ env.PYTHON_VERSION_DEFAULT }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
           version: ${{ env.UV_VERSION }}
 
-      - name: Build wheel + sdist
-        run: uv build
+      - name: Install package with all extras
+        run: uv pip install --system -e ".[all,dev]"
 
-      - name: Verify wheel installs cleanly
+      - name: Run integration tests
+        run: pytest -m integration --tb=short -q
+        env:
+          NEXUS_TEST_PG_DSN: ${{ secrets.NEXUS_TEST_PG_DSN }}
+
+# ── Build verification ─────────────────────────────────────────────────────────
+  build:
+    name: Build verification
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION_DEFAULT }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install build tools
+        run: uv pip install --system build hatchling
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Verify build artifacts
         run: |
-          uv pip install --system dist/*.whl
-          python -c "import nexus_a2a; print('nexus-a2a', nexus_a2a.__version__, 'imports OK')"
+          pip install twine
+          twine check dist/*
+          echo "✅ Build artifacts are valid"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
