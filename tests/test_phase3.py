@@ -8,6 +8,7 @@ Run with:  uv run pytest tests/test_phase3.py -v
 from __future__ import annotations
 
 import time
+
 import pytest
 
 from nexus_a2a.models.agent import AuthScheme
@@ -15,20 +16,19 @@ from nexus_a2a.models.task import Message, Part, PartType
 from nexus_a2a.security.auth import (
     AgentCredentialConfig,
     AuthManager,
-    AuthError,
     ExpiredCredentialsError,
     InvalidCredentialsError,
     MissingCredentialsError,
+)
+from nexus_a2a.security.rate_limiter import (
+    RateLimitConfig,
+    RateLimiter,
+    RateLimitError,
 )
 from nexus_a2a.security.trust import (
     AgentNotAllowedError,
     SkillNotAllowedError,
     TrustBoundary,
-)
-from nexus_a2a.security.rate_limiter import (
-    RateLimitConfig,
-    RateLimitError,
-    RateLimiter,
 )
 from nexus_a2a.security.validator import (
     BlankTextPartError,
@@ -39,18 +39,18 @@ from nexus_a2a.security.validator import (
     ValidatorConfig,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 AGENT_A = "http://agent-a:8001"
 AGENT_B = "http://agent-b:8002"
 AGENT_C = "http://agent-c:8003"
-SECRET   = "test-secret-key-32-chars-minimum!"
+SECRET = "test-secret-key-32-chars-minimum!"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # AuthManager
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestAuthManagerNone:
     """No auth scheme — all requests pass."""
@@ -145,7 +145,12 @@ class TestAuthManagerJWT:
         auth = self._auth()
         # Issue a token that expired 10 seconds ago
         from jose import jwt as jose_jwt
-        payload = {"sub": "caller", "iat": int(time.time()) - 20, "exp": int(time.time()) - 10}
+
+        payload = {
+            "sub": "caller",
+            "iat": int(time.time()) - 20,
+            "exp": int(time.time()) - 10,
+        }
         token = jose_jwt.encode(payload, SECRET, algorithm="HS256")
         with pytest.raises(ExpiredCredentialsError):
             await auth.verify(AGENT_A, {"Authorization": f"Bearer {token}"})
@@ -191,6 +196,7 @@ class TestAuthManagerJWT:
 # ══════════════════════════════════════════════════════════════════════════════
 # TrustBoundary
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestTrustBoundary:
     def test_default_deny_blocks_unknown(self):
@@ -281,6 +287,7 @@ class TestTrustBoundary:
 # RateLimiter
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestRateLimiter:
     async def test_within_burst_passes(self):
         limiter = RateLimiter(default_config=RateLimitConfig(rate=2, burst=5))
@@ -348,6 +355,7 @@ class TestRateLimiter:
 # PayloadValidator
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestPayloadValidator:
     def _msg(self, text: str = "Hello agent") -> Message:
         return Message.user_text(text)
@@ -378,10 +386,7 @@ class TestPayloadValidator:
         v = PayloadValidator(config=ValidatorConfig(max_parts=2))
         msg = Message(
             role="user",
-            parts=[
-                Part(type=PartType.TEXT, content=f"part {i}")
-                for i in range(3)
-            ],
+            parts=[Part(type=PartType.TEXT, content=f"part {i}") for i in range(3)],
         )
         with pytest.raises(TooManyPartsError):
             v.validate(msg)

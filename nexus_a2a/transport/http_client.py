@@ -36,15 +36,16 @@ from nexus_a2a.transport.tracing import Tracer, TraceStore
 logger = logging.getLogger(__name__)
 
 _AGENT_CARD_PATH = "/.well-known/agent-card.json"
-_METHOD_SEND     = "message/send"
-_METHOD_GET      = "tasks/get"
-_METHOD_CANCEL   = "tasks/cancel"
+_METHOD_SEND = "message/send"
+_METHOD_GET = "tasks/get"
+_METHOD_CANCEL = "tasks/cancel"
 
 # Default HTTP status codes that should trigger a retry
 DEFAULT_RETRY_ON = {500, 502, 503, 504}
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
+
 
 class TransportError(Exception):
     """Base class for all HTTP transport errors."""
@@ -53,7 +54,7 @@ class TransportError(Exception):
 class AgentUnreachableError(TransportError):
     def __init__(self, url: str, reason: str) -> None:
         super().__init__(f"Agent at '{url}' is unreachable: {reason}")
-        self.url    = url
+        self.url = url
         self.reason = reason
 
 
@@ -66,9 +67,9 @@ class AgentCardFetchError(TransportError):
 class RemoteAgentError(TransportError):
     def __init__(self, code: int, message: str, task_id: str | None = None) -> None:
         super().__init__(f"Remote agent error (code={code}): {message}")
-        self.code     = code
-        self.message  = message
-        self.task_id  = task_id
+        self.code = code
+        self.message = message
+        self.task_id = task_id
 
 
 class CircuitOpenError(TransportError):
@@ -76,21 +77,22 @@ class CircuitOpenError(TransportError):
     Raised when a request is rejected because the circuit breaker is OPEN.
     The agent has been failing repeatedly — no network call is made.
     """
+
     def __init__(self, url: str, retry_after: float) -> None:
         super().__init__(
-            f"Circuit breaker OPEN for '{url}'. "
-            f"Retry after {retry_after:.1f}s."
+            f"Circuit breaker OPEN for '{url}'. Retry after {retry_after:.1f}s."
         )
-        self.url         = url
+        self.url = url
         self.retry_after = retry_after
 
 
 # ── Circuit breaker ───────────────────────────────────────────────────────────
 
+
 class CircuitState(str, Enum):
-    CLOSED    = "closed"      # normal — requests go through
-    OPEN      = "open"        # unhealthy — requests blocked
-    HALF_OPEN = "half_open"   # recovery probe — one request allowed
+    CLOSED = "closed"  # normal — requests go through
+    OPEN = "open"  # unhealthy — requests blocked
+    HALF_OPEN = "half_open"  # recovery probe — one request allowed
 
 
 class CircuitBreaker:
@@ -107,17 +109,17 @@ class CircuitBreaker:
 
     def __init__(
         self,
-        failure_threshold: int   = 5,
-        recovery_timeout:  float = 30.0,
-        success_threshold: int   = 2,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
+        success_threshold: int = 2,
     ) -> None:
-        self._fail_thresh    = failure_threshold
-        self._recovery       = recovery_timeout
+        self._fail_thresh = failure_threshold
+        self._recovery = recovery_timeout
         self._success_thresh = success_threshold
 
-        self._state          = CircuitState.CLOSED
-        self._failures       = 0
-        self._successes      = 0
+        self._state = CircuitState.CLOSED
+        self._failures = 0
+        self._successes = 0
         self._opened_at: float | None = None
 
     @property
@@ -128,7 +130,7 @@ class CircuitBreaker:
             and self._opened_at is not None
             and (time.monotonic() - self._opened_at) >= self._recovery
         ):
-            self._state    = CircuitState.HALF_OPEN
+            self._state = CircuitState.HALF_OPEN
             self._successes = 0
             logger.info("Circuit breaker → HALF_OPEN (probe allowed)")
         return self._state
@@ -138,10 +140,10 @@ class CircuitBreaker:
         Called before every outbound request.
         Raises CircuitOpenError if the circuit is OPEN.
         """
-        state = self.state   # triggers auto-transition check
+        state = self.state  # triggers auto-transition check
 
         if state == CircuitState.OPEN:
-            elapsed     = time.monotonic() - (self._opened_at or 0)
+            elapsed = time.monotonic() - (self._opened_at or 0)
             retry_after = max(0.0, self._recovery - elapsed)
             raise CircuitOpenError(url, retry_after)
 
@@ -150,7 +152,7 @@ class CircuitBreaker:
         if self._state == CircuitState.HALF_OPEN:
             self._successes += 1
             if self._successes >= self._success_thresh:
-                self._state    = CircuitState.CLOSED
+                self._state = CircuitState.CLOSED
                 self._failures = 0
                 logger.info("Circuit breaker → CLOSED (recovered)")
         else:
@@ -161,13 +163,13 @@ class CircuitBreaker:
         self._failures += 1
 
         if self._state == CircuitState.HALF_OPEN:
-            self._state     = CircuitState.OPEN
+            self._state = CircuitState.OPEN
             self._opened_at = time.monotonic()
             logger.warning("Circuit breaker → OPEN (probe failed)")
             return
 
         if self._failures >= self._fail_thresh:
-            self._state     = CircuitState.OPEN
+            self._state = CircuitState.OPEN
             self._opened_at = time.monotonic()
             logger.warning(
                 "Circuit breaker → OPEN after %d consecutive failures",
@@ -176,6 +178,7 @@ class CircuitBreaker:
 
 
 # ── Retry config ──────────────────────────────────────────────────────────────
+
 
 class RetryConfig:
     """
@@ -192,27 +195,28 @@ class RetryConfig:
 
     def __init__(
         self,
-        max_retries: int         = 3,
-        retry_on:    set[int]    = DEFAULT_RETRY_ON,
-        base_delay:  float       = 0.5,
-        max_delay:   float       = 30.0,
-        jitter:      bool        = True,
+        max_retries: int = 3,
+        retry_on: set[int] = DEFAULT_RETRY_ON,
+        base_delay: float = 0.5,
+        max_delay: float = 30.0,
+        jitter: bool = True,
     ) -> None:
         self.max_retries = max_retries
-        self.retry_on    = retry_on
-        self.base_delay  = base_delay
-        self.max_delay   = max_delay
-        self.jitter      = jitter
+        self.retry_on = retry_on
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.jitter = jitter
 
     def delay_for(self, attempt: int) -> float:
         """Return the delay (seconds) before attempt N (1-indexed)."""
         delay = min(self.base_delay * (2 ** (attempt - 1)), self.max_delay)
         if self.jitter:
-            delay *= (0.8 + random.random() * 0.4)   # ±20% jitter
+            delay *= 0.8 + random.random() * 0.4  # ±20% jitter
         return delay
 
 
 # ── A2AHttpClient ─────────────────────────────────────────────────────────────
+
 
 class A2AHttpClient:
     """
@@ -245,33 +249,33 @@ class A2AHttpClient:
 
     def __init__(
         self,
-        base_url:        str,
-        timeout:         float                = 30.0,
-        retry:           RetryConfig | None   = None,
+        base_url: str,
+        timeout: float = 30.0,
+        retry: RetryConfig | None = None,
         circuit_breaker: CircuitBreaker | None = None,
-        headers:         dict[str, str] | None = None,
-        trace_id:        str | None            = None,
-        trace_store:     TraceStore | None     = None,
+        headers: dict[str, str] | None = None,
+        trace_id: str | None = None,
+        trace_store: TraceStore | None = None,
     ) -> None:
-        self._base_url       = base_url.rstrip("/")
-        self._timeout        = timeout
-        self._retry          = retry or RetryConfig()
-        self._cb             = circuit_breaker   # None = disabled
-        self._extra_headers  = headers or {}
-        self._trace_id       = trace_id or Tracer.new_trace_id()
-        self._trace_store    = trace_store
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout
+        self._retry = retry or RetryConfig()
+        self._cb = circuit_breaker  # None = disabled
+        self._extra_headers = headers or {}
+        self._trace_id = trace_id or Tracer.new_trace_id()
+        self._trace_store = trace_store
         self._client: httpx.AsyncClient | None = None
 
     # ── Context manager ───────────────────────────────────────────────────────
 
     async def __aenter__(self) -> A2AHttpClient:
         trace_headers = Tracer.inject(self._trace_id)
-        self._client  = httpx.AsyncClient(
+        self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=self._timeout,
             headers={
                 "Content-Type": "application/json",
-                "Accept":       "application/json",
+                "Accept": "application/json",
                 **trace_headers,
                 **self._extra_headers,
             },
@@ -313,8 +317,8 @@ class A2AHttpClient:
 
     async def send_message(
         self,
-        message:    Message,
-        skill_id:   str | None = None,
+        message: Message,
+        skill_id: str | None = None,
         context_id: str | None = None,
     ) -> Task:
         """
@@ -329,7 +333,7 @@ class A2AHttpClient:
             "message": message.model_dump(mode="json"),
         }
         if skill_id:
-            params["skillId"]   = skill_id
+            params["skillId"] = skill_id
         if context_id:
             params["contextId"] = context_id
 
@@ -340,7 +344,7 @@ class A2AHttpClient:
             store=self._trace_store,
         ) as span:
             result = await self._rpc(_METHOD_SEND, params)
-            task   = Task.model_validate(result)
+            task = Task.model_validate(result)
             span.set_status("completed")
             span.metadata["task_id"] = task.id
 
@@ -376,18 +380,17 @@ class A2AHttpClient:
         """
         payload = {
             "jsonrpc": "2.0",
-            "id":      str(uuid.uuid4()),
-            "method":  method,
-            "params":  params,
+            "id": str(uuid.uuid4()),
+            "method": method,
+            "params": params,
         }
 
         last_error: str = "unknown"
 
         for attempt in range(1, self._retry.max_retries + 1):
-
             # ── Circuit breaker check ──────────────────────────────────────
             if self._cb:
-                self._cb.before_call(self._base_url)   # raises if OPEN
+                self._cb.before_call(self._base_url)  # raises if OPEN
 
             try:
                 response = await self._post("/", payload)
@@ -397,8 +400,10 @@ class A2AHttpClient:
                     last_error = f"HTTP {response.status_code}"
                     logger.warning(
                         "RPC attempt %d/%d → %s for %s, will retry",
-                        attempt, self._retry.max_retries,
-                        last_error, method,
+                        attempt,
+                        self._retry.max_retries,
+                        last_error,
+                        method,
                     )
                     if self._cb:
                         self._cb.on_failure()
@@ -414,20 +419,23 @@ class A2AHttpClient:
                     raise AgentUnreachableError(self._base_url, last_error)
 
                 # ── Success: unwrap JSON-RPC ───────────────────────────────
-                body   = response.json()
+                body = response.json()
                 result = self._unwrap_rpc(body)
                 if self._cb:
                     self._cb.on_success()
                 return result
 
             except CircuitOpenError:
-                raise   # never retry when circuit is open
+                raise  # never retry when circuit is open
 
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 last_error = str(exc)
                 logger.warning(
                     "RPC attempt %d/%d connection error for %s: %s",
-                    attempt, self._retry.max_retries, method, exc,
+                    attempt,
+                    self._retry.max_retries,
+                    method,
+                    exc,
                 )
                 if self._cb:
                     self._cb.on_failure()
@@ -460,7 +468,7 @@ class A2AHttpClient:
             if self._cb:
                 self._cb.before_call(self._base_url)
             try:
-                client   = self._require_client()
+                client = self._require_client()
                 response = await client.get(url)
                 if response.status_code in self._retry.retry_on:
                     last_error = f"HTTP {response.status_code}"

@@ -67,7 +67,7 @@ def ping(ctx: NexusContext, url: str) -> None:
         result = asyncio.run(_do_ping(url))
     except Exception as e:
         print_error(str(e))
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     render_ping(result, fmt=ctx.fmt)
 

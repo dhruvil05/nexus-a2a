@@ -35,18 +35,20 @@ logger = logging.getLogger(__name__)
 
 # ── Event types ───────────────────────────────────────────────────────────────
 
+
 class AuditEvent(str, Enum):
-    TASK_CREATED        = "task_created"
-    TASK_STATE_CHANGED  = "task_state_changed"
-    AGENT_CALLED        = "agent_called"
-    AGENT_RESPONDED     = "agent_responded"
-    AUTH_FAILURE        = "auth_failure"
+    TASK_CREATED = "task_created"
+    TASK_STATE_CHANGED = "task_state_changed"
+    AGENT_CALLED = "agent_called"
+    AGENT_RESPONDED = "agent_responded"
+    AUTH_FAILURE = "auth_failure"
     RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
-    WORKFLOW_COMPLETED  = "workflow_completed"
-    CUSTOM              = "custom"
+    WORKFLOW_COMPLETED = "workflow_completed"
+    CUSTOM = "custom"
 
 
 # ── Log entry ─────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class AuditEntry:
@@ -60,17 +62,18 @@ class AuditEntry:
         task_id:    Optional — the task this event relates to.
         agent_url:  Optional — the agent this event relates to.
     """
-    event:     AuditEvent
-    data:      dict[str, Any]   = field(default_factory=dict)
-    timestamp: float            = field(default_factory=time.time)
-    task_id:   str | None       = None
-    agent_url: str | None       = None
+
+    event: AuditEvent
+    data: dict[str, Any] = field(default_factory=dict)
+    timestamp: float = field(default_factory=time.time)
+    task_id: str | None = None
+    agent_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "event":     self.event.value,
+            "event": self.event.value,
             "timestamp": self.timestamp,
-            "task_id":   self.task_id,
+            "task_id": self.task_id,
             "agent_url": self.agent_url,
             **self.data,
         }
@@ -81,6 +84,7 @@ class AuditEntry:
 
 
 # ── AuditLogger ───────────────────────────────────────────────────────────────
+
 
 class AuditLogger:
     """
@@ -110,28 +114,30 @@ class AuditLogger:
 
     def __init__(
         self,
-        stream:      TextIO | None = None,
+        stream: TextIO | None = None,
         buffer_size: int = 1000,
-        enabled:     bool = True,
+        enabled: bool = True,
     ) -> None:
-        self._stream      = stream or sys.stdout
+        self._stream = stream or sys.stdout
         self._buffer_size = buffer_size
-        self._enabled     = enabled
-        self._buffer:     list[AuditEntry] = []
+        self._enabled = enabled
+        self._buffer: list[AuditEntry] = []
 
     # ── Public logging methods ────────────────────────────────────────────────
 
     def task_created(self, task: Task) -> None:
         """Log a new task being created."""
-        self._log(AuditEntry(
-            event=AuditEvent.TASK_CREATED,
-            task_id=task.id,
-            data={
-                "skill_id":   task.skill_id,
-                "context_id": task.context_id,
-                "state":      task.state.value,
-            },
-        ))
+        self._log(
+            AuditEntry(
+                event=AuditEvent.TASK_CREATED,
+                task_id=task.id,
+                data={
+                    "skill_id": task.skill_id,
+                    "context_id": task.context_id,
+                    "state": task.state.value,
+                },
+            )
+        )
 
     def task_state_changed(
         self,
@@ -139,15 +145,17 @@ class AuditLogger:
         old_state: TaskState,
     ) -> None:
         """Log a task transitioning from one state to another."""
-        self._log(AuditEntry(
-            event=AuditEvent.TASK_STATE_CHANGED,
-            task_id=task.id,
-            data={
-                "old_state": old_state.value,
-                "new_state": task.state.value,
-                "error":     task.error,
-            },
-        ))
+        self._log(
+            AuditEntry(
+                event=AuditEvent.TASK_STATE_CHANGED,
+                task_id=task.id,
+                data={
+                    "old_state": old_state.value,
+                    "new_state": task.state.value,
+                    "error": task.error,
+                },
+            )
+        )
 
     def agent_called(
         self,
@@ -156,12 +164,14 @@ class AuditLogger:
         skill_id: str | None = None,
     ) -> None:
         """Log an outbound call to a remote agent."""
-        self._log(AuditEntry(
-            event=AuditEvent.AGENT_CALLED,
-            task_id=task_id,
-            agent_url=agent_url,
-            data={"skill_id": skill_id},
-        ))
+        self._log(
+            AuditEntry(
+                event=AuditEvent.AGENT_CALLED,
+                task_id=task_id,
+                agent_url=agent_url,
+                data={"skill_id": skill_id},
+            )
+        )
 
     def agent_responded(
         self,
@@ -171,15 +181,17 @@ class AuditLogger:
         succeeded: bool,
     ) -> None:
         """Log a response received from a remote agent."""
-        self._log(AuditEntry(
-            event=AuditEvent.AGENT_RESPONDED,
-            task_id=task_id,
-            agent_url=agent_url,
-            data={
-                "duration_sec": round(duration_sec, 4),
-                "succeeded":    succeeded,
-            },
-        ))
+        self._log(
+            AuditEntry(
+                event=AuditEvent.AGENT_RESPONDED,
+                task_id=task_id,
+                agent_url=agent_url,
+                data={
+                    "duration_sec": round(duration_sec, 4),
+                    "succeeded": succeeded,
+                },
+            )
+        )
 
     def auth_failure(
         self,
@@ -188,12 +200,14 @@ class AuditLogger:
         task_id: str | None = None,
     ) -> None:
         """Log an authentication failure."""
-        self._log(AuditEntry(
-            event=AuditEvent.AUTH_FAILURE,
-            task_id=task_id,
-            agent_url=agent_url,
-            data={"reason": reason},
-        ))
+        self._log(
+            AuditEntry(
+                event=AuditEvent.AUTH_FAILURE,
+                task_id=task_id,
+                agent_url=agent_url,
+                data={"reason": reason},
+            )
+        )
 
     def rate_limit_exceeded(
         self,
@@ -202,12 +216,14 @@ class AuditLogger:
         task_id: str | None = None,
     ) -> None:
         """Log a rate limit being hit."""
-        self._log(AuditEntry(
-            event=AuditEvent.RATE_LIMIT_EXCEEDED,
-            task_id=task_id,
-            agent_url=agent_url,
-            data={"retry_after_sec": round(retry_after, 2)},
-        ))
+        self._log(
+            AuditEntry(
+                event=AuditEvent.RATE_LIMIT_EXCEEDED,
+                task_id=task_id,
+                agent_url=agent_url,
+                data={"retry_after_sec": round(retry_after, 2)},
+            )
+        )
 
     def workflow_completed(
         self,
@@ -217,15 +233,17 @@ class AuditLogger:
         succeeded: bool,
     ) -> None:
         """Log the completion of an Orchestrator workflow."""
-        self._log(AuditEntry(
-            event=AuditEvent.WORKFLOW_COMPLETED,
-            data={
-                "mode":        mode,
-                "total_sec":   round(total_sec, 4),
-                "steps":       steps,
-                "succeeded":   succeeded,
-            },
-        ))
+        self._log(
+            AuditEntry(
+                event=AuditEvent.WORKFLOW_COMPLETED,
+                data={
+                    "mode": mode,
+                    "total_sec": round(total_sec, 4),
+                    "steps": steps,
+                    "succeeded": succeeded,
+                },
+            )
+        )
 
     def custom(
         self,
@@ -235,12 +253,14 @@ class AuditLogger:
         agent_url: str | None = None,
     ) -> None:
         """Log a custom event with arbitrary data."""
-        self._log(AuditEntry(
-            event=AuditEvent.CUSTOM,
-            task_id=task_id,
-            agent_url=agent_url,
-            data={"custom_event": event_name, **data},
-        ))
+        self._log(
+            AuditEntry(
+                event=AuditEvent.CUSTOM,
+                task_id=task_id,
+                agent_url=agent_url,
+                data={"custom_event": event_name, **data},
+            )
+        )
 
     # ── Inspection ────────────────────────────────────────────────────────────
 

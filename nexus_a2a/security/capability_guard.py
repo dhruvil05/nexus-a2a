@@ -46,24 +46,27 @@ logger = logging.getLogger(__name__)
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
 class CapabilityMismatchError(Exception):
     """
     Raised when a declared capability does not match the implementation.
     """
+
     def __init__(self, agent_name: str, capability: str, reason: str) -> None:
         super().__init__(
             f"Agent '{agent_name}' declares {capability}=True "
             f"but the implementation does not support it: {reason}"
         )
-        self.agent_name  = agent_name
-        self.capability  = capability
-        self.reason      = reason
+        self.agent_name = agent_name
+        self.capability = capability
+        self.reason = reason
 
 
 class CapabilityNotSupportedError(Exception):
     """
     Raised when a client requests a capability the agent does not offer.
     """
+
     def __init__(self, agent_name: str, capability: str) -> None:
         super().__init__(
             f"Agent '{agent_name}' does not support '{capability}'. "
@@ -74,6 +77,7 @@ class CapabilityNotSupportedError(Exception):
 
 
 # ── CapabilityGuard ───────────────────────────────────────────────────────────
+
 
 class CapabilityGuard:
     """
@@ -104,9 +108,7 @@ class CapabilityGuard:
 
     def __init__(self, mode: str = "strict") -> None:
         if mode not in self.MODES:
-            raise ValueError(
-                f"Invalid mode '{mode}'. Choose from: {self.MODES}"
-            )
+            raise ValueError(f"Invalid mode '{mode}'. Choose from: {self.MODES}")
         self._mode = mode
 
     # ── Agent class validation ────────────────────────────────────────────────
@@ -114,7 +116,7 @@ class CapabilityGuard:
     def validate_agent_class(
         self,
         agent_cls: type,
-        card:      AgentCard,
+        card: AgentCard,
     ) -> list[str]:
         """
         Inspect an agent class and verify its declared capabilities.
@@ -173,7 +175,7 @@ class CapabilityGuard:
     def validate_compatibility(
         self,
         caller_wants: dict[str, bool],
-        agent_card:   AgentCard,
+        agent_card: AgentCard,
     ) -> None:
         """
         Verify that what the caller wants matches what the agent offers.
@@ -198,9 +200,7 @@ class CapabilityGuard:
             raise CapabilityNotSupportedError(agent_card.name, "streaming")
 
         if caller_wants.get("push_notifications") and not caps.push_notifications:
-            raise CapabilityNotSupportedError(
-                agent_card.name, "push_notifications"
-            )
+            raise CapabilityNotSupportedError(agent_card.name, "push_notifications")
 
     # ── Quick assertion helpers ───────────────────────────────────────────────
 
@@ -254,9 +254,7 @@ class CapabilityGuard:
             return None
 
         # stream() method check
-        if hasattr(agent_cls, "stream") and callable(
-            agent_cls.stream
-        ):
+        if hasattr(agent_cls, "stream") and callable(agent_cls.stream):
             return None
 
         return (
@@ -300,7 +298,9 @@ class CapabilityGuard:
         if self._mode == "warn":
             logger.warning(
                 "CapabilityGuard [%s]: %s=True but: %s",
-                agent_name, capability, reason,
+                agent_name,
+                capability,
+                reason,
             )
             return
         # strict

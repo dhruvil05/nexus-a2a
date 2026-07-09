@@ -12,16 +12,15 @@ Output modes:
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
 import click
 import httpx
 
 from nexus_a2a.cli.main import NexusContext, pass_ctx
-from nexus_a2a.cli.output import console, print_error, print_warning, render_trace
+from nexus_a2a.cli.output import print_error, print_warning, render_trace
 
 
-async def _fetch_trace_remote(agent_url: str, trace_id: str) -> Optional[dict]:
+async def _fetch_trace_remote(agent_url: str, trace_id: str) -> dict | None:
     """Ask a running agent server for a specific trace via GET /traces/<id>."""
     agent_url = agent_url.rstrip("/")
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -32,7 +31,7 @@ async def _fetch_trace_remote(agent_url: str, trace_id: str) -> Optional[dict]:
         return resp.json()
 
 
-def _try_local_trace_store(trace_id: str) -> Optional[dict]:
+def _try_local_trace_store(trace_id: str) -> dict | None:
     """
     Try to read from an in-process TraceStore if this command is run
     inside the same process (e.g. during testing or embedded use).
@@ -40,6 +39,7 @@ def _try_local_trace_store(trace_id: str) -> Optional[dict]:
     """
     try:
         from nexus_a2a.transport.tracing import TraceStore  # type: ignore
+
         store = TraceStore.instance()  # returns singleton if exists
         raw = store.get(trace_id)
         if raw is None:
@@ -55,13 +55,15 @@ def _trace_to_dict(trace: object) -> dict:
     try:
         hops = []
         for span in getattr(trace, "spans", []):
-            hops.append({
-                "url": getattr(span, "agent_url", "unknown"),
-                "duration_ms": getattr(span, "duration_ms", None),
-                "status": getattr(span, "status", "unknown"),
-                "error": getattr(span, "error", None),
-                "children": [],
-            })
+            hops.append(
+                {
+                    "url": getattr(span, "agent_url", "unknown"),
+                    "duration_ms": getattr(span, "duration_ms", None),
+                    "status": getattr(span, "status", "unknown"),
+                    "error": getattr(span, "error", None),
+                    "children": [],
+                }
+            )
         return {
             "trace_id": getattr(trace, "trace_id", "unknown"),
             "hops": hops,
@@ -80,7 +82,7 @@ def _trace_to_dict(trace: object) -> dict:
     help="Agent URL to query for trace data (e.g. http://localhost:8001).",
 )
 @pass_ctx
-def trace(ctx: NexusContext, task_id: str, agent_url: Optional[str]) -> None:
+def trace(ctx: NexusContext, task_id: str, agent_url: str | None) -> None:
     """Show the distributed call tree for a task.
 
     \b
@@ -89,7 +91,7 @@ def trace(ctx: NexusContext, task_id: str, agent_url: Optional[str]) -> None:
       nexus trace abc-123 --agent http://localhost:8001
       nexus trace abc-123 --format json
     """
-    trace_data: Optional[dict] = None
+    trace_data: dict | None = None
 
     # 1. Try local in-process store first (no HTTP needed)
     trace_data = _try_local_trace_store(task_id)
@@ -105,7 +107,7 @@ def trace(ctx: NexusContext, task_id: str, agent_url: Optional[str]) -> None:
                 trace_data = asyncio.run(_fetch_trace_remote(agent_url, task_id))
             except Exception as e:
                 print_error(f"Could not fetch trace from {agent_url}: {e}")
-                raise SystemExit(1)
+                raise SystemExit(1) from e
 
     if trace_data is None:
         print_warning(

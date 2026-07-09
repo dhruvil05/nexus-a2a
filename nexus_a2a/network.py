@@ -43,6 +43,7 @@ EventHandler = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 # ── EventBus ──────────────────────────────────────────────────────────────────
 
+
 class EventBus:
     """
     Lightweight async pub/sub bus for broadcasting events between agents
@@ -133,15 +134,15 @@ class EventBus:
             try:
                 await handler(event, payload)
             except Exception as exc:
-                logger.error(
-                    "EventBus handler error for event '%s': %s", event, exc
-                )
+                logger.error("EventBus handler error for event '%s': %s", event, exc)
 
         await asyncio.gather(*(_safe_call(h) for h in handlers))
         logger.debug("EventBus: published '%s' to %d handler(s)", event, len(handlers))
         return len(handlers)
 
-    async def publish_nowait(self, event: str, data: dict[str, Any] | None = None) -> None:
+    async def publish_nowait(
+        self, event: str, data: dict[str, Any] | None = None
+    ) -> None:
         """
         Fire-and-forget version of publish().
         Schedules delivery as a background task without awaiting it.
@@ -151,6 +152,7 @@ class EventBus:
 
 
 # ── AgentNetwork ──────────────────────────────────────────────────────────────
+
 
 class AgentNetwork:
     """
@@ -195,18 +197,18 @@ class AgentNetwork:
     """
 
     # Built-in event names published by AgentNetwork
-    EVENT_AGENT_ADDED      = "agent.added"
-    EVENT_AGENT_REMOVED    = "agent.removed"
-    EVENT_TASK_SENT        = "task.sent"
-    EVENT_TASK_COMPLETED   = "task.completed"
-    EVENT_TASK_FAILED      = "task.failed"
-    EVENT_TASK_TIMEOUT     = "task.timeout"       # NEW v1.1
-    EVENT_WORKFLOW_DONE    = "workflow.done"
-    EVENT_CIRCUIT_OPENED   = "circuit.opened"     # NEW v1.1
-    EVENT_DLQ_CAPTURED     = "dlq.captured"       # NEW v1.1
+    EVENT_AGENT_ADDED = "agent.added"
+    EVENT_AGENT_REMOVED = "agent.removed"
+    EVENT_TASK_SENT = "task.sent"
+    EVENT_TASK_COMPLETED = "task.completed"
+    EVENT_TASK_FAILED = "task.failed"
+    EVENT_TASK_TIMEOUT = "task.timeout"  # NEW v1.1
+    EVENT_WORKFLOW_DONE = "workflow.done"
+    EVENT_CIRCUIT_OPENED = "circuit.opened"  # NEW v1.1
+    EVENT_DLQ_CAPTURED = "dlq.captured"  # NEW v1.1
 
     @classmethod
-    def from_config(cls, path: str = "nexus.toml") -> "AgentNetwork":
+    def from_config(cls, path: str = "nexus.toml") -> AgentNetwork:
         """
         Build a fully wired AgentNetwork from a nexus.toml file.
 
@@ -242,7 +244,7 @@ class AgentNetwork:
         store = cfg.build_task_store()
 
         # Build retry + circuit breaker from reliability config
-        retry   = cfg.build_retry_config()
+        retry = cfg.build_retry_config()
         breaker = cfg.build_circuit_breaker()
 
         # Build task manager with timeout watchdog
@@ -270,20 +272,20 @@ class AgentNetwork:
 
     def __init__(
         self,
-        task_manager:    TaskManager | None    = None,
-        bus:             EventBus | None       = None,
-        timeout_sec:     float | None          = None,
-        retry:           RetryConfig | None    = None,
+        task_manager: TaskManager | None = None,
+        bus: EventBus | None = None,
+        timeout_sec: float | None = None,
+        retry: RetryConfig | None = None,
         circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
-        self.registry     = AgentRegistry()
+        self.registry = AgentRegistry()
         self.task_manager = task_manager or TaskManager(
             timeout_sec=timeout_sec,
             on_timeout=self._on_task_timeout,
         )
-        self.bus          = bus or EventBus()
-        self._retry       = retry or RetryConfig()
-        self._cb          = circuit_breaker
+        self.bus = bus or EventBus()
+        self._retry = retry or RetryConfig()
+        self._cb = circuit_breaker
 
         # v1.1: DLQ and InputHandler wired to the network
         self.dead_letter_queue = DeadLetterQueue(
@@ -296,7 +298,7 @@ class AgentNetwork:
         if task_manager is not None and self.task_manager._on_timeout is None:
             self.task_manager._on_timeout = self._on_task_timeout
 
-        self._orchestrator: Orchestrator | None = None   # created lazily
+        self._orchestrator: Orchestrator | None = None  # created lazily
 
     # ── Agent management ──────────────────────────────────────────────────────
 
@@ -309,11 +311,14 @@ class AgentNetwork:
             url: Base URL of the remote A2A server.
         """
         card = await self.registry.register_url(url)
-        await self.bus.publish(self.EVENT_AGENT_ADDED, {
-            "url":    url,
-            "name":  card.name,
-            "skills": card.skill_ids(),
-        })
+        await self.bus.publish(
+            self.EVENT_AGENT_ADDED,
+            {
+                "url": url,
+                "name": card.name,
+                "skills": card.skill_ids(),
+            },
+        )
         logger.info("AgentNetwork: added '%s' at %s", card.name, url)
 
     async def remove(self, url: str) -> None:
@@ -331,10 +336,10 @@ class AgentNetwork:
 
     async def send(
         self,
-        message:    Message,
-        skill_id:   str | None = None,
-        agent_url:  str | None = None,
-        trace_id:   str | None = None,
+        message: Message,
+        skill_id: str | None = None,
+        agent_url: str | None = None,
+        trace_id: str | None = None,
     ) -> Task:
         """
         Send a message to an agent and return the resulting Task.
@@ -351,14 +356,17 @@ class AgentNetwork:
         Returns:
             The Task returned by the remote agent.
         """
-        url      = agent_url or self._resolve_agent(skill_id)
+        url = agent_url or self._resolve_agent(skill_id)
         trace_id = trace_id or Tracer.new_trace_id()
 
-        await self.bus.publish(self.EVENT_TASK_SENT, {
-            "agent_url": url,
-            "skill_id":  skill_id,
-            "trace_id":  trace_id,
-        })
+        await self.bus.publish(
+            self.EVENT_TASK_SENT,
+            {
+                "agent_url": url,
+                "skill_id": skill_id,
+                "trace_id": trace_id,
+            },
+        )
 
         try:
             async with A2AHttpClient(
@@ -369,18 +377,24 @@ class AgentNetwork:
             ) as client:
                 task = await client.send_message(message, skill_id=skill_id)
 
-            await self.bus.publish(self.EVENT_TASK_COMPLETED, {
-                "task_id":  task.id,
-                "trace_id": trace_id,
-            })
+            await self.bus.publish(
+                self.EVENT_TASK_COMPLETED,
+                {
+                    "task_id": task.id,
+                    "trace_id": trace_id,
+                },
+            )
             return task
 
         except Exception as exc:
-            await self.bus.publish(self.EVENT_TASK_FAILED, {
-                "agent_url": url,
-                "error":     str(exc),
-                "trace_id":  trace_id,
-            })
+            await self.bus.publish(
+                self.EVENT_TASK_FAILED,
+                {
+                    "agent_url": url,
+                    "error": str(exc),
+                    "trace_id": trace_id,
+                },
+            )
             raise
 
     # ── Workflow shortcuts ────────────────────────────────────────────────────
@@ -400,11 +414,14 @@ class AgentNetwork:
             initial_message=message,
             skill_ids=skill_ids,
         )
-        await self.bus.publish(self.EVENT_WORKFLOW_DONE, {
-            "mode":    "sequential",
-            "success": result.succeeded,
-            "steps":   len(result.steps),
-        })
+        await self.bus.publish(
+            self.EVENT_WORKFLOW_DONE,
+            {
+                "mode": "sequential",
+                "success": result.succeeded,
+                "steps": len(result.steps),
+            },
+        )
         return result
 
     async def parallel(
@@ -421,11 +438,14 @@ class AgentNetwork:
             message=message,
             skill_ids=skill_ids,
         )
-        await self.bus.publish(self.EVENT_WORKFLOW_DONE, {
-            "mode":    "parallel",
-            "success": result.succeeded,
-            "steps":   len(result.steps),
-        })
+        await self.bus.publish(
+            self.EVENT_WORKFLOW_DONE,
+            {
+                "mode": "parallel",
+                "success": result.succeeded,
+                "steps": len(result.steps),
+            },
+        )
         return result
 
     async def dag(
@@ -440,11 +460,14 @@ class AgentNetwork:
             nodes=nodes,
             initial_message=message,
         )
-        await self.bus.publish(self.EVENT_WORKFLOW_DONE, {
-            "mode":    "dag",
-            "success": result.succeeded,
-            "steps":   len(result.steps),
-        })
+        await self.bus.publish(
+            self.EVENT_WORKFLOW_DONE,
+            {
+                "mode": "dag",
+                "success": result.succeeded,
+                "steps": len(result.steps),
+            },
+        )
         return result
 
     # ── EventBus shortcut ─────────────────────────────────────────────────────
@@ -458,9 +481,11 @@ class AgentNetwork:
             async def handle(event: str, data: dict) -> None:
                 print(data)
         """
+
         def decorator(handler: EventHandler) -> EventHandler:
             self.bus.subscribe(event, handler)
             return handler
+
         return decorator
 
     # ── Health ────────────────────────────────────────────────────────────────
@@ -474,7 +499,7 @@ class AgentNetwork:
         base = self.registry.summary()
         base["dlq"] = {
             "pending": self.dead_letter_queue.pending_count(),
-            "total":   self.dead_letter_queue.count(),
+            "total": self.dead_letter_queue.count(),
         }
         return base
 
@@ -482,10 +507,13 @@ class AgentNetwork:
 
     async def _on_task_timeout(self, task: Task) -> None:
         """Called by TaskManager watchdog when a task times out."""
-        await self.bus.publish(self.EVENT_TASK_TIMEOUT, {
-            "task_id":  task.id,
-            "skill_id": task.skill_id,
-        })
+        await self.bus.publish(
+            self.EVENT_TASK_TIMEOUT,
+            {
+                "task_id": task.id,
+                "skill_id": task.skill_id,
+            },
+        )
         # Capture into DLQ automatically
         await self.dead_letter_queue.capture(
             task,

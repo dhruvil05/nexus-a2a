@@ -70,9 +70,9 @@ class GoogleADKAdapter(BaseAdapter):
         user_id: str = "nexus-a2a-user",
         config: dict[str, Any] | None = None,
     ) -> None:
-        self._app_name        = app_name
+        self._app_name = app_name
         self._session_service = session_service
-        self._user_id         = user_id
+        self._user_id = user_id
         super().__init__(agent=agent, config=config)
 
     def validate(self) -> None:
@@ -100,23 +100,24 @@ class GoogleADKAdapter(BaseAdapter):
 
         try:
             runner, session_id = await self._build_runner(task.id)
-            output_text        = await self._run_agent(runner, session_id, input_text)
+            output_text = await self._run_agent(runner, session_id, input_text)
         except Exception as exc:
             logger.error("GoogleADKAdapter error: %s", exc)
             raise self._wrap_exception(exc) from exc
 
         logger.debug(
             "GoogleADKAdapter: task %s completed output=%r",
-            task.id, output_text[:80],
+            task.id,
+            output_text[:80],
         )
 
         return self.make_result(
             output=output_text,
             artifact_name="adk_result",
             metadata={
-                "framework":  "google_adk",
-                "task_id":    task.id,
-                "app_name":   self._app_name,
+                "framework": "google_adk",
+                "task_id": task.id,
+                "app_name": self._app_name,
                 "session_id": str(task.id),
             },
         )
@@ -128,12 +129,11 @@ class GoogleADKAdapter(BaseAdapter):
             from google.adk.sessions import InMemorySessionService
         except ImportError as exc:
             raise AdapterConfigError(
-                "google-adk is not installed. "
-                "Run: pip install nexus-a2a google-adk"
+                "google-adk is not installed. Run: pip install nexus-a2a google-adk"
             ) from exc
 
         session_svc = self._session_service or InMemorySessionService()
-        session_id  = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
 
         await session_svc.create_session(
             app_name=self._app_name,

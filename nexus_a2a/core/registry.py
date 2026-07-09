@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
+
 @dataclass
 class RegistryEntry:
     """
@@ -44,10 +45,11 @@ class RegistryEntry:
         last_seen_at: Unix timestamp of the last successful contact.
         fetch_at:     Unix timestamp when the card was fetched (for TTL tracking).
     """
-    card:         AgentCard
-    healthy:      bool  = True
+
+    card: AgentCard
+    healthy: bool = True
     last_seen_at: float = field(default_factory=time.monotonic)
-    fetch_at:     float = field(default_factory=time.monotonic)
+    fetch_at: float = field(default_factory=time.monotonic)
 
     def is_stale(self, ttl_seconds: float) -> bool:
         """Return True if the cached card is older than the TTL."""
@@ -55,6 +57,7 @@ class RegistryEntry:
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
+
 
 class AgentRegistry:
     """
@@ -88,11 +91,11 @@ class AgentRegistry:
         card_ttl_seconds: float = 300.0,
         health_check_timeout: float = 5.0,
     ) -> None:
-        self._ttl     = card_ttl_seconds
+        self._ttl = card_ttl_seconds
         self._hc_timeout = health_check_timeout
         # url → RegistryEntry
         self._entries: dict[str, RegistryEntry] = {}
-        self._lock    = asyncio.Lock()
+        self._lock = asyncio.Lock()
 
     # ── Registration ──────────────────────────────────────────────────────────
 
@@ -247,8 +250,7 @@ class AgentRegistry:
             List of URLs that were successfully refreshed.
         """
         stale_urls = [
-            url for url, entry in self._entries.items()
-            if entry.is_stale(self._ttl)
+            url for url, entry in self._entries.items() if entry.is_stale(self._ttl)
         ]
 
         refreshed: list[str] = []
@@ -273,13 +275,13 @@ class AgentRegistry:
         Useful for logging and debugging.
         """
         return {
-            "total":   len(self._entries),
+            "total": len(self._entries),
             "healthy": sum(1 for e in self._entries.values() if e.healthy),
-            "agents":  [
+            "agents": [
                 {
-                    "name":    e.card.name,
-                    "url":     str(e.card.url),
-                    "skills":  e.card.skill_ids(),
+                    "name": e.card.name,
+                    "url": str(e.card.url),
+                    "skills": e.card.skill_ids(),
                     "healthy": e.healthy,
                 }
                 for e in self._entries.values()

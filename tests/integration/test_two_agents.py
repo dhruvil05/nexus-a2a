@@ -23,7 +23,6 @@ VERIFIED API (from real source):
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from nexus_a2a.models.task import Message, TaskState
 from tests.integration.conftest import AgentServer
@@ -91,7 +90,9 @@ async def test_tasks_cancel_returns_cancelled_task(echo_agent: AgentServer) -> N
     assert cancelled.state == TaskState.CANCELLED
 
 
-async def test_two_agents_discoverable(echo_agent: AgentServer, summarizer_agent: AgentServer) -> None:
+async def test_two_agents_discoverable(
+    echo_agent: AgentServer, summarizer_agent: AgentServer
+) -> None:
     """Registry registers both agents; list_all() returns both AgentCards."""
     from nexus_a2a.core.registry import AgentRegistry
 

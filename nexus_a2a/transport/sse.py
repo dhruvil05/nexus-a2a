@@ -35,16 +35,18 @@ logger = logging.getLogger(__name__)
 
 # ── Event types ───────────────────────────────────────────────────────────────
 
+
 class StreamEventType(str, Enum):
     """All SSE event types emitted by an A2A streaming agent."""
-    TASK_CREATED       = "task_created"       # Task object first appears
-    TASK_STATUS        = "task_status"        # State transition (working→completed etc.)
-    ARTIFACT_CHUNK     = "artifact_chunk"     # Partial artifact content
-    ARTIFACT_COMPLETE  = "artifact_complete"  # Full artifact available
-    MESSAGE            = "message"            # Intermediate agent message
-    DONE               = "done"               # Stream closed normally
-    ERROR              = "error"              # Stream closed with error
-    HEARTBEAT          = "heartbeat"          # Keep-alive ping (no payload)
+
+    TASK_CREATED = "task_created"  # Task object first appears
+    TASK_STATUS = "task_status"  # State transition (working→completed etc.)
+    ARTIFACT_CHUNK = "artifact_chunk"  # Partial artifact content
+    ARTIFACT_COMPLETE = "artifact_complete"  # Full artifact available
+    MESSAGE = "message"  # Intermediate agent message
+    DONE = "done"  # Stream closed normally
+    ERROR = "error"  # Stream closed with error
+    HEARTBEAT = "heartbeat"  # Keep-alive ping (no payload)
 
 
 @dataclass
@@ -57,9 +59,10 @@ class StreamEvent:
         data:    Parsed JSON payload (empty dict for heartbeat/done events).
         raw:     The original raw SSE line (useful for debugging).
     """
+
     type: StreamEventType
-    data: dict[str, Any]       = field(default_factory=dict)
-    raw:  str        = ""
+    data: dict[str, Any] = field(default_factory=dict)
+    raw: str = ""
 
     @property
     def is_terminal(self) -> bool:
@@ -81,6 +84,7 @@ class StreamEvent:
 
 
 # ── Client-side: SSEStreamer ──────────────────────────────────────────────────
+
 
 class SSEStreamer:
     """
@@ -109,8 +113,8 @@ class SSEStreamer:
         headers: dict[str, str] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        self._timeout  = timeout
-        self._headers  = headers or {}
+        self._timeout = timeout
+        self._headers = headers or {}
 
     async def stream(
         self,
@@ -132,7 +136,8 @@ class SSEStreamer:
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             async with client.stream(
-                "GET", url,
+                "GET",
+                url,
                 params=params,
                 headers={
                     "Accept": "text/event-stream",
@@ -160,10 +165,10 @@ class SSEStreamer:
         async for line in response.aiter_lines():
             line = line.strip()
             if not line:
-                continue   # blank line = event separator, skip
+                continue  # blank line = event separator, skip
 
             if line.startswith("data:"):
-                raw_data = line[len("data:"):].strip()
+                raw_data = line[len("data:") :].strip()
                 event = self._parse_event(raw_data)
                 if event:
                     yield event
@@ -195,6 +200,7 @@ class SSEStreamer:
 
 
 # ── Server-side: SSEFormatter ─────────────────────────────────────────────────
+
 
 class SSEFormatter:
     """

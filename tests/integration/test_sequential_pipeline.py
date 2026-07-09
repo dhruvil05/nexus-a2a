@@ -30,13 +30,27 @@ from tests.integration.conftest import AgentServer, get_free_port, make_agent_ap
 async def three_agent_pipeline():
     servers = []
     configs = [
-        ("AgentA", "First",  [{"id": "step_a", "name": "Step A", "description": "Step A."}]),
-        ("AgentB", "Second", [{"id": "step_b", "name": "Step B", "description": "Step B."}]),
-        ("AgentC", "Third",  [{"id": "step_c", "name": "Step C", "description": "Step C."}]),
+        (
+            "AgentA",
+            "First",
+            [{"id": "step_a", "name": "Step A", "description": "Step A."}],
+        ),
+        (
+            "AgentB",
+            "Second",
+            [{"id": "step_b", "name": "Step B", "description": "Step B."}],
+        ),
+        (
+            "AgentC",
+            "Third",
+            [{"id": "step_c", "name": "Step C", "description": "Step C."}],
+        ),
     ]
     for name, desc, skills in configs:
         port = get_free_port()
-        server = AgentServer(make_agent_app(name=name, description=desc, skills=skills), port)
+        server = AgentServer(
+            make_agent_app(name=name, description=desc, skills=skills), port
+        )
         await server.start()
         servers.append(server)
     yield servers
@@ -44,14 +58,16 @@ async def three_agent_pipeline():
         await s.stop()
 
 
-async def test_sequential_pipeline_all_complete(three_agent_pipeline: list[AgentServer]) -> None:
+async def test_sequential_pipeline_all_complete(
+    three_agent_pipeline: list[AgentServer],
+) -> None:
     """All 3 sequential steps complete; OrchestratorResult.succeeded is True."""
     from nexus_a2a.core.orchestrator import Orchestrator
     from nexus_a2a.transport.http_client import A2AHttpClient
 
     agent_a, agent_b, agent_c = three_agent_pipeline
 
-    async def runner(url: str, message: Message) -> "Task":
+    async def runner(url: str, message: Message) -> Task:
         async with A2AHttpClient(url) as client:
             return await client.send_message(message)
 
@@ -68,7 +84,9 @@ async def test_sequential_pipeline_all_complete(three_agent_pipeline: list[Agent
         assert step.task.state == TaskState.COMPLETED
 
 
-async def test_sequential_output_chaining(three_agent_pipeline: list[AgentServer]) -> None:
+async def test_sequential_output_chaining(
+    three_agent_pipeline: list[AgentServer],
+) -> None:
     """Each step receives prior step's task output as next input."""
     from nexus_a2a.core.orchestrator import Orchestrator
     from nexus_a2a.transport.http_client import A2AHttpClient
@@ -76,7 +94,7 @@ async def test_sequential_output_chaining(three_agent_pipeline: list[AgentServer
     agent_a, agent_b, agent_c = three_agent_pipeline
     received_texts: list[str] = []
 
-    async def recording_runner(url: str, message: Message) -> "Task":
+    async def recording_runner(url: str, message: Message) -> Task:
         received_texts.append(message.text())
         async with A2AHttpClient(url) as client:
             return await client.send_message(message)
@@ -98,7 +116,7 @@ async def test_sequential_step_timing(three_agent_pipeline: list[AgentServer]) -
 
     agent_a, agent_b, agent_c = three_agent_pipeline
 
-    async def runner(url: str, message: Message) -> "Task":
+    async def runner(url: str, message: Message) -> Task:
         async with A2AHttpClient(url) as client:
             return await client.send_message(message)
 
@@ -112,7 +130,9 @@ async def test_sequential_step_timing(three_agent_pipeline: list[AgentServer]) -
         assert step.duration_sec >= 0
 
 
-async def test_sequential_stops_on_error(three_agent_pipeline: list[AgentServer]) -> None:
+async def test_sequential_stops_on_error(
+    three_agent_pipeline: list[AgentServer],
+) -> None:
     """stop_on_error=True (default) halts at failing step; third agent NOT called."""
     from nexus_a2a.core.orchestrator import Orchestrator
     from nexus_a2a.transport.http_client import A2AHttpClient
@@ -128,7 +148,7 @@ async def test_sequential_stops_on_error(three_agent_pipeline: list[AgentServer]
 
     called_urls: list[str] = []
 
-    async def runner(url: str, message: Message) -> "Task":
+    async def runner(url: str, message: Message) -> Task:
         called_urls.append(url)
         async with A2AHttpClient(url) as client:
             return await client.send_message(message)
@@ -146,14 +166,16 @@ async def test_sequential_stops_on_error(three_agent_pipeline: list[AgentServer]
     assert agent_c.url not in called_urls
 
 
-async def test_sequential_final_output_is_last_task(three_agent_pipeline: list[AgentServer]) -> None:
+async def test_sequential_final_output_is_last_task(
+    three_agent_pipeline: list[AgentServer],
+) -> None:
     """OrchestratorResult.final_output is the last successful Task."""
     from nexus_a2a.core.orchestrator import Orchestrator
     from nexus_a2a.transport.http_client import A2AHttpClient
 
     agent_a, agent_b, agent_c = three_agent_pipeline
 
-    async def runner(url: str, message: Message) -> "Task":
+    async def runner(url: str, message: Message) -> Task:
         async with A2AHttpClient(url) as client:
             return await client.send_message(message)
 
@@ -166,12 +188,14 @@ async def test_sequential_final_output_is_last_task(three_agent_pipeline: list[A
     assert result.final_output.id == result.steps[-1].task.id
 
 
-async def test_parallel_workflow(echo_agent: AgentServer, summarizer_agent: AgentServer) -> None:
+async def test_parallel_workflow(
+    echo_agent: AgentServer, summarizer_agent: AgentServer
+) -> None:
     """parallel() sends same message to both agents; both steps succeed."""
     from nexus_a2a.core.orchestrator import Orchestrator
     from nexus_a2a.transport.http_client import A2AHttpClient
 
-    async def runner(url: str, message: Message) -> "Task":
+    async def runner(url: str, message: Message) -> Task:
         async with A2AHttpClient(url) as client:
             return await client.send_message(message)
 

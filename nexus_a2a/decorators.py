@@ -41,6 +41,7 @@ _AGENT_CARD_ATTR = "__nexus_agent_card__"
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
+
 def _build_skill(raw: dict[str, Any] | AgentSkill) -> AgentSkill:
     """Accept either an AgentSkill instance or a plain dict and return AgentSkill."""
     if isinstance(raw, AgentSkill):
@@ -56,8 +57,10 @@ def _has_async_run(cls: type) -> bool:
 
 # ── Public decorator ──────────────────────────────────────────────────────────
 
+
 @overload
 def agent(cls: C) -> C: ...  # called as @agent (no parentheses)
+
 
 @overload
 def agent(
@@ -70,7 +73,7 @@ def agent(
     streaming: bool = False,
     push_notifications: bool = False,
     auth_scheme: AuthScheme = AuthScheme.NONE,
-) -> Callable[[C], C]: ...   # called as @agent(...) with arguments
+) -> Callable[[C], C]: ...  # called as @agent(...) with arguments
 
 
 def agent(
@@ -121,8 +124,8 @@ def agent(
         resolved_name = name or klass.__name__
         resolved_desc = (
             description
-            or (inspect.getdoc(klass))           # use docstring if available
-            or f"A2A agent: {resolved_name}"     # fallback
+            or (inspect.getdoc(klass))  # use docstring if available
+            or f"A2A agent: {resolved_name}"  # fallback
         )
 
         if not resolved_desc.strip():
@@ -139,9 +142,7 @@ def agent(
             )
 
         # ── Build skills list ─────────────────────────────────────────────────
-        built_skills: list[AgentSkill] = [
-            _build_skill(s) for s in (skills or [])
-        ]
+        built_skills: list[AgentSkill] = [_build_skill(s) for s in (skills or [])]
 
         # ── Build AgentCard ───────────────────────────────────────────────────
         card = AgentCard(
@@ -183,6 +184,7 @@ def agent(
 
 
 # ── Public helper ─────────────────────────────────────────────────────────────
+
 
 def get_card(agent_cls: type) -> AgentCard:
     """

@@ -38,13 +38,15 @@ AgentRunner = Callable[[str, Message], Awaitable[Task]]
 
 # ── Result types ──────────────────────────────────────────────────────────────
 
+
 @dataclass
 class StepResult:
     """Outcome of a single agent call within a workflow."""
-    agent_url:    str
-    task:         Task | None = None
-    error:        str | None  = None
-    duration_sec: float       = 0.0
+
+    agent_url: str
+    task: Task | None = None
+    error: str | None = None
+    duration_sec: float = 0.0
 
     @property
     def succeeded(self) -> bool:
@@ -63,10 +65,11 @@ class OrchestratorResult:
         final_output: The last successful Task produced by the workflow.
                       For parallel runs this is the first completed task.
     """
-    mode:         str
-    steps:        list[StepResult]         = field(default_factory=list)
-    total_sec:    float                    = 0.0
-    final_output: Task | None             = None
+
+    mode: str
+    steps: list[StepResult] = field(default_factory=list)
+    total_sec: float = 0.0
+    final_output: Task | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -79,6 +82,7 @@ class OrchestratorResult:
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
 class OrchestratorError(Exception):
     """Base class for orchestration errors."""
 
@@ -87,9 +91,7 @@ class WorkflowCycleError(OrchestratorError):
     """Raised when a cycle is detected in a DAG workflow."""
 
     def __init__(self, cycle: list[str]) -> None:
-        super().__init__(
-            f"Cycle detected in DAG workflow: {' → '.join(cycle)}"
-        )
+        super().__init__(f"Cycle detected in DAG workflow: {' → '.join(cycle)}")
         self.cycle = cycle
 
 
@@ -99,10 +101,11 @@ class WorkflowStepError(OrchestratorError):
     def __init__(self, agent_url: str, reason: str) -> None:
         super().__init__(f"Step failed for agent '{agent_url}': {reason}")
         self.agent_url = agent_url
-        self.reason    = reason
+        self.reason = reason
 
 
 # ── DAG node ──────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class DAGNode:
@@ -114,12 +117,14 @@ class DAGNode:
         depends_on:   List of agent_urls that must complete before this node runs.
         skill_id:     Optional skill to invoke on this agent.
     """
-    agent_url:  str
+
+    agent_url: str
     depends_on: list[str] = field(default_factory=list)
-    skill_id:   str | None = None
+    skill_id: str | None = None
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
+
 
 class Orchestrator:
     """
@@ -168,7 +173,7 @@ class Orchestrator:
         runner: AgentRunner,
         stop_on_error: bool = True,
     ) -> None:
-        self._runner        = runner
+        self._runner = runner
         self._stop_on_error = stop_on_error
 
     # ── Sequential ────────────────────────────────────────────────────────────
@@ -197,9 +202,9 @@ class Orchestrator:
         if not agent_urls:
             raise OrchestratorError("agent_urls must not be empty.")
 
-        skills   = skill_ids or [None] * len(agent_urls)
-        result   = OrchestratorResult(mode="sequential")
-        message  = initial_message
+        skills = skill_ids or [None] * len(agent_urls)
+        result = OrchestratorResult(mode="sequential")
+        message = initial_message
         wall_start = time.monotonic()
 
         for url, skill in zip(agent_urls, skills, strict=False):
@@ -222,7 +227,9 @@ class Orchestrator:
         result.total_sec = time.monotonic() - wall_start
         logger.info(
             "Sequential workflow done: %d steps, %.2fs, success=%s",
-            len(result.steps), result.total_sec, result.succeeded,
+            len(result.steps),
+            result.total_sec,
+            result.succeeded,
         )
         return result
 
@@ -252,7 +259,7 @@ class Orchestrator:
         if not agent_urls:
             raise OrchestratorError("agent_urls must not be empty.")
 
-        skills     = skill_ids or [None] * len(agent_urls)
+        skills = skill_ids or [None] * len(agent_urls)
         wall_start = time.monotonic()
 
         # Launch all steps concurrently
@@ -278,7 +285,9 @@ class Orchestrator:
 
         logger.info(
             "Parallel workflow done: %d agents, %.2fs, failed=%d",
-            len(steps), result.total_sec, len(result.failed_steps),
+            len(steps),
+            result.total_sec,
+            len(result.failed_steps),
         )
         return result
 
@@ -312,9 +321,9 @@ class Orchestrator:
         node_map = {n.agent_url: n for n in nodes}
         self._detect_cycle(node_map)
 
-        wall_start   = time.monotonic()
-        completed:   dict[str, StepResult] = {}  # url → StepResult
-        result       = OrchestratorResult(mode="dag")
+        wall_start = time.monotonic()
+        completed: dict[str, StepResult] = {}  # url → StepResult
+        result = OrchestratorResult(mode="dag")
 
         # Topological execution: keep looping until all nodes are done
         pending = list(nodes)
@@ -322,7 +331,8 @@ class Orchestrator:
         while pending:
             # Find nodes whose dependencies are all completed successfully
             ready = [
-                n for n in pending
+                n
+                for n in pending
                 if all(
                     dep in completed and completed[dep].succeeded
                     for dep in n.depends_on
@@ -347,12 +357,9 @@ class Orchestrator:
 
             # Run ready nodes concurrently
             step_coros = [
-                self._run_step(n.agent_url, initial_message, n.skill_id)
-                for n in ready
+                self._run_step(n.agent_url, initial_message, n.skill_id) for n in ready
             ]
-            new_steps: list[StepResult] = list(
-                await asyncio.gather(*step_coros)
-            )
+            new_steps: list[StepResult] = list(await asyncio.gather(*step_coros))
 
             for node, step in zip(ready, new_steps, strict=False):
                 completed[node.agent_url] = step
@@ -360,16 +367,20 @@ class Orchestrator:
                 pending.remove(node)
 
                 if not step.succeeded and self._stop_on_error:
-                    logger.warning("DAG step failed at %s: %s", node.agent_url, step.error)
+                    logger.warning(
+                        "DAG step failed at %s: %s", node.agent_url, step.error
+                    )
 
-        result.total_sec    = time.monotonic() - wall_start
+        result.total_sec = time.monotonic() - wall_start
         result.final_output = next(
             (s.task for s in reversed(result.steps) if s.succeeded), None
         )
 
         logger.info(
             "DAG workflow done: %d nodes, %.2fs, success=%s",
-            len(result.steps), result.total_sec, result.succeeded,
+            len(result.steps),
+            result.total_sec,
+            result.succeeded,
         )
         return result
 

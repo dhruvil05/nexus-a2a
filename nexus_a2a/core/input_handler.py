@@ -55,13 +55,13 @@ logger = logging.getLogger(__name__)
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
 class InputTimeoutError(Exception):
     """Raised when wait_for_input() times out before a reply arrives."""
 
     def __init__(self, task_id: str, timeout: float) -> None:
         super().__init__(
-            f"Task '{task_id}' timed out waiting for client input "
-            f"after {timeout:.0f}s."
+            f"Task '{task_id}' timed out waiting for client input after {timeout:.0f}s."
         )
         self.task_id = task_id
         self.timeout = timeout
@@ -79,6 +79,7 @@ class NoInputWaiterError(Exception):
 
 
 # ── InputHandler ──────────────────────────────────────────────────────────────
+
 
 class InputHandler:
     """
@@ -109,7 +110,7 @@ class InputHandler:
     """
 
     def __init__(self, task_manager: TaskManager) -> None:
-        self._manager  = task_manager
+        self._manager = task_manager
         # task_id → (asyncio.Event, Message | None)
         # Event fires when a reply is submitted.
         # Message slot starts None; filled by submit_reply().
@@ -120,7 +121,7 @@ class InputHandler:
     async def wait_for_input(
         self,
         task_id: str,
-        prompt:  Message,
+        prompt: Message,
         timeout: float = 300.0,
     ) -> Message:
         """

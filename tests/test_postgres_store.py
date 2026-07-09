@@ -33,16 +33,15 @@ Coverage:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from nexus_a2a.models.task import Task, TaskState
-from nexus_a2a.storage.postgres_store import PostgresTaskStore, _DEFAULT_TABLE
-
+from nexus_a2a.storage.postgres_store import _DEFAULT_TABLE, PostgresTaskStore
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def make_task(state: TaskState = TaskState.SUBMITTED) -> Task:
     """Create a minimal Task for testing."""
@@ -58,7 +57,9 @@ def make_task(state: TaskState = TaskState.SUBMITTED) -> Task:
 def make_row(task: Task) -> MagicMock:
     """Simulate an asyncpg Record row containing the task's JSON."""
     row = MagicMock()
-    row.__getitem__ = lambda self, key: task.model_dump_json() if key == "data" else None
+    row.__getitem__ = lambda self, key: (
+        task.model_dump_json() if key == "data" else None
+    )
     return row
 
 
@@ -70,19 +71,21 @@ def make_pool(
 ) -> MagicMock:
     """Build a mock asyncpg pool with configurable return values."""
     pool = AsyncMock()
-    pool.execute   = AsyncMock(return_value=execute_result)
-    pool.fetchrow  = AsyncMock(return_value=fetchrow_result)
-    pool.fetch     = AsyncMock(return_value=fetch_result or [])
-    pool.fetchval  = AsyncMock(return_value=fetchval_result)
-    pool.close     = AsyncMock()
+    pool.execute = AsyncMock(return_value=execute_result)
+    pool.fetchrow = AsyncMock(return_value=fetchrow_result)
+    pool.fetch = AsyncMock(return_value=fetch_result or [])
+    pool.fetchval = AsyncMock(return_value=fetchval_result)
+    pool.close = AsyncMock()
 
     # conn context manager for _ensure_schema
     conn = AsyncMock()
     conn.execute = AsyncMock()
-    pool.acquire  = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=conn),
-        __aexit__=AsyncMock(return_value=None),
-    ))
+    pool.acquire = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=conn),
+            __aexit__=AsyncMock(return_value=None),
+        )
+    )
     return pool
 
 
@@ -98,8 +101,8 @@ async def make_connected_store(
 
 # ── __init__ ──────────────────────────────────────────────────────────────────
 
-class TestInit:
 
+class TestInit:
     def test_default_table(self):
         store = PostgresTaskStore(dsn="postgresql://x:x@localhost/db")
         assert store._table == _DEFAULT_TABLE
@@ -133,8 +136,8 @@ class TestInit:
 
 # ── connect() ─────────────────────────────────────────────────────────────────
 
-class TestConnect:
 
+class TestConnect:
     @pytest.mark.asyncio
     async def test_connect_creates_pool(self):
         store = PostgresTaskStore(dsn="postgresql://test@localhost/test")
@@ -204,8 +207,8 @@ class TestConnect:
 
 # ── disconnect() ──────────────────────────────────────────────────────────────
 
-class TestDisconnect:
 
+class TestDisconnect:
     @pytest.mark.asyncio
     async def test_disconnect_closes_pool(self):
         store = await make_connected_store()
@@ -223,18 +226,18 @@ class TestDisconnect:
     async def test_disconnect_twice_is_safe(self):
         store = await make_connected_store()
         await store.disconnect()
-        await store.disconnect()   # should not raise
+        await store.disconnect()  # should not raise
 
     @pytest.mark.asyncio
     async def test_disconnect_without_connect_is_safe(self):
         store = PostgresTaskStore(dsn="...")
-        await store.disconnect()   # should not raise
+        await store.disconnect()  # should not raise
 
 
 # ── Async context manager ─────────────────────────────────────────────────────
 
-class TestContextManager:
 
+class TestContextManager:
     @pytest.mark.asyncio
     async def test_aenter_connects(self):
         store = PostgresTaskStore(dsn="postgresql://test@localhost/test")
@@ -277,8 +280,8 @@ class TestContextManager:
 
 # ── _require_pool() ───────────────────────────────────────────────────────────
 
-class TestRequirePool:
 
+class TestRequirePool:
     @pytest.mark.asyncio
     async def test_save_raises_before_connect(self):
         store = PostgresTaskStore(dsn="...")
@@ -306,19 +309,19 @@ class TestRequirePool:
 
 # ── save() ────────────────────────────────────────────────────────────────────
 
-class TestSave:
 
+class TestSave:
     @pytest.mark.asyncio
     async def test_save_calls_execute(self):
         store = await make_connected_store()
-        task  = make_task()
+        task = make_task()
         await store.save(task)
         store._pool.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_save_passes_correct_params(self):
         store = await make_connected_store()
-        task  = make_task(state=TaskState.WORKING)
+        task = make_task(state=TaskState.WORKING)
         await store.save(task)
 
         call_args = store._pool.execute.call_args
@@ -340,7 +343,7 @@ class TestSave:
     @pytest.mark.asyncio
     async def test_save_uses_model_dump_json(self):
         store = await make_connected_store()
-        task  = make_task()
+        task = make_task()
         await store.save(task)
         sql_params = store._pool.execute.call_args[0]
         # data parameter should be valid JSON containing the task id
@@ -358,12 +361,12 @@ class TestSave:
 
 # ── get() ─────────────────────────────────────────────────────────────────────
 
-class TestGet:
 
+class TestGet:
     @pytest.mark.asyncio
     async def test_get_returns_task_when_found(self):
         task = make_task()
-        row  = make_row(task)
+        row = make_row(task)
         store = await make_connected_store(pool_kwargs={"fetchrow_result": row})
         result = await store.get("task-test-001")
         assert result is not None
@@ -394,17 +397,17 @@ class TestGet:
     @pytest.mark.asyncio
     async def test_get_deserialises_task_correctly(self):
         original = make_task(state=TaskState.COMPLETED)
-        row      = make_row(original)
-        store    = await make_connected_store(pool_kwargs={"fetchrow_result": row})
-        result   = await store.get(original.id)
+        row = make_row(original)
+        store = await make_connected_store(pool_kwargs={"fetchrow_result": row})
+        result = await store.get(original.id)
         assert result.state == TaskState.COMPLETED
         assert result.context_id == original.context_id
 
 
 # ── delete() ──────────────────────────────────────────────────────────────────
 
-class TestDelete:
 
+class TestDelete:
     @pytest.mark.asyncio
     async def test_delete_calls_execute(self):
         store = await make_connected_store()
@@ -428,13 +431,13 @@ class TestDelete:
     @pytest.mark.asyncio
     async def test_delete_nonexistent_does_not_raise(self):
         store = await make_connected_store(pool_kwargs={"execute_result": "DELETE 0"})
-        await store.delete("nonexistent-id")   # should not raise
+        await store.delete("nonexistent-id")  # should not raise
 
 
 # ── list_all() ────────────────────────────────────────────────────────────────
 
-class TestListAll:
 
+class TestListAll:
     @pytest.mark.asyncio
     async def test_list_all_returns_empty_when_no_tasks(self):
         store = await make_connected_store(pool_kwargs={"fetch_result": []})
@@ -444,7 +447,8 @@ class TestListAll:
     @pytest.mark.asyncio
     async def test_list_all_returns_all_tasks(self):
         t1, t2 = make_task(TaskState.SUBMITTED), make_task(TaskState.COMPLETED)
-        t1.id = "task-001"; t2.id = "task-002"
+        t1.id = "task-001"
+        t2.id = "task-002"
         rows = [make_row(t1), make_row(t2)]
         store = await make_connected_store(pool_kwargs={"fetch_result": rows})
         result = await store.list_all()
@@ -477,8 +481,8 @@ class TestListAll:
 
 # ── list_by_state() ───────────────────────────────────────────────────────────
 
-class TestListByState:
 
+class TestListByState:
     @pytest.mark.asyncio
     async def test_list_by_state_passes_state_param(self):
         store = await make_connected_store(pool_kwargs={"fetch_result": []})
@@ -506,8 +510,8 @@ class TestListByState:
 
 # ── list_by_context() ─────────────────────────────────────────────────────────
 
-class TestListByContext:
 
+class TestListByContext:
     @pytest.mark.asyncio
     async def test_list_by_context_passes_context_id(self):
         store = await make_connected_store(pool_kwargs={"fetch_result": []})
@@ -534,8 +538,8 @@ class TestListByContext:
 
 # ── count() / count_by_state() ────────────────────────────────────────────────
 
-class TestCount:
 
+class TestCount:
     @pytest.mark.asyncio
     async def test_count_returns_integer(self):
         store = await make_connected_store(pool_kwargs={"fetchval_result": 5})
@@ -572,8 +576,8 @@ class TestCount:
 
 # ── delete_older_than() ───────────────────────────────────────────────────────
 
-class TestDeleteOlderThan:
 
+class TestDeleteOlderThan:
     @pytest.mark.asyncio
     async def test_delete_older_than_returns_count(self):
         store = await make_connected_store(pool_kwargs={"execute_result": "DELETE 7"})
@@ -597,8 +601,8 @@ class TestDeleteOlderThan:
 
 # ── clear() ───────────────────────────────────────────────────────────────────
 
-class TestClear:
 
+class TestClear:
     @pytest.mark.asyncio
     async def test_clear_uses_truncate(self):
         store = await make_connected_store()
@@ -616,12 +620,12 @@ class TestClear:
 
 # ── _ensure_schema() ──────────────────────────────────────────────────────────
 
-class TestEnsureSchema:
 
+class TestEnsureSchema:
     @pytest.mark.asyncio
     async def test_schema_creates_table(self):
         store = await make_connected_store()
-        conn  = store._pool.acquire().__aenter__.return_value
+        conn = store._pool.acquire().__aenter__.return_value
         await store._ensure_schema()
         sqls = [c[0][0].upper() for c in conn.execute.call_args_list]
         assert any("CREATE TABLE" in sql for sql in sqls)
@@ -629,7 +633,7 @@ class TestEnsureSchema:
     @pytest.mark.asyncio
     async def test_schema_uses_if_not_exists(self):
         store = await make_connected_store()
-        conn  = store._pool.acquire().__aenter__.return_value
+        conn = store._pool.acquire().__aenter__.return_value
         await store._ensure_schema()
         sqls = [c[0][0].upper() for c in conn.execute.call_args_list]
         assert all("IF NOT EXISTS" in sql for sql in sqls)
@@ -637,7 +641,7 @@ class TestEnsureSchema:
     @pytest.mark.asyncio
     async def test_schema_creates_state_index(self):
         store = await make_connected_store()
-        conn  = store._pool.acquire().__aenter__.return_value
+        conn = store._pool.acquire().__aenter__.return_value
         await store._ensure_schema()
         sqls = " ".join(c[0][0] for c in conn.execute.call_args_list)
         assert "state_idx" in sqls
@@ -645,7 +649,7 @@ class TestEnsureSchema:
     @pytest.mark.asyncio
     async def test_schema_creates_context_index(self):
         store = await make_connected_store()
-        conn  = store._pool.acquire().__aenter__.return_value
+        conn = store._pool.acquire().__aenter__.return_value
         await store._ensure_schema()
         sqls = " ".join(c[0][0] for c in conn.execute.call_args_list)
         assert "context_idx" in sqls
@@ -653,7 +657,7 @@ class TestEnsureSchema:
     @pytest.mark.asyncio
     async def test_schema_creates_updated_index(self):
         store = await make_connected_store()
-        conn  = store._pool.acquire().__aenter__.return_value
+        conn = store._pool.acquire().__aenter__.return_value
         await store._ensure_schema()
         sqls = " ".join(c[0][0] for c in conn.execute.call_args_list)
         assert "updated_idx" in sqls
@@ -661,7 +665,7 @@ class TestEnsureSchema:
     @pytest.mark.asyncio
     async def test_schema_uses_custom_table_name(self):
         store = await make_connected_store(table="my_agent_tasks")
-        conn  = store._pool.acquire().__aenter__.return_value
+        conn = store._pool.acquire().__aenter__.return_value
         await store._ensure_schema()
         sqls = " ".join(c[0][0] for c in conn.execute.call_args_list)
         assert "my_agent_tasks" in sqls
@@ -669,7 +673,7 @@ class TestEnsureSchema:
     @pytest.mark.asyncio
     async def test_schema_includes_jsonb_column(self):
         store = await make_connected_store()
-        conn  = store._pool.acquire().__aenter__.return_value
+        conn = store._pool.acquire().__aenter__.return_value
         await store._ensure_schema()
         sqls = " ".join(c[0][0].upper() for c in conn.execute.call_args_list)
         assert "JSONB" in sqls
@@ -677,13 +681,14 @@ class TestEnsureSchema:
     @pytest.mark.asyncio
     async def test_schema_includes_timestamptz_columns(self):
         store = await make_connected_store()
-        conn  = store._pool.acquire().__aenter__.return_value
+        conn = store._pool.acquire().__aenter__.return_value
         await store._ensure_schema()
         sqls = " ".join(c[0][0].upper() for c in conn.execute.call_args_list)
         assert "TIMESTAMPTZ" in sqls
 
 
 # ── Integration marker (skipped unless NEXUS_TEST_PG_DSN is set) ─────────────
+
 
 @pytest.mark.integration
 class TestPostgresIntegration:
@@ -698,12 +703,14 @@ class TestPostgresIntegration:
     @pytest.fixture(autouse=True)
     def skip_without_dsn(self):
         import os
+
         if not os.environ.get("NEXUS_TEST_PG_DSN"):
             pytest.skip("NEXUS_TEST_PG_DSN not set — skipping integration tests")
 
     @pytest.mark.asyncio
     async def test_full_lifecycle(self):
         import os
+
         dsn = os.environ["NEXUS_TEST_PG_DSN"]
         table = "nexus_a2a_tasks_test"
 

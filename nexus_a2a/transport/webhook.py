@@ -40,6 +40,7 @@ _SIGNATURE_HEADER = "X-Nexus-Signature-256"
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
 class WebhookDeliveryError(Exception):
     """Raised after all retry attempts have been exhausted."""
 
@@ -47,12 +48,13 @@ class WebhookDeliveryError(Exception):
         super().__init__(
             f"Webhook delivery to '{url}' failed after {attempts} attempt(s): {last_error}"
         )
-        self.url        = url
-        self.attempts   = attempts
+        self.url = url
+        self.attempts = attempts
         self.last_error = last_error
 
 
 # ── Delivery record ───────────────────────────────────────────────────────────
+
 
 @dataclass
 class DeliveryRecord:
@@ -69,17 +71,19 @@ class DeliveryRecord:
         error:       Error message if all attempts failed.
         sent_at:     Unix timestamp when the first attempt was made.
     """
-    url:         str
-    task_id:     str
-    event:       str
-    attempts:    int   = 0
-    succeeded:   bool  = False
-    status_code: int   = 0
-    error:       str | None = None
-    sent_at:     float = field(default_factory=time.time)
+
+    url: str
+    task_id: str
+    event: str
+    attempts: int = 0
+    succeeded: bool = False
+    status_code: int = 0
+    error: str | None = None
+    sent_at: float = field(default_factory=time.time)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class WebhookConfig:
@@ -93,13 +97,15 @@ class WebhookConfig:
         signing_secret: If set, every payload is signed with HMAC-SHA256 and
                         the signature is placed in X-Nexus-Signature-256.
     """
-    max_retries:    int        = 3
-    base_delay:     float      = 1.0    # seconds; doubles each retry
-    timeout:        float      = 10.0
+
+    max_retries: int = 3
+    base_delay: float = 1.0  # seconds; doubles each retry
+    timeout: float = 10.0
     signing_secret: str | None = None
 
 
 # ── WebhookDispatcher ─────────────────────────────────────────────────────────
+
 
 class WebhookDispatcher:
     """
@@ -159,7 +165,7 @@ class WebhookDispatcher:
             WebhookDeliveryError: If all retry attempts are exhausted.
         """
         payload = self._build_payload(task, event)
-        record  = DeliveryRecord(url=url, task_id=task.id, event=event)
+        record = DeliveryRecord(url=url, task_id=task.id, event=event)
 
         last_error = "unknown error"
 
@@ -177,33 +183,47 @@ class WebhookDispatcher:
                         record.succeeded = True
                         logger.info(
                             "Webhook delivered: url=%s task=%s event=%s attempt=%d",
-                            url, task.id, event, attempt,
+                            url,
+                            task.id,
+                            event,
+                            attempt,
                         )
                         break
 
                     # 4xx — client error, don't retry
                     if 400 <= response.status_code < 500:
-                        last_error = f"HTTP {response.status_code} (client error, not retrying)"
-                        logger.warning("Webhook 4xx: %s → %s", url, response.status_code)
+                        last_error = (
+                            f"HTTP {response.status_code} (client error, not retrying)"
+                        )
+                        logger.warning(
+                            "Webhook 4xx: %s → %s", url, response.status_code
+                        )
                         break
 
                     # 5xx — server error, retry
                     last_error = f"HTTP {response.status_code}"
                     logger.warning(
                         "Webhook attempt %d/%d failed (%s), retrying in %.1fs",
-                        attempt, self._config.max_retries, last_error, delay,
+                        attempt,
+                        self._config.max_retries,
+                        last_error,
+                        delay,
                     )
 
                 except (httpx.ConnectError, httpx.TimeoutException) as exc:
                     last_error = str(exc)
                     logger.warning(
                         "Webhook attempt %d/%d connection error: %s, retrying in %.1fs",
-                        attempt, self._config.max_retries, exc, delay,
+                        attempt,
+                        self._config.max_retries,
+                        exc,
+                        delay,
                     )
 
                 # Wait before next attempt (skip wait on last attempt)
                 if attempt < self._config.max_retries and not record.succeeded:
                     import asyncio
+
                     await asyncio.sleep(delay)
 
         if not record.succeeded:
@@ -255,11 +275,14 @@ class WebhookDispatcher:
         if isinstance(payload, str):
             payload = payload.encode("utf-8")
 
-        expected = "sha256=" + hmac.new(
-            secret.encode("utf-8"),
-            payload,
-            hashlib.sha256,
-        ).hexdigest()
+        expected = (
+            "sha256="
+            + hmac.new(
+                secret.encode("utf-8"),
+                payload,
+                hashlib.sha256,
+            ).hexdigest()
+        )
 
         return hmac.compare_digest(expected, signature)
 
@@ -282,25 +305,28 @@ class WebhookDispatcher:
     def _build_payload(self, task: Task, event: str) -> dict[str, Any]:
         """Build the JSON payload to deliver."""
         return {
-            "event":   event,
+            "event": event,
             "task_id": task.id,
-            "state":   task.state.value,
-            "error":   task.error,
-            "task":    task.model_dump(mode="json"),
+            "state": task.state.value,
+            "error": task.error,
+            "task": task.model_dump(mode="json"),
         }
 
     def _build_headers(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Build request headers, including HMAC signature if configured."""
         headers: dict[str, str] = {
             "Content-Type": "application/json",
-            "User-Agent":   "nexus-a2a-webhook/0.4.0",
+            "User-Agent": "nexus-a2a-webhook/0.4.0",
         }
         if self._config.signing_secret:
-            body      = json.dumps(payload).encode("utf-8")
-            signature = "sha256=" + hmac.new(
-                self._config.signing_secret.encode("utf-8"),
-                body,
-                hashlib.sha256,
-            ).hexdigest()
+            body = json.dumps(payload).encode("utf-8")
+            signature = (
+                "sha256="
+                + hmac.new(
+                    self._config.signing_secret.encode("utf-8"),
+                    body,
+                    hashlib.sha256,
+                ).hexdigest()
+            )
             headers[_SIGNATURE_HEADER] = signature
         return headers

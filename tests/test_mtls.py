@@ -24,8 +24,7 @@ import base64
 import os
 import ssl
 import subprocess
-import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,8 +42,8 @@ from nexus_a2a.security.mtls import (
     verify_peer_certificate,
 )
 
-
 # ── Test fixtures (real certs via openssl) ───────────────────────────────────
+
 
 @pytest.fixture(scope="session")
 def cert_dir(tmp_path_factory) -> Path:
@@ -62,13 +61,13 @@ def cert_dir(tmp_path_factory) -> Path:
     # CA
     run("openssl genrsa -out ca.key 2048")
     run(
-        'openssl req -new -x509 -days 3650 -key ca.key -out ca.crt '
+        "openssl req -new -x509 -days 3650 -key ca.key -out ca.crt "
         '-subj "/C=US/O=NexusTestCA/CN=NexusTestCA"'
     )
     # Agent cert signed by CA
     run("openssl genrsa -out agent.key 2048")
     run(
-        'openssl req -new -key agent.key -out agent.csr '
+        "openssl req -new -key agent.key -out agent.csr "
         '-subj "/C=US/O=NexusTest/CN=agent-a"'
     )
     run(
@@ -80,7 +79,7 @@ def cert_dir(tmp_path_factory) -> Path:
     try:
         run("openssl genrsa -out expired.key 2048")
         run(
-            'openssl req -new -key expired.key -out expired.csr '
+            "openssl req -new -key expired.key -out expired.csr "
             '-subj "/C=US/O=NexusTest/CN=expired-agent"'
         )
         run(
@@ -98,8 +97,8 @@ def cert_dir(tmp_path_factory) -> Path:
 def valid_config(cert_dir: Path) -> MutualTLSConfig:
     return MutualTLSConfig(
         cert_file=cert_dir / "agent.crt",
-        key_file=cert_dir  / "agent.key",
-        ca_file=cert_dir   / "ca.crt",
+        key_file=cert_dir / "agent.key",
+        ca_file=cert_dir / "ca.crt",
     )
 
 
@@ -108,15 +107,15 @@ def pem_config(cert_dir: Path) -> MutualTLSConfig:
     """Config using in-memory PEM bytes instead of file paths."""
     return MutualTLSConfig(
         cert_pem=(cert_dir / "agent.crt").read_bytes(),
-        key_pem=(cert_dir  / "agent.key").read_bytes(),
-        ca_pem=(cert_dir   / "ca.crt").read_bytes(),
+        key_pem=(cert_dir / "agent.key").read_bytes(),
+        ca_pem=(cert_dir / "ca.crt").read_bytes(),
     )
 
 
 # ── Exception hierarchy ───────────────────────────────────────────────────────
 
-class TestExceptions:
 
+class TestExceptions:
     def test_mtls_config_error_is_mtls_error(self):
         exc = MtlsConfigError("bad config")
         assert isinstance(exc, MtlsError)
@@ -144,14 +143,14 @@ class TestExceptions:
 
 # ── CertInfo ──────────────────────────────────────────────────────────────────
 
-class TestCertInfo:
 
+class TestCertInfo:
     def test_str_not_expired(self):
         info = CertInfo(
             subject="CN=agent-a",
             issuer="CN=CA",
-            not_before=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            not_after=datetime(2035, 1, 1, tzinfo=timezone.utc),
+            not_before=datetime(2024, 1, 1, tzinfo=UTC),
+            not_after=datetime(2035, 1, 1, tzinfo=UTC),
             serial="ABCD",
             days_remaining=100,
             is_expired=False,
@@ -164,8 +163,8 @@ class TestCertInfo:
         info = CertInfo(
             subject="CN=old-agent",
             issuer="CN=CA",
-            not_before=datetime(2020, 1, 1, tzinfo=timezone.utc),
-            not_after=datetime(2020, 1, 2, tzinfo=timezone.utc),
+            not_before=datetime(2020, 1, 1, tzinfo=UTC),
+            not_after=datetime(2020, 1, 2, tzinfo=UTC),
             serial="0001",
             days_remaining=-100,
             is_expired=True,
@@ -176,8 +175,8 @@ class TestCertInfo:
         info = CertInfo(
             subject="CN=a",
             issuer="CN=ca",
-            not_before=datetime.now(timezone.utc),
-            not_after=datetime.now(timezone.utc),
+            not_before=datetime.now(UTC),
+            not_after=datetime.now(UTC),
             serial="01",
         )
         assert info.san == []
@@ -185,8 +184,8 @@ class TestCertInfo:
 
 # ── MutualTLSConfig.validate() ────────────────────────────────────────────────
 
-class TestMutualTLSConfigValidate:
 
+class TestMutualTLSConfigValidate:
     def test_valid_file_config_passes(self, valid_config):
         valid_config.validate()  # should not raise
 
@@ -196,7 +195,7 @@ class TestMutualTLSConfigValidate:
     def test_missing_cert_raises(self, cert_dir):
         cfg = MutualTLSConfig(
             key_file=cert_dir / "agent.key",
-            ca_file=cert_dir  / "ca.crt",
+            ca_file=cert_dir / "ca.crt",
         )
         with pytest.raises(MtlsConfigError, match="cert"):
             cfg.validate()
@@ -204,7 +203,7 @@ class TestMutualTLSConfigValidate:
     def test_missing_key_raises(self, cert_dir):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            ca_file=cert_dir   / "ca.crt",
+            ca_file=cert_dir / "ca.crt",
         )
         with pytest.raises(MtlsConfigError, match="key"):
             cfg.validate()
@@ -212,7 +211,7 @@ class TestMutualTLSConfigValidate:
     def test_missing_ca_with_verify_client_raises(self, cert_dir):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            key_file=cert_dir  / "agent.key",
+            key_file=cert_dir / "agent.key",
             verify_client=True,
         )
         with pytest.raises(MtlsConfigError, match="CA"):
@@ -221,7 +220,7 @@ class TestMutualTLSConfigValidate:
     def test_missing_ca_without_verify_client_passes(self, cert_dir):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            key_file=cert_dir  / "agent.key",
+            key_file=cert_dir / "agent.key",
             verify_client=False,
         )
         cfg.validate()  # should not raise — no CA needed when not verifying clients
@@ -229,8 +228,8 @@ class TestMutualTLSConfigValidate:
     def test_nonexistent_cert_file_raises(self, cert_dir):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "nope.crt",
-            key_file=cert_dir  / "agent.key",
-            ca_file=cert_dir   / "ca.crt",
+            key_file=cert_dir / "agent.key",
+            ca_file=cert_dir / "ca.crt",
         )
         with pytest.raises(MtlsConfigError, match="not found"):
             cfg.validate()
@@ -238,8 +237,8 @@ class TestMutualTLSConfigValidate:
     def test_nonexistent_key_file_raises(self, cert_dir):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            key_file=cert_dir  / "nope.key",
-            ca_file=cert_dir   / "ca.crt",
+            key_file=cert_dir / "nope.key",
+            ca_file=cert_dir / "ca.crt",
         )
         with pytest.raises(MtlsConfigError, match="not found"):
             cfg.validate()
@@ -247,8 +246,8 @@ class TestMutualTLSConfigValidate:
     def test_nonexistent_ca_file_raises(self, cert_dir):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            key_file=cert_dir  / "agent.key",
-            ca_file=cert_dir   / "nope.crt",
+            key_file=cert_dir / "agent.key",
+            ca_file=cert_dir / "nope.crt",
         )
         with pytest.raises(MtlsConfigError, match="not found"):
             cfg.validate()
@@ -257,17 +256,17 @@ class TestMutualTLSConfigValidate:
         """If PEM bytes are provided, missing file is irrelevant."""
         cfg = MutualTLSConfig(
             cert_pem=(cert_dir / "agent.crt").read_bytes(),
-            key_pem=(cert_dir  / "agent.key").read_bytes(),
-            ca_pem=(cert_dir   / "ca.crt").read_bytes(),
-            cert_file=None,   # no file needed
+            key_pem=(cert_dir / "agent.key").read_bytes(),
+            ca_pem=(cert_dir / "ca.crt").read_bytes(),
+            cert_file=None,  # no file needed
         )
         cfg.validate()  # should not raise
 
 
 # ── MutualTLSConfig._effective_*() ───────────────────────────────────────────
 
-class TestEffectiveMethods:
 
+class TestEffectiveMethods:
     def test_effective_cert_returns_file_bytes(self, cert_dir):
         cfg = MutualTLSConfig(cert_file=cert_dir / "agent.crt")
         data = cfg._effective_cert()
@@ -308,8 +307,8 @@ class TestEffectiveMethods:
 
 # ── build_client_ssl_context() ────────────────────────────────────────────────
 
-class TestBuildClientSslContext:
 
+class TestBuildClientSslContext:
     def test_returns_ssl_context(self, valid_config):
         ctx = build_client_ssl_context(valid_config)
         assert isinstance(ctx, ssl.SSLContext)
@@ -326,8 +325,8 @@ class TestBuildClientSslContext:
     def test_verify_hostname_false_when_disabled(self, cert_dir):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            key_file=cert_dir  / "agent.key",
-            ca_file=cert_dir   / "ca.crt",
+            key_file=cert_dir / "agent.key",
+            ca_file=cert_dir / "ca.crt",
             verify_hostname=False,
         )
         ctx = build_client_ssl_context(cfg)
@@ -340,7 +339,7 @@ class TestBuildClientSslContext:
     def test_raises_config_error_without_cert(self, cert_dir):
         cfg = MutualTLSConfig(
             key_file=cert_dir / "agent.key",
-            ca_file=cert_dir  / "ca.crt",
+            ca_file=cert_dir / "ca.crt",
         )
         with pytest.raises(MtlsConfigError):
             build_client_ssl_context(cfg)
@@ -349,7 +348,7 @@ class TestBuildClientSslContext:
         """verify_client=False + no CA should still build a context."""
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            key_file=cert_dir  / "agent.key",
+            key_file=cert_dir / "agent.key",
             verify_client=False,
             verify_hostname=False,
         )
@@ -364,8 +363,8 @@ class TestBuildClientSslContext:
 
 # ── build_server_ssl_context() ────────────────────────────────────────────────
 
-class TestBuildServerSslContext:
 
+class TestBuildServerSslContext:
     def test_returns_ssl_context(self, valid_config):
         ctx = build_server_ssl_context(valid_config)
         assert isinstance(ctx, ssl.SSLContext)
@@ -377,7 +376,7 @@ class TestBuildServerSslContext:
     def test_verify_client_false_no_cert_required(self, cert_dir):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            key_file=cert_dir  / "agent.key",
+            key_file=cert_dir / "agent.key",
             verify_client=False,
         )
         ctx = build_server_ssl_context(cfg)
@@ -390,7 +389,7 @@ class TestBuildServerSslContext:
     def test_raises_config_error_without_key(self, cert_dir):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            ca_file=cert_dir   / "ca.crt",
+            ca_file=cert_dir / "ca.crt",
         )
         with pytest.raises(MtlsConfigError):
             build_server_ssl_context(cfg)
@@ -403,28 +402,28 @@ class TestBuildServerSslContext:
 
 # ── from_env() ────────────────────────────────────────────────────────────────
 
-class TestFromEnv:
 
+class TestFromEnv:
     def test_reads_file_paths_from_env(self, cert_dir):
         env = {
             "NEXUS_MTLS_CERT_FILE": str(cert_dir / "agent.crt"),
-            "NEXUS_MTLS_KEY_FILE":  str(cert_dir / "agent.key"),
-            "NEXUS_MTLS_CA_FILE":   str(cert_dir / "ca.crt"),
+            "NEXUS_MTLS_KEY_FILE": str(cert_dir / "agent.key"),
+            "NEXUS_MTLS_CA_FILE": str(cert_dir / "ca.crt"),
         }
         with patch.dict(os.environ, env, clear=False):
             cfg = MutualTLSConfig.from_env()
         assert str(cfg.cert_file) == str(cert_dir / "agent.crt")
-        assert str(cfg.key_file)  == str(cert_dir / "agent.key")
-        assert str(cfg.ca_file)   == str(cert_dir / "ca.crt")
+        assert str(cfg.key_file) == str(cert_dir / "agent.key")
+        assert str(cfg.ca_file) == str(cert_dir / "ca.crt")
 
     def test_reads_pem_bytes_from_env(self, cert_dir):
         cert_b64 = base64.b64encode((cert_dir / "agent.crt").read_bytes()).decode()
-        key_b64  = base64.b64encode((cert_dir / "agent.key").read_bytes()).decode()
-        ca_b64   = base64.b64encode((cert_dir / "ca.crt").read_bytes()).decode()
+        key_b64 = base64.b64encode((cert_dir / "agent.key").read_bytes()).decode()
+        ca_b64 = base64.b64encode((cert_dir / "ca.crt").read_bytes()).decode()
         env = {
             "NEXUS_MTLS_CERT_PEM": cert_b64,
-            "NEXUS_MTLS_KEY_PEM":  key_b64,
-            "NEXUS_MTLS_CA_PEM":   ca_b64,
+            "NEXUS_MTLS_KEY_PEM": key_b64,
+            "NEXUS_MTLS_CA_PEM": ca_b64,
         }
         with patch.dict(os.environ, env, clear=False):
             cfg = MutualTLSConfig.from_env()
@@ -461,12 +460,15 @@ class TestFromEnv:
 
 # ── _parse_cert_dict() ────────────────────────────────────────────────────────
 
-class TestParseCertDict:
 
+class TestParseCertDict:
     def test_parses_subject(self):
         cert_dict = {
-            "subject": ((("commonName", "agent-a"),), (("organizationName", "NexusTest"),)),
-            "issuer":  ((("commonName", "NexusTestCA"),),),
+            "subject": (
+                (("commonName", "agent-a"),),
+                (("organizationName", "NexusTest"),),
+            ),
+            "issuer": ((("commonName", "NexusTestCA"),),),
             "subjectAltName": (),
         }
         subject, issuer, san = _parse_cert_dict(cert_dict)
@@ -476,7 +478,7 @@ class TestParseCertDict:
     def test_parses_issuer(self):
         cert_dict = {
             "subject": ((("commonName", "agent-a"),),),
-            "issuer":  ((("commonName", "MyCA"),),),
+            "issuer": ((("commonName", "MyCA"),),),
             "subjectAltName": (),
         }
         _, issuer, _ = _parse_cert_dict(cert_dict)
@@ -485,7 +487,7 @@ class TestParseCertDict:
     def test_parses_san(self):
         cert_dict = {
             "subject": ((("commonName", "agent-a"),),),
-            "issuer":  ((("commonName", "CA"),),),
+            "issuer": ((("commonName", "CA"),),),
             "subjectAltName": (
                 ("DNS", "agent-a.nexus.local"),
                 ("IP Address", "10.0.0.1"),
@@ -498,13 +500,13 @@ class TestParseCertDict:
     def test_empty_cert_dict_returns_empty_strings(self):
         subject, issuer, san = _parse_cert_dict({})
         assert subject == ""
-        assert issuer  == ""
-        assert san     == []
+        assert issuer == ""
+        assert san == []
 
     def test_empty_san_returns_empty_list(self):
         cert_dict = {
             "subject": ((("commonName", "a"),),),
-            "issuer":  ((("commonName", "ca"),),),
+            "issuer": ((("commonName", "ca"),),),
             "subjectAltName": (),
         }
         _, _, san = _parse_cert_dict(cert_dict)
@@ -513,8 +515,8 @@ class TestParseCertDict:
 
 # ── Integration: build context + verify peer ──────────────────────────────────
 
-class TestIntegration:
 
+class TestIntegration:
     def test_client_and_server_contexts_are_distinct(self, valid_config):
         client_ctx = build_client_ssl_context(valid_config)
         server_ctx = build_server_ssl_context(valid_config)
@@ -524,20 +526,19 @@ class TestIntegration:
     def test_check_expiry_days_zero_skips_warning(self, cert_dir, caplog):
         cfg = MutualTLSConfig(
             cert_file=cert_dir / "agent.crt",
-            key_file=cert_dir  / "agent.key",
-            ca_file=cert_dir   / "ca.crt",
+            key_file=cert_dir / "agent.key",
+            ca_file=cert_dir / "ca.crt",
             check_expiry_days=0,
         )
         import logging
+
         with caplog.at_level(logging.WARNING, logger="nexus_a2a.security.mtls"):
             build_client_ssl_context(cfg)
         assert not any("expires" in r.message for r in caplog.records)
 
     def test_verify_peer_certificate_returns_cert_info(self, cert_dir, valid_config):
         """verify_peer_certificate() should return a CertInfo without raising."""
-        cert_der = ssl.PEM_cert_to_DER_cert(
-            (cert_dir / "agent.crt").read_text()
-        )
+        cert_der = ssl.PEM_cert_to_DER_cert((cert_dir / "agent.crt").read_text())
         info = verify_peer_certificate(valid_config, cert_der)
         assert isinstance(info, CertInfo)
 

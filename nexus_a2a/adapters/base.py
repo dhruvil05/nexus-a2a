@@ -31,6 +31,7 @@ from nexus_a2a.models.task import Artifact, Part, PartType, Task
 
 # ── Result type ───────────────────────────────────────────────────────────────
 
+
 @dataclass
 class AdapterResult:
     """
@@ -44,10 +45,11 @@ class AdapterResult:
                    Stored for observability — not used by the protocol.
         error:     Set if the framework raised an exception.
     """
-    output:   str | None          = None
-    artifact: Artifact | None     = None
-    metadata: dict[str, Any]      = field(default_factory=dict)
-    error:    str | None          = None
+
+    output: str | None = None
+    artifact: Artifact | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -62,14 +64,17 @@ class AdapterResult:
             return self.artifact
         return Artifact(
             name=name,
-            parts=[Part(
-                type=PartType.TEXT,
-                content=self.output or "",
-            )],
+            parts=[
+                Part(
+                    type=PartType.TEXT,
+                    content=self.output or "",
+                )
+            ],
         )
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
+
 
 class AdapterError(Exception):
     """Base class for adapter errors."""
@@ -85,10 +90,11 @@ class AdapterExecutionError(AdapterError):
     def __init__(self, framework: str, reason: str) -> None:
         super().__init__(f"[{framework}] Execution failed: {reason}")
         self.framework = framework
-        self.reason    = reason
+        self.reason = reason
 
 
 # ── BaseAdapter ───────────────────────────────────────────────────────────────
+
 
 class BaseAdapter(ABC):
     """
@@ -123,7 +129,7 @@ class BaseAdapter(ABC):
         agent: Any,
         config: dict[str, Any] | None = None,
     ) -> None:
-        self.agent  = agent
+        self.agent = agent
         self.config = config or {}
         self.validate()
 

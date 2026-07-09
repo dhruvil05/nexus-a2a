@@ -18,8 +18,8 @@ from __future__ import annotations
 import asyncio
 import socket
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import AsyncGenerator
 
 import pytest
 import uvicorn
@@ -92,8 +92,8 @@ def make_agent_app(
     description: str,
     skills: list[dict],
     *,
-    fail_tasks: bool = False,       # returns JSON-RPC ERROR → raises RemoteAgentError
-    fail_as_task: bool = False,     # returns Task with state=failed (for DLQ tests)
+    fail_tasks: bool = False,  # returns JSON-RPC ERROR → raises RemoteAgentError
+    fail_as_task: bool = False,  # returns Task with state=failed (for DLQ tests)
     require_input: bool = False,
     streaming: bool = False,
 ) -> Starlette:
@@ -137,7 +137,9 @@ def make_agent_app(
 
     async def metrics(request: Request) -> PlainTextResponse:
         tasks = await store.all()
-        q = sum(1 for t in tasks if t["state"] not in ("completed", "failed", "cancelled"))
+        q = sum(
+            1 for t in tasks if t["state"] not in ("completed", "failed", "cancelled")
+        )
         return PlainTextResponse(f"nexus_task_queue_depth {q}\nnexus_dlq_pending 0\n")
 
     async def jsonrpc(request: Request) -> JSONResponse:
@@ -149,14 +151,16 @@ def make_agent_app(
         if method == "message/send":
             # fail_tasks → JSON-RPC error (causes RemoteAgentError in client)
             if fail_tasks:
-                return JSONResponse({
-                    "jsonrpc": "2.0",
-                    "id": rpc_id,
-                    "error": {
-                        "code": -32000,
-                        "message": "Agent task failed intentionally.",
-                    },
-                })
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": rpc_id,
+                        "error": {
+                            "code": -32000,
+                            "message": "Agent task failed intentionally.",
+                        },
+                    }
+                )
 
             task_id = str(uuid.uuid4())
 
@@ -186,10 +190,13 @@ def make_agent_app(
             task_id = params.get("taskId") or params.get("id")
             task = await store.get(task_id)
             if task is None:
-                return JSONResponse({
-                    "jsonrpc": "2.0", "id": rpc_id,
-                    "error": {"code": -32001, "message": "Task not found"},
-                })
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": rpc_id,
+                        "error": {"code": -32001, "message": "Task not found"},
+                    }
+                )
             return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": task})
 
         if method == "tasks/cancel":
@@ -199,22 +206,31 @@ def make_agent_app(
                 task = await store.get(task_id)
                 if task:
                     task["state"] = "cancelled"
-                    return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": task})
+                    return JSONResponse(
+                        {"jsonrpc": "2.0", "id": rpc_id, "result": task}
+                    )
             cancelled_task = _make_task_dict(str(uuid.uuid4()), "cancelled", "")
             cancelled_task["state"] = "cancelled"
-            return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": cancelled_task})
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": rpc_id, "result": cancelled_task}
+            )
 
-        return JSONResponse({
-            "jsonrpc": "2.0", "id": rpc_id,
-            "error": {"code": -32601, "message": f"Method not found: {method}"},
-        })
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "error": {"code": -32601, "message": f"Method not found: {method}"},
+            }
+        )
 
-    return Starlette(routes=[
-        Route("/.well-known/agent-card.json", agent_card),
-        Route("/health", health),
-        Route("/metrics", metrics),
-        Route("/", jsonrpc, methods=["POST"]),
-    ])
+    return Starlette(
+        routes=[
+            Route("/.well-known/agent-card.json", agent_card),
+            Route("/health", health),
+            Route("/metrics", metrics),
+            Route("/", jsonrpc, methods=["POST"]),
+        ]
+    )
 
 
 class AgentServer:
@@ -227,8 +243,11 @@ class AgentServer:
 
     async def start(self) -> None:
         config = uvicorn.Config(
-            self.app, host="127.0.0.1", port=self.port,
-            log_level="error", loop="asyncio",
+            self.app,
+            host="127.0.0.1",
+            port=self.port,
+            log_level="error",
+            loop="asyncio",
         )
         self._server = uvicorn.Server(config)
         self._task = asyncio.create_task(self._server.serve())
@@ -240,11 +259,12 @@ class AgentServer:
         if self._task:
             try:
                 await asyncio.wait_for(self._task, timeout=5.0)
-            except (asyncio.TimeoutError, Exception):
+            except (TimeoutError, Exception):
                 pass
 
     async def _wait_ready(self, timeout: float = 5.0) -> None:
         import httpx
+
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
             try:
@@ -258,12 +278,16 @@ class AgentServer:
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 async def echo_agent() -> AsyncGenerator[AgentServer, None]:
     port = get_free_port()
     server = AgentServer(
-        make_agent_app("EchoAgent", "Echoes user input.",
-                       [{"id": "echo", "name": "Echo", "description": "Echo input."}]),
+        make_agent_app(
+            "EchoAgent",
+            "Echoes user input.",
+            [{"id": "echo", "name": "Echo", "description": "Echo input."}],
+        ),
         port,
     )
     await server.start()
@@ -276,9 +300,12 @@ async def failing_agent() -> AsyncGenerator[AgentServer, None]:
     """Returns JSON-RPC error → raises RemoteAgentError in client."""
     port = get_free_port()
     server = AgentServer(
-        make_agent_app("FailAgent", "Always fails (RPC error).",
-                       [{"id": "fail", "name": "Fail", "description": "Fails."}],
-                       fail_tasks=True),
+        make_agent_app(
+            "FailAgent",
+            "Always fails (RPC error).",
+            [{"id": "fail", "name": "Fail", "description": "Fails."}],
+            fail_tasks=True,
+        ),
         port,
     )
     await server.start()
@@ -291,9 +318,12 @@ async def failing_task_agent() -> AsyncGenerator[AgentServer, None]:
     """Returns Task with state=failed (for DLQ tests needing a real Task)."""
     port = get_free_port()
     server = AgentServer(
-        make_agent_app("FailTaskAgent", "Returns failed task.",
-                       [{"id": "fail", "name": "Fail", "description": "Fails."}],
-                       fail_as_task=True),
+        make_agent_app(
+            "FailTaskAgent",
+            "Returns failed task.",
+            [{"id": "fail", "name": "Fail", "description": "Fails."}],
+            fail_as_task=True,
+        ),
         port,
     )
     await server.start()
@@ -305,9 +335,17 @@ async def failing_task_agent() -> AsyncGenerator[AgentServer, None]:
 async def summarizer_agent() -> AsyncGenerator[AgentServer, None]:
     port = get_free_port()
     server = AgentServer(
-        make_agent_app("SummarizerAgent", "Summarizes input.",
-                       [{"id": "summarize", "name": "Summarize",
-                         "description": "Summarizes text."}]),
+        make_agent_app(
+            "SummarizerAgent",
+            "Summarizes input.",
+            [
+                {
+                    "id": "summarize",
+                    "name": "Summarize",
+                    "description": "Summarizes text.",
+                }
+            ],
+        ),
         port,
     )
     await server.start()

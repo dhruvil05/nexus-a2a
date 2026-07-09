@@ -9,33 +9,32 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from nexus_a2a.models.task import Message, Task, TaskState, Part, PartType, Artifact
-from nexus_a2a.models.agent import AgentCard, AgentSkill
+import pytest
+
 from nexus_a2a.core.orchestrator import (
     DAGNode,
     Orchestrator,
-    OrchestratorResult,
-    WorkflowCycleError,
     OrchestratorError,
+    WorkflowCycleError,
 )
+from nexus_a2a.models.agent import AgentCard, AgentSkill
+from nexus_a2a.models.task import Message, Task, TaskState
+from nexus_a2a.network import AgentNetwork, EventBus
 from nexus_a2a.transport.sse import (
     SSEFormatter,
-    SSEStreamer,
     StreamEvent,
     StreamEventType,
 )
 from nexus_a2a.transport.webhook import (
     WebhookConfig,
-    WebhookDispatcher,
     WebhookDeliveryError,
+    WebhookDispatcher,
 )
-from nexus_a2a.network import AgentNetwork, EventBus
-
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
+
 
 def _make_task(state: TaskState = TaskState.COMPLETED) -> Task:
     """Create a task already in a given terminal state for testing."""
@@ -77,6 +76,7 @@ async def _failing_runner(agent_url: str, message: Message) -> Task:
 # ══════════════════════════════════════════════════════════════════════════════
 # Orchestrator — sequential
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestOrchestratorSequential:
     async def test_single_agent_succeeds(self):
@@ -158,6 +158,7 @@ class TestOrchestratorSequential:
 # Orchestrator — parallel
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestOrchestratorParallel:
     async def test_all_agents_run(self):
         called: list[str] = []
@@ -206,6 +207,7 @@ class TestOrchestratorParallel:
 # Orchestrator — DAG
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestOrchestratorDAG:
     async def test_simple_linear_dag(self):
         """A → B → C"""
@@ -241,8 +243,7 @@ class TestOrchestratorDAG:
                 DAGNode("http://a:8001"),
                 DAGNode("http://b:8002", depends_on=["http://a:8001"]),
                 DAGNode("http://c:8003", depends_on=["http://a:8001"]),
-                DAGNode("http://d:8004",
-                        depends_on=["http://b:8002", "http://c:8003"]),
+                DAGNode("http://d:8004", depends_on=["http://b:8002", "http://c:8003"]),
             ],
             initial_message=Message.user_text("start"),
         )
@@ -273,12 +274,13 @@ class TestOrchestratorDAG:
 # SSEFormatter
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSSEFormatter:
     def test_event_format(self):
         line = SSEFormatter.event(StreamEventType.TASK_STATUS, {"state": "working"})
         assert line.startswith("data: ")
         assert line.endswith("\n\n")
-        payload = json.loads(line[len("data: "):].strip())
+        payload = json.loads(line[len("data: ") :].strip())
         assert payload["type"] == "task_status"
         assert payload["state"] == "working"
 
@@ -288,24 +290,24 @@ class TestSSEFormatter:
 
     def test_done_format(self):
         line = SSEFormatter.done()
-        payload = json.loads(line[len("data: "):].strip())
+        payload = json.loads(line[len("data: ") :].strip())
         assert payload["type"] == "done"
 
     def test_error_format(self):
         line = SSEFormatter.error("Something broke")
-        payload = json.loads(line[len("data: "):].strip())
+        payload = json.loads(line[len("data: ") :].strip())
         assert payload["type"] == "error"
         assert payload["message"] == "Something broke"
 
     def test_task_status_shortcut(self):
         line = SSEFormatter.task_status("completed", "task-123")
-        payload = json.loads(line[len("data: "):].strip())
+        payload = json.loads(line[len("data: ") :].strip())
         assert payload["state"] == "completed"
         assert payload["taskId"] == "task-123"
 
     def test_artifact_chunk_shortcut(self):
         line = SSEFormatter.artifact_chunk("partial...", "task-123", index=2)
-        payload = json.loads(line[len("data: "):].strip())
+        payload = json.loads(line[len("data: ") :].strip())
         assert payload["content"] == "partial..."
         assert payload["index"] == 2
 
@@ -347,11 +349,12 @@ class TestStreamEvent:
 # WebhookDispatcher
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestWebhookDispatcher:
     def _make_response(self, status: int) -> MagicMock:
         resp = MagicMock()
         resp.status_code = status
-        resp.is_success  = (200 <= status < 300)
+        resp.is_success = 200 <= status < 300
         return resp
 
     async def test_successful_delivery(self):
@@ -362,19 +365,21 @@ class TestWebhookDispatcher:
             instance = AsyncMock()
             instance.post = AsyncMock(return_value=self._make_response(200))
             instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__  = AsyncMock(return_value=False)
+            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
-            record = await dispatcher.dispatch("http://client/hook", task, "task_completed")
+            record = await dispatcher.dispatch(
+                "http://client/hook", task, "task_completed"
+            )
 
         assert record.succeeded is True
         assert record.attempts == 1
 
     async def test_retries_on_5xx(self):
         task = _make_task()
-        dispatcher = WebhookDispatcher(config=WebhookConfig(
-            max_retries=3, base_delay=0.01
-        ))
+        dispatcher = WebhookDispatcher(
+            config=WebhookConfig(max_retries=3, base_delay=0.01)
+        )
 
         responses = [
             self._make_response(500),
@@ -386,7 +391,7 @@ class TestWebhookDispatcher:
             instance = AsyncMock()
             instance.post = AsyncMock(side_effect=responses)
             instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__  = AsyncMock(return_value=False)
+            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             record = await dispatcher.dispatch("http://client/hook", task)
@@ -402,7 +407,7 @@ class TestWebhookDispatcher:
             instance = AsyncMock()
             instance.post = AsyncMock(return_value=self._make_response(404))
             instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__  = AsyncMock(return_value=False)
+            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             with pytest.raises(WebhookDeliveryError):
@@ -412,16 +417,17 @@ class TestWebhookDispatcher:
 
     async def test_raises_after_all_retries_exhausted(self):
         task = _make_task()
-        dispatcher = WebhookDispatcher(config=WebhookConfig(
-            max_retries=2, base_delay=0.01
-        ))
+        dispatcher = WebhookDispatcher(
+            config=WebhookConfig(max_retries=2, base_delay=0.01)
+        )
 
         import httpx as _httpx
+
         with patch("nexus_a2a.transport.webhook.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
             instance.post = AsyncMock(side_effect=_httpx.ConnectError("refused"))
             instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__  = AsyncMock(return_value=False)
+            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             with pytest.raises(WebhookDeliveryError) as exc_info:
@@ -431,16 +437,17 @@ class TestWebhookDispatcher:
 
     async def test_dispatch_silent_does_not_raise(self):
         task = _make_task()
-        dispatcher = WebhookDispatcher(config=WebhookConfig(
-            max_retries=1, base_delay=0.01
-        ))
+        dispatcher = WebhookDispatcher(
+            config=WebhookConfig(max_retries=1, base_delay=0.01)
+        )
 
         import httpx as _httpx
+
         with patch("nexus_a2a.transport.webhook.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
             instance.post = AsyncMock(side_effect=_httpx.ConnectError("refused"))
             instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__  = AsyncMock(return_value=False)
+            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             record = await dispatcher.dispatch_silent("http://client/hook", task)
@@ -448,14 +455,16 @@ class TestWebhookDispatcher:
         assert record.succeeded is False
 
     def test_signature_verification(self):
-        secret  = "my-secret"
+        secret = "my-secret"
         payload = b'{"event": "task_completed"}'
-        import hmac, hashlib
-        sig = "sha256=" + hmac.new(
-            secret.encode(), payload, hashlib.sha256
-        ).hexdigest()
+        import hashlib
+        import hmac
+
+        sig = "sha256=" + hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
         assert WebhookDispatcher.verify_signature(payload, sig, secret) is True
-        assert WebhookDispatcher.verify_signature(payload, "sha256=wrong", secret) is False
+        assert (
+            WebhookDispatcher.verify_signature(payload, "sha256=wrong", secret) is False
+        )
 
     async def test_delivery_log(self):
         task = _make_task()
@@ -465,7 +474,7 @@ class TestWebhookDispatcher:
             instance = AsyncMock()
             instance.post = AsyncMock(return_value=self._make_response(200))
             instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__  = AsyncMock(return_value=False)
+            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             await dispatcher.dispatch("http://client/hook", task)
@@ -479,9 +488,10 @@ class TestWebhookDispatcher:
 # EventBus
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestEventBus:
     async def test_subscribe_and_publish(self):
-        bus     = EventBus()
+        bus = EventBus()
         results = []
 
         async def handler(event: str, data: dict) -> None:
@@ -494,11 +504,14 @@ class TestEventBus:
         assert results == [("test.event", {"x": 1})]
 
     async def test_multiple_subscribers(self):
-        bus   = EventBus()
+        bus = EventBus()
         calls = []
 
-        async def h1(e, d): calls.append("h1")
-        async def h2(e, d): calls.append("h2")
+        async def h1(e, d):
+            calls.append("h1")
+
+        async def h2(e, d):
+            calls.append("h2")
 
         bus.subscribe("ev", h1)
         bus.subscribe("ev", h2)
@@ -507,15 +520,16 @@ class TestEventBus:
         assert set(calls) == {"h1", "h2"}
 
     async def test_no_subscribers_returns_zero(self):
-        bus   = EventBus()
+        bus = EventBus()
         count = await bus.publish("nothing.here", {})
         assert count == 0
 
     async def test_unsubscribe(self):
-        bus   = EventBus()
+        bus = EventBus()
         calls = []
 
-        async def handler(e, d): calls.append(e)
+        async def handler(e, d):
+            calls.append(e)
 
         bus.subscribe("ev", handler)
         bus.unsubscribe("ev", handler)
@@ -525,8 +539,12 @@ class TestEventBus:
 
     async def test_unsubscribe_all(self):
         bus = EventBus()
-        async def h1(e, d): pass
-        async def h2(e, d): pass
+
+        async def h1(e, d):
+            pass
+
+        async def h2(e, d):
+            pass
 
         bus.subscribe("ev", h1)
         bus.subscribe("ev", h2)
@@ -535,7 +553,7 @@ class TestEventBus:
         assert bus.subscribers("ev") == []
 
     async def test_handler_exception_does_not_affect_others(self):
-        bus   = EventBus()
+        bus = EventBus()
         calls = []
 
         async def bad_handler(e, d):
@@ -555,19 +573,21 @@ class TestEventBus:
 # AgentNetwork
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestAgentNetwork:
     def _patch_registry(self, network: AgentNetwork, card: AgentCard) -> None:
         """Inject a card directly into the registry without network call."""
-        import asyncio
         asyncio.get_event_loop().run_until_complete(
             network.registry.register_card(card)
         )
 
     async def test_add_publishes_event(self):
         network = AgentNetwork()
-        events  = []
+        events = []
 
-        async def on_add(e, d): events.append(d)
+        async def on_add(e, d):
+            events.append(d)
+
         network.bus.subscribe(AgentNetwork.EVENT_AGENT_ADDED, on_add)
 
         card = _make_card()
@@ -575,24 +595,27 @@ class TestAgentNetwork:
             "nexus_a2a.core.registry.A2AHttpClient",
             return_value=AsyncMock(
                 fetch_agent_card=AsyncMock(return_value=card),
-                __aenter__=AsyncMock(return_value=AsyncMock(
-                    fetch_agent_card=AsyncMock(return_value=card)
-                )),
+                __aenter__=AsyncMock(
+                    return_value=AsyncMock(
+                        fetch_agent_card=AsyncMock(return_value=card)
+                    )
+                ),
                 __aexit__=AsyncMock(return_value=False),
             ),
         ):
             # Direct registry registration for simplicity
             await network.registry.register_card(card)
-            await network.bus.publish(AgentNetwork.EVENT_AGENT_ADDED, {
-                "url": str(card.url), "name": card.name, "skills": card.skill_ids()
-            })
+            await network.bus.publish(
+                AgentNetwork.EVENT_AGENT_ADDED,
+                {"url": str(card.url), "name": card.name, "skills": card.skill_ids()},
+            )
 
         assert len(events) == 1
         assert events[0]["name"] == "TestAgent"
 
     async def test_resolve_agent_by_skill(self):
         network = AgentNetwork()
-        card    = _make_card(url="http://agent:8001", skill="search")
+        card = _make_card(url="http://agent:8001", skill="search")
         await network.registry.register_card(card)
 
         url = network._resolve_agent("search")
@@ -605,7 +628,7 @@ class TestAgentNetwork:
 
     async def test_on_decorator(self):
         network = AgentNetwork()
-        calls   = []
+        calls = []
 
         @network.on("custom.event")
         async def handler(e, d):

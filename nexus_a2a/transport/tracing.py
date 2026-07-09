@@ -51,6 +51,7 @@ _trace_ctx: dict[str, str] = {}
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
+
 @dataclass
 class Span:
     """
@@ -66,14 +67,15 @@ class Span:
         error:       Error message if status is "failed".
         metadata:    Any extra key-value pairs (skill_id, task_id, etc.)
     """
-    trace_id:   str
-    span_id:    str               = field(default_factory=lambda: str(uuid.uuid4()))
-    agent_url:  str               = ""
-    started_at: float             = field(default_factory=time.monotonic)
-    ended_at:   float | None      = None
-    status:     str               = "in_progress"
-    error:      str | None        = None
-    metadata:   dict[str, Any]    = field(default_factory=dict)
+
+    trace_id: str
+    span_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    agent_url: str = ""
+    started_at: float = field(default_factory=time.monotonic)
+    ended_at: float | None = None
+    status: str = "in_progress"
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def duration_ms(self) -> float | None:
@@ -84,20 +86,20 @@ class Span:
 
     def set_status(self, status: str, error: str | None = None) -> None:
         """Mark this span as finished with the given status."""
-        self.status   = status
-        self.error    = error
+        self.status = status
+        self.error = error
         self.ended_at = time.monotonic()
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "trace_id":    self.trace_id,
-            "span_id":     self.span_id,
-            "agent_url":   self.agent_url,
-            "started_at":  self.started_at,
-            "ended_at":    self.ended_at,
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
+            "agent_url": self.agent_url,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
             "duration_ms": self.duration_ms,
-            "status":      self.status,
-            "error":       self.error,
+            "status": self.status,
+            "error": self.error,
             **self.metadata,
         }
 
@@ -111,8 +113,9 @@ class Trace:
         trace_id: Unique identifier for this pipeline execution.
         spans:    Ordered list of all agent hops, in start order.
     """
+
     trace_id: str
-    spans:    list[Span] = field(default_factory=list)
+    spans: list[Span] = field(default_factory=list)
 
     def add_span(self, span: Span) -> None:
         self.spans.append(span)
@@ -132,11 +135,11 @@ class Trace:
 
         lines = [f"trace: {self.trace_id}"]
         for i, span in enumerate(self.spans):
-            is_last   = i == len(self.spans) - 1
-            prefix    = "└──" if is_last else "├──"
-            dur       = f"{span.duration_ms:.0f}ms" if span.duration_ms else "..."
-            icon      = "✓" if span.status == "completed" else "✗"
-            err       = f": {span.error}" if span.error else ""
+            is_last = i == len(self.spans) - 1
+            prefix = "└──" if is_last else "├──"
+            dur = f"{span.duration_ms:.0f}ms" if span.duration_ms else "..."
+            icon = "✓" if span.status == "completed" else "✗"
+            err = f": {span.error}" if span.error else ""
             lines.append(
                 f"  {prefix} {span.agent_url:<35} {dur:<8} {icon} {span.status}{err}"
             )
@@ -144,6 +147,7 @@ class Trace:
 
 
 # ── In-memory trace store ─────────────────────────────────────────────────────
+
 
 class TraceStore:
     """
@@ -158,9 +162,9 @@ class TraceStore:
     """
 
     def __init__(self, max_traces: int = 1000) -> None:
-        self._max     = max_traces
+        self._max = max_traces
         self._traces: dict[str, Trace] = {}
-        self._lock    = asyncio.Lock()
+        self._lock = asyncio.Lock()
 
     async def record(self, span: Span) -> None:
         """Add a span to its trace. Creates the trace if it does not exist."""
@@ -191,6 +195,7 @@ default_store = TraceStore()
 
 
 # ── Tracer ────────────────────────────────────────────────────────────────────
+
 
 class Tracer:
     """
@@ -251,10 +256,7 @@ class Tracer:
         Returns:
             The trace ID string, or None if not present.
         """
-        return (
-            headers.get(TRACE_ID_HEADER)
-            or headers.get(TRACE_ID_HEADER.lower())
-        )
+        return headers.get(TRACE_ID_HEADER) or headers.get(TRACE_ID_HEADER.lower())
 
     @staticmethod
     @asynccontextmanager
@@ -285,7 +287,7 @@ class Tracer:
                 span.set_status("completed")
         """
         _store = store or default_store
-        span   = Span(
+        span = Span(
             trace_id=trace_id,
             agent_url=agent_url,
             metadata=metadata or {},
@@ -330,17 +332,15 @@ class Tracer:
         """
         try:
             from opentelemetry import trace as otel_trace  # type: ignore[import]
+
             tracer = otel_trace.get_tracer("nexus-a2a")
             with tracer.start_as_current_span(
                 name=span.agent_url,
                 attributes={
-                    "nexus.trace_id":  span.trace_id,
+                    "nexus.trace_id": span.trace_id,
                     "nexus.agent_url": span.agent_url,
-                    "nexus.status":    span.status,
-                    **(
-                        {"nexus.error": span.error}
-                        if span.error else {}
-                    ),
+                    "nexus.status": span.status,
+                    **({"nexus.error": span.error} if span.error else {}),
                 },
             ):
                 pass  # span already finished; attributes are what matter

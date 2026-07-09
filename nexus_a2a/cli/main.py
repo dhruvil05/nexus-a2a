@@ -20,10 +20,10 @@ from pathlib import Path
 
 import click
 
-from nexus_a2a.cli.output import console, print_error
-
+from nexus_a2a.cli.output import print_error
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
+
 
 def _configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.WARNING
@@ -35,6 +35,7 @@ def _configure_logging(verbose: bool) -> None:
 
 
 # ── Context object shared across all sub-commands ─────────────────────────────
+
 
 class NexusContext:
     def __init__(self, config_path: Path, verbose: bool, fmt: str) -> None:
@@ -51,7 +52,9 @@ class NexusContext:
                 try:
                     import tomli as tomllib  # fallback for older Python
                 except ImportError:
-                    print_error("tomllib not available. Install tomli for Python <3.11.")
+                    print_error(
+                        "tomllib not available. Install tomli for Python <3.11."
+                    )
                     return {}
             with open(self.config_path, "rb") as f:
                 return tomllib.load(f)
@@ -63,6 +66,7 @@ pass_ctx = click.make_pass_decorator(NexusContext, ensure=True)
 
 # ── Root CLI group ────────────────────────────────────────────────────────────
 
+
 @click.group()
 @click.option(
     "--config",
@@ -71,7 +75,9 @@ pass_ctx = click.make_pass_decorator(NexusContext, ensure=True)
     type=click.Path(dir_okay=False),
     help="Path to nexus.toml config file.",
 )
-@click.option("--verbose", "-v", is_flag=True, default=False, help="Enable verbose/debug output.")
+@click.option(
+    "--verbose", "-v", is_flag=True, default=False, help="Enable verbose/debug output."
+)
 @click.option(
     "--format",
     "fmt",
@@ -104,13 +110,14 @@ def cli(ctx: click.Context, config: str, verbose: bool, fmt: str) -> None:
 
 # ── Import and register sub-commands ──────────────────────────────────────────
 
+
 def _register_commands() -> None:
-    from nexus_a2a.cli.commands.ping import ping
     from nexus_a2a.cli.commands.inspect import inspect
-    from nexus_a2a.cli.commands.status import status
-    from nexus_a2a.cli.commands.trace import trace
+    from nexus_a2a.cli.commands.ping import ping
     from nexus_a2a.cli.commands.replay import replay
     from nexus_a2a.cli.commands.run import run
+    from nexus_a2a.cli.commands.status import status
+    from nexus_a2a.cli.commands.trace import trace
 
     cli.add_command(ping)
     cli.add_command(inspect)

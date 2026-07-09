@@ -64,6 +64,7 @@ _ACTIVE_STATES = {TaskState.SUBMITTED, TaskState.WORKING, TaskState.INPUT_REQUIR
 
 # ── GracefulShutdown ──────────────────────────────────────────────────────────
 
+
 class GracefulShutdown:
     """
     SIGTERM/SIGINT drain handler — zero-task-loss shutdown for production.
@@ -91,22 +92,22 @@ class GracefulShutdown:
 
     def __init__(
         self,
-        network:           "AgentNetwork",
-        server:            "AgentServer | None" = None,
-        drain_timeout_sec: float                = 30.0,
-        poll_interval_sec: float                = 0.5,
+        network: AgentNetwork,
+        server: AgentServer | None = None,
+        drain_timeout_sec: float = 30.0,
+        poll_interval_sec: float = 0.5,
     ) -> None:
-        self.network           = network
-        self.server            = server
+        self.network = network
+        self.server = server
         self.drain_timeout_sec = drain_timeout_sec
         self.poll_interval_sec = poll_interval_sec
 
-        self._shutdown_event:   asyncio.Event = asyncio.Event()
-        self._draining:         bool          = False
-        self._drained:          bool          = False
-        self._received_signal:  str | None    = None
-        self._drain_started_at: float | None  = None
-        self._drain_ended_at:   float | None  = None
+        self._shutdown_event: asyncio.Event = asyncio.Event()
+        self._draining: bool = False
+        self._drained: bool = False
+        self._received_signal: str | None = None
+        self._drain_started_at: float | None = None
+        self._drain_ended_at: float | None = None
 
     # ── Properties ────────────────────────────────────────────────────────────
 
@@ -168,14 +169,15 @@ class GracefulShutdown:
         else:
             try:
                 loop.add_signal_handler(signal.SIGTERM, self._trigger, "SIGTERM")
-                loop.add_signal_handler(signal.SIGINT,  self._trigger, "SIGINT")
+                loop.add_signal_handler(signal.SIGINT, self._trigger, "SIGINT")
                 logger.debug("GracefulShutdown: SIGTERM + SIGINT handlers installed.")
             except (NotImplementedError, OSError) as exc:
                 logger.warning(
                     "GracefulShutdown: could not register signal handlers (%s). "
                     "Graceful shutdown via signals will not work in this environment "
                     "(e.g. test runners, Windows Subsystem for Linux). "
-                    "Call drain() manually to shut down.", exc
+                    "Call drain() manually to shut down.",
+                    exc,
                 )
 
     def uninstall(self) -> None:
@@ -268,7 +270,8 @@ class GracefulShutdown:
             remaining = deadline - time.monotonic()
             logger.debug(
                 "GracefulShutdown: %d active task(s) — %.1fs remaining in drain window.",
-                active, remaining,
+                active,
+                remaining,
             )
             await asyncio.sleep(self.poll_interval_sec)
         else:
@@ -276,7 +279,8 @@ class GracefulShutdown:
             cancelled = await self._cancel_active_tasks()
             logger.warning(
                 "GracefulShutdown: drain timeout (%.1fs) — forcefully cancelled %d task(s).",
-                self.drain_timeout_sec, cancelled,
+                self.drain_timeout_sec,
+                cancelled,
             )
 
         # ── Step 2: stop AgentServer ──────────────────────────────────────────
@@ -296,10 +300,13 @@ class GracefulShutdown:
 
         # ── Step 4: publish shutdown event ────────────────────────────────────
         try:
-            await self.network.bus.publish("network.shutdown", {
-                "signal":          self._received_signal,
-                "drain_duration":  time.monotonic() - (self._drain_started_at or 0),
-            })
+            await self.network.bus.publish(
+                "network.shutdown",
+                {
+                    "signal": self._received_signal,
+                    "drain_duration": time.monotonic() - (self._drain_started_at or 0),
+                },
+            )
         except Exception as exc:
             logger.warning("GracefulShutdown: error publishing shutdown event: %s", exc)
 
@@ -314,7 +321,7 @@ class GracefulShutdown:
 
     # ── Async context manager ─────────────────────────────────────────────────
 
-    async def __aenter__(self) -> "GracefulShutdown":
+    async def __aenter__(self) -> GracefulShutdown:
         self.install()
         return self
 
@@ -351,23 +358,30 @@ class GracefulShutdown:
                         cancelled += 1
                         logger.debug(
                             "GracefulShutdown: force-cancelled task %s (was %s).",
-                            task.id, task.state.value,
+                            task.id,
+                            task.state.value,
                         )
                     except Exception as exc:
                         logger.warning(
                             "GracefulShutdown: error cancelling task %s: %s",
-                            task.id, exc,
+                            task.id,
+                            exc,
                         )
         except Exception as exc:
-            logger.warning("GracefulShutdown: error listing tasks for cancellation: %s", exc)
+            logger.warning(
+                "GracefulShutdown: error listing tasks for cancellation: %s", exc
+            )
         return cancelled
 
 
 # ── Context helper ────────────────────────────────────────────────────────────
 
+
 class _ignore_errors:
     """Context manager that silently suppresses all exceptions."""
-    def __enter__(self) -> "_ignore_errors":
+
+    def __enter__(self) -> _ignore_errors:
         return self
+
     def __exit__(self, *_: Any) -> bool:
         return True

@@ -70,11 +70,11 @@ class LangGraphAdapter(BaseAdapter):
     def __init__(
         self,
         agent: Any,
-        input_key:  str = "messages",
+        input_key: str = "messages",
         output_key: str = "messages",
         config: dict[str, Any] | None = None,
     ) -> None:
-        self._input_key  = input_key
+        self._input_key = input_key
         self._output_key = output_key
         self._run_config = config or {}
         # BaseAdapter.__init__ calls validate()
@@ -107,13 +107,12 @@ class LangGraphAdapter(BaseAdapter):
         if not input_text:
             return self.make_error("Task has no message content to process.")
 
-        graph_input = {
-            self._input_key: [{"role": "user", "content": input_text}]
-        }
+        graph_input = {self._input_key: [{"role": "user", "content": input_text}]}
 
         logger.debug(
             "LangGraphAdapter: invoking graph for task %s input=%r",
-            task.id, input_text[:80],
+            task.id,
+            input_text[:80],
         )
 
         try:
@@ -130,16 +129,17 @@ class LangGraphAdapter(BaseAdapter):
 
         logger.debug(
             "LangGraphAdapter: task %s completed, output=%r",
-            task.id, output_text[:80],
+            task.id,
+            output_text[:80],
         )
 
         return self.make_result(
             output=output_text,
             artifact_name="langgraph_result",
             metadata={
-                "framework":  "langgraph",
-                "task_id":    task.id,
-                "input_key":  self._input_key,
+                "framework": "langgraph",
+                "task_id": task.id,
+                "input_key": self._input_key,
                 "output_key": self._output_key,
             },
         )

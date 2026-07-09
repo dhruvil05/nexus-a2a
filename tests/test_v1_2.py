@@ -26,19 +26,12 @@ from unittest.mock import patch
 import pytest
 
 from nexus_a2a.config import (
-    AgentConfig,
     ConfigError,
-    NetworkConfig,
     NexusConfig,
-    ObservabilityConfig,
-    ReliabilityConfig,
-    SecurityConfig,
-    SkillConfig,
-    StorageConfig,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def minimal_raw() -> dict:
     """Minimal valid raw config dict (only required fields)."""
@@ -49,18 +42,18 @@ def full_raw() -> dict:
     """Full raw config dict with all sections populated."""
     return {
         "agent": {
-            "name":        "ResearchAgent",
+            "name": "ResearchAgent",
             "description": "Searches the web.",
-            "version":     "2.0.0",
-            "url":         "http://localhost:8001",
-            "streaming":   False,
+            "version": "2.0.0",
+            "url": "http://localhost:8001",
+            "streaming": False,
             "skills": [
                 {
-                    "id":          "web_search",
-                    "name":        "Web Search",
+                    "id": "web_search",
+                    "name": "Web Search",
                     "description": "Searches the web.",
-                    "tags":        ["search"],
-                    "examples":    ["Search for AI news"],
+                    "tags": ["search"],
+                    "examples": ["Search for AI news"],
                 }
             ],
         },
@@ -68,27 +61,27 @@ def full_raw() -> dict:
             "agents": ["http://agent-a:8001", "http://agent-b:8002"],
         },
         "reliability": {
-            "task_timeout_sec":          60.0,
-            "max_retries":               5,
-            "retry_on":                  [500, 503],
+            "task_timeout_sec": 60.0,
+            "max_retries": 5,
+            "retry_on": [500, 503],
             "circuit_breaker_threshold": 3,
-            "circuit_recovery_sec":      15.0,
-            "base_delay_sec":            0.5,
-            "max_delay_sec":             20.0,
+            "circuit_recovery_sec": 15.0,
+            "base_delay_sec": 0.5,
+            "max_delay_sec": 20.0,
         },
         "security": {
             "auth_scheme": "jwt",
             "auth_secret": "super-secret-key",
-            "trust_mode":  "strict",
+            "trust_mode": "strict",
         },
         "storage": {
             "backend": "memory",
-            "url":     "",
+            "url": "",
             "ttl_sec": 7200,
         },
         "observability": {
-            "tracing":   True,
-            "metrics":   False,
+            "tracing": True,
+            "metrics": False,
             "log_level": "DEBUG",
         },
     }
@@ -96,8 +89,8 @@ def full_raw() -> dict:
 
 # ── NexusConfig.from_dict() — happy paths ─────────────────────────────────────
 
-class TestNexusConfigFromDict:
 
+class TestNexusConfigFromDict:
     def test_minimal_config_uses_defaults(self):
         cfg = NexusConfig.from_dict(minimal_raw())
 
@@ -200,8 +193,8 @@ class TestNexusConfigFromDict:
 
 # ── NexusConfig.from_dict() — validation errors ───────────────────────────────
 
-class TestNexusConfigValidationErrors:
 
+class TestNexusConfigValidationErrors:
     def test_empty_agent_name_raises(self):
         raw = {"agent": {"name": ""}}
         with pytest.raises(ConfigError, match="name"):
@@ -321,8 +314,8 @@ class TestNexusConfigValidationErrors:
 
 # ── NexusConfig.from_file() ───────────────────────────────────────────────────
 
-class TestNexusConfigFromFile:
 
+class TestNexusConfigFromFile:
     def test_loads_valid_toml_file(self, tmp_path: Path):
         toml = textwrap.dedent("""\
             [agent]
@@ -399,8 +392,8 @@ class TestNexusConfigFromFile:
 
 # ── Environment variable overrides ────────────────────────────────────────────
 
-class TestEnvOverrides:
 
+class TestEnvOverrides:
     def test_nexus_agent_name_overrides_toml(self):
         with patch.dict(os.environ, {"NEXUS_AGENT_NAME": "EnvAgent"}):
             cfg = NexusConfig.from_dict(minimal_raw())
@@ -412,19 +405,25 @@ class TestEnvOverrides:
         assert cfg.agent.url == "http://env-host:9999"
 
     def test_nexus_auth_scheme_overrides_toml(self):
-        with patch.dict(os.environ, {
-            "NEXUS_AUTH_SCHEME": "jwt",
-            "NEXUS_AUTH_SECRET": "env-secret",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "NEXUS_AUTH_SCHEME": "jwt",
+                "NEXUS_AUTH_SECRET": "env-secret",
+            },
+        ):
             cfg = NexusConfig.from_dict(minimal_raw())
         assert cfg.security.auth_scheme == "jwt"
         assert cfg.security.auth_secret == "env-secret"
 
     def test_nexus_storage_backend_overrides_toml(self):
-        with patch.dict(os.environ, {
-            "NEXUS_STORAGE_BACKEND": "redis",
-            "NEXUS_STORAGE_URL": "redis://env:6379",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "NEXUS_STORAGE_BACKEND": "redis",
+                "NEXUS_STORAGE_URL": "redis://env:6379",
+            },
+        ):
             cfg = NexusConfig.from_dict(minimal_raw())
         assert cfg.storage.backend == "redis"
         assert cfg.storage.url == "redis://env:6379"
@@ -481,11 +480,12 @@ class TestEnvOverrides:
 
 # ── build_task_store() ────────────────────────────────────────────────────────
 
-class TestBuildTaskStore:
 
+class TestBuildTaskStore:
     def test_memory_backend_returns_in_memory_store(self):
         cfg = NexusConfig.from_dict(minimal_raw())
         from nexus_a2a.storage.task_store import InMemoryTaskStore
+
         store = cfg.build_task_store()
         assert isinstance(store, InMemoryTaskStore)
 
@@ -506,6 +506,7 @@ class TestBuildTaskStore:
 
         try:
             from nexus_a2a.storage.redis_store import RedisTaskStore
+
             store = cfg.build_task_store()
             assert isinstance(store, RedisTaskStore)
         except ImportError:
@@ -514,8 +515,8 @@ class TestBuildTaskStore:
 
 # ── build_retry_config() ──────────────────────────────────────────────────────
 
-class TestBuildRetryConfig:
 
+class TestBuildRetryConfig:
     def test_default_retry_config(self):
         cfg = NexusConfig.from_dict(minimal_raw())
         retry = cfg.build_retry_config()
@@ -541,8 +542,8 @@ class TestBuildRetryConfig:
 
 # ── build_circuit_breaker() ───────────────────────────────────────────────────
 
-class TestBuildCircuitBreaker:
 
+class TestBuildCircuitBreaker:
     def test_default_circuit_breaker(self):
         cfg = NexusConfig.from_dict(minimal_raw())
         cb = cfg.build_circuit_breaker()
@@ -563,8 +564,8 @@ class TestBuildCircuitBreaker:
 
 # ── configure_logging() ───────────────────────────────────────────────────────
 
-class TestConfigureLogging:
 
+class TestConfigureLogging:
     def test_sets_debug_level(self):
         raw = minimal_raw()
         raw["observability"] = {"log_level": "DEBUG"}
@@ -587,8 +588,8 @@ class TestConfigureLogging:
 
 # ── to_dict() secret redaction ────────────────────────────────────────────────
 
-class TestToDict:
 
+class TestToDict:
     def test_secret_is_redacted(self):
         raw = minimal_raw()
         raw["security"] = {"auth_scheme": "jwt", "auth_secret": "my-real-secret"}
@@ -612,14 +613,21 @@ class TestToDict:
     def test_all_top_level_keys_present(self):
         cfg = NexusConfig.from_dict(minimal_raw())
         d = cfg.to_dict()
-        expected_keys = {"agent", "network", "reliability", "security", "storage", "observability"}
+        expected_keys = {
+            "agent",
+            "network",
+            "reliability",
+            "security",
+            "storage",
+            "observability",
+        }
         assert set(d.keys()) == expected_keys
 
 
 # ── AgentNetwork.from_config() ────────────────────────────────────────────────
 
-class TestAgentNetworkFromConfig:
 
+class TestAgentNetworkFromConfig:
     def test_from_config_returns_network(self, tmp_path: Path):
         toml = textwrap.dedent("""\
             [agent]
@@ -630,6 +638,7 @@ class TestAgentNetworkFromConfig:
         p.write_text(toml)
 
         from nexus_a2a.network import AgentNetwork
+
         network = AgentNetwork.from_config(str(p))
         assert isinstance(network, AgentNetwork)
 
@@ -645,6 +654,7 @@ class TestAgentNetworkFromConfig:
         p.write_text(toml)
 
         from nexus_a2a.network import AgentNetwork
+
         network = AgentNetwork.from_config(str(p))
         assert network.task_manager is not None
         assert network.task_manager._timeout_sec == 45.0
@@ -659,6 +669,7 @@ class TestAgentNetworkFromConfig:
         p.write_text(toml)
 
         from nexus_a2a.network import AgentNetwork
+
         network = AgentNetwork.from_config(str(p))
         assert hasattr(network, "_config")
         assert network._config.agent.name == "ConfigAgent"
@@ -667,11 +678,13 @@ class TestAgentNetworkFromConfig:
         p = tmp_path / "bad.toml"
         p.write_text("not = valid = toml")
         from nexus_a2a.network import AgentNetwork
+
         with pytest.raises(ConfigError):
             AgentNetwork.from_config(str(p))
 
     def test_from_config_raises_on_missing_file(self, tmp_path: Path):
         from nexus_a2a.network import AgentNetwork
+
         with pytest.raises(ConfigError, match="not found"):
             AgentNetwork.from_config(str(tmp_path / "ghost.toml"))
 
@@ -688,5 +701,6 @@ class TestAgentNetworkFromConfig:
 
         from nexus_a2a.network import AgentNetwork
         from nexus_a2a.storage.task_store import InMemoryTaskStore
+
         network = AgentNetwork.from_config(str(p))
         assert isinstance(network.task_manager._store, InMemoryTaskStore)

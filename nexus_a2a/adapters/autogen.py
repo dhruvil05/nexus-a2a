@@ -60,7 +60,7 @@ class AutoGenAdapter(BaseAdapter):
         human_input_mode: str = "NEVER",
         config: dict[str, Any] | None = None,
     ) -> None:
-        self._max_turns        = max_turns
+        self._max_turns = max_turns
         self._human_input_mode = human_input_mode
         super().__init__(agent=agent, config=config)
 
@@ -68,7 +68,7 @@ class AutoGenAdapter(BaseAdapter):
         """Assert the agent has a_initiate_chat or initiate_chat."""
         super().validate()
         has_async = hasattr(self.agent, "a_initiate_chat")
-        has_sync  = hasattr(self.agent, "initiate_chat")
+        has_sync = hasattr(self.agent, "initiate_chat")
         if not (has_async or has_sync):
             raise AdapterConfigError(
                 "AutoGenAdapter requires an AutoGen ConversableAgent "
@@ -90,7 +90,7 @@ class AutoGenAdapter(BaseAdapter):
             return self.make_error("Task has no message content to process.")
 
         try:
-            proxy  = self._build_proxy()
+            proxy = self._build_proxy()
             output = await self._run_chat(proxy, input_text)
         except Exception as exc:
             logger.error("AutoGenAdapter error: %s", exc)
@@ -98,16 +98,17 @@ class AutoGenAdapter(BaseAdapter):
 
         logger.debug(
             "AutoGenAdapter: task %s completed output=%r",
-            task.id, output[:80],
+            task.id,
+            output[:80],
         )
 
         return self.make_result(
             output=output,
             artifact_name="autogen_result",
             metadata={
-                "framework":  "autogen",
-                "task_id":    task.id,
-                "max_turns":  self._max_turns,
+                "framework": "autogen",
+                "task_id": task.id,
+                "max_turns": self._max_turns,
             },
         )
 
@@ -117,15 +118,14 @@ class AutoGenAdapter(BaseAdapter):
             import autogen
         except ImportError as exc:
             raise AdapterConfigError(
-                "pyautogen is not installed. "
-                "Run: pip install nexus-a2a pyautogen"
+                "pyautogen is not installed. Run: pip install nexus-a2a pyautogen"
             ) from exc
 
         return autogen.UserProxyAgent(
             name="nexus_proxy",
             human_input_mode=self._human_input_mode,
             max_consecutive_auto_reply=self._max_turns,
-            code_execution_config=False,   # disable code exec for safety
+            code_execution_config=False,  # disable code exec for safety
         )
 
     async def _run_chat(self, proxy: Any, input_text: str) -> str:
@@ -138,6 +138,7 @@ class AutoGenAdapter(BaseAdapter):
             )
         else:
             import asyncio
+
             loop = asyncio.get_event_loop()
             chat_result = await loop.run_in_executor(
                 None,

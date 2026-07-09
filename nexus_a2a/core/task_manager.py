@@ -43,6 +43,7 @@ TimeoutCallback = Callable[[Task], Awaitable[None]]
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
 class TaskNotFoundError(Exception):
     def __init__(self, task_id: str) -> None:
         super().__init__(f"Task '{task_id}' not found in the store.")
@@ -51,24 +52,24 @@ class TaskNotFoundError(Exception):
 
 class TaskAlreadyDoneError(Exception):
     def __init__(self, task_id: str, state: TaskState) -> None:
-        super().__init__(
-            f"Task '{task_id}' is already terminal ('{state.value}')."
-        )
+        super().__init__(f"Task '{task_id}' is already terminal ('{state.value}').")
         self.task_id = task_id
-        self.state   = state
+        self.state = state
 
 
 class TaskTimeoutError(Exception):
     """Raised (or logged) when the watchdog auto-fails a timed-out task."""
+
     def __init__(self, task_id: str, timeout_sec: float) -> None:
         super().__init__(
             f"Task '{task_id}' timed out after {timeout_sec:.0f}s in WORKING state."
         )
-        self.task_id    = task_id
+        self.task_id = task_id
         self.timeout_sec = timeout_sec
 
 
 # ── TaskManager ───────────────────────────────────────────────────────────────
+
 
 class TaskManager:
     """
@@ -102,15 +103,15 @@ class TaskManager:
 
     def __init__(
         self,
-        store:             AbstractTaskStore | None = None,
-        timeout_sec:       float | None             = None,
-        watchdog_interval: float                    = 10.0,
-        on_timeout:        TimeoutCallback | None   = None,
+        store: AbstractTaskStore | None = None,
+        timeout_sec: float | None = None,
+        watchdog_interval: float = 10.0,
+        on_timeout: TimeoutCallback | None = None,
     ) -> None:
-        self._store             = store or InMemoryTaskStore()
-        self._timeout_sec       = timeout_sec
+        self._store = store or InMemoryTaskStore()
+        self._timeout_sec = timeout_sec
         self._watchdog_interval = watchdog_interval
-        self._on_timeout        = on_timeout
+        self._on_timeout = on_timeout
         self._watchdog_task: asyncio.Task | None = None
 
     # ── Async context manager ─────────────────────────────────────────────────
@@ -138,7 +139,8 @@ class TaskManager:
         )
         logger.info(
             "TaskManager watchdog started (timeout=%.0fs, interval=%.0fs)",
-            self._timeout_sec, self._watchdog_interval,
+            self._timeout_sec,
+            self._watchdog_interval,
         )
 
     async def stop_watchdog(self) -> None:
@@ -169,7 +171,8 @@ class TaskManager:
             return
 
         import time
-        now    = time.time()
+
+        now = time.time()
         failed = 0
 
         for task in await self._store.list_all():
@@ -188,15 +191,11 @@ class TaskManager:
                 task.transition(TaskState.FAILED, error=reason)
                 await self._store.save(task)
                 failed += 1
-                logger.warning(
-                    "Watchdog timed out task %s (age=%.0fs)", task.id, age
-                )
+                logger.warning("Watchdog timed out task %s (age=%.0fs)", task.id, age)
                 if self._on_timeout:
                     await self._on_timeout(task)
             except Exception as exc:
-                logger.error(
-                    "Watchdog failed to expire task %s: %s", task.id, exc
-                )
+                logger.error("Watchdog failed to expire task %s: %s", task.id, exc)
 
         if failed:
             logger.info("Watchdog expired %d task(s)", failed)
@@ -206,8 +205,8 @@ class TaskManager:
     async def create(
         self,
         initial_message: Message,
-        skill_id:    str | None = None,
-        context_id:  str | None = None,
+        skill_id: str | None = None,
+        context_id: str | None = None,
     ) -> Task:
         """Create a new Task in SUBMITTED state and persist it."""
         task = Task.create(
@@ -247,9 +246,9 @@ class TaskManager:
 
     async def complete(
         self,
-        task_id:       str,
-        artifact:      Artifact | None = None,
-        reply_message: Message | None  = None,
+        task_id: str,
+        artifact: Artifact | None = None,
+        reply_message: Message | None = None,
     ) -> Task:
         """WORKING → COMPLETED. Optionally attach artifact and reply."""
         task = await self._get_active(task_id)

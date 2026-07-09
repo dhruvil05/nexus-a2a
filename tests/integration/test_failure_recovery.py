@@ -36,9 +36,12 @@ from tests.integration.conftest import AgentServer, get_free_port, make_agent_ap
 async def input_required_agent():
     port = get_free_port()
     server = AgentServer(
-        make_agent_app("InputAgent", "Requires input.",
-                       [{"id": "ask", "name": "Ask", "description": "Asks for input."}],
-                       require_input=True),
+        make_agent_app(
+            "InputAgent",
+            "Requires input.",
+            [{"id": "ask", "name": "Ask", "description": "Asks for input."}],
+            require_input=True,
+        ),
         port,
     )
     await server.start()
@@ -70,7 +73,9 @@ async def test_failed_task_captured_in_dlq(failing_task_agent: AgentServer) -> N
     assert entry.error is not None
 
 
-async def test_dlq_all_entries_returns_captured_tasks(failing_task_agent: AgentServer) -> None:
+async def test_dlq_all_entries_returns_captured_tasks(
+    failing_task_agent: AgentServer,
+) -> None:
     """all_entries() returns list of all DLQEntry objects."""
     from nexus_a2a.core.dead_letter import DeadLetterQueue
     from nexus_a2a.transport.http_client import A2AHttpClient
@@ -175,13 +180,16 @@ async def test_graceful_shutdown_completes_tasks(echo_agent: AgentServer) -> Non
     await echo_agent.stop()
 
     import httpx
-    with pytest.raises((
-        httpx.ConnectError,
-        httpx.ConnectTimeout,
-        httpx.RemoteProtocolError,
-        httpx.ReadError,
-        OSError,
-    )):
+
+    with pytest.raises(
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.RemoteProtocolError,
+            httpx.ReadError,
+            OSError,
+        )
+    ):
         async with httpx.AsyncClient(timeout=3.0) as client:
             await client.get(f"{echo_agent.url}/health")
 

@@ -25,19 +25,26 @@ from nexus_a2a.adapters.base import (
 from nexus_a2a.adapters.crewai import CrewAIAdapter
 from nexus_a2a.adapters.google_adk import GoogleADKAdapter
 from nexus_a2a.adapters.langgraph import LangGraphAdapter
-from nexus_a2a.core.dead_letter import DeadLetterQueue, DLQEntry, ReplayResult
-from nexus_a2a.core.registry import RegistryEntry  
-from nexus_a2a.core.task_manager import TaskTimeoutError  
-from nexus_a2a.security.trust import TrustError  
-from nexus_a2a.security.validator import (  
-    BlankTextPartError,
-    InvalidPartError,
-    PayloadTooLargeError,
-    TooManyPartsError,
+
+# ── v1.2: Config ─────────────────────────────────────────────────────────────
+from nexus_a2a.config import (
+    AgentConfig,
+    ConfigError,
+    NetworkConfig,
+    NexusConfig,
+    ObservabilityConfig,
+    ReliabilityConfig,
+    SecurityConfig,
+    SkillConfig,
+    StorageConfig,
 )
-from nexus_a2a.storage.task_store import AbstractTaskStore  
-from nexus_a2a.transport.http_client import AgentCardFetchError, TransportError  
-from nexus_a2a.transport.webhook import DeliveryRecord  
+
+# ── v1.2: AgentServer ────────────────────────────────────────────────────────
+from nexus_a2a.core.agent_server import AgentServer
+from nexus_a2a.core.dead_letter import DeadLetterQueue, DLQEntry, ReplayResult
+
+# ── v1.2: GracefulShutdown ───────────────────────────────────────────────────
+from nexus_a2a.core.graceful_shutdown import GracefulShutdown
 from nexus_a2a.core.input_handler import (
     InputHandler,
     InputTimeoutError,
@@ -56,11 +63,12 @@ from nexus_a2a.core.orchestrator import (
 )
 
 # ── Phase 2: Core engine ──────────────────────────────────────────────────────
-from nexus_a2a.core.registry import AgentRegistry
+from nexus_a2a.core.registry import AgentRegistry, RegistryEntry
 from nexus_a2a.core.task_manager import (
     TaskAlreadyDoneError,
     TaskManager,
     TaskNotFoundError,
+    TaskTimeoutError,
 )
 from nexus_a2a.decorators import agent, get_card
 
@@ -101,43 +109,6 @@ from nexus_a2a.security.capability_guard import (
     CapabilityMismatchError,
     CapabilityNotSupportedError,
 )
-from nexus_a2a.security.rate_limiter import RateLimitConfig, RateLimiter, RateLimitError
-from nexus_a2a.security.trust import (
-    AgentNotAllowedError,
-    SkillNotAllowedError,
-    TrustBoundary,
-)
-from nexus_a2a.security.validator import PayloadValidator, ValidatorConfig
-from nexus_a2a.storage.audit_logger import AuditEntry, AuditEvent, AuditLogger
-from nexus_a2a.storage.metrics import MetricsCollector, MetricsSnapshot
-from nexus_a2a.storage.redis_store import RedisTaskStore
-from nexus_a2a.storage.task_store import InMemoryTaskStore
-from nexus_a2a.transport.http_client import (
-    A2AHttpClient,
-    AgentUnreachableError,
-    CircuitBreaker,
-    CircuitOpenError,
-    CircuitState,
-    RemoteAgentError,
-    RetryConfig,
-)
-from nexus_a2a.transport.sse import (
-    SSEFormatter,
-    SSEStreamer,
-    StreamEvent,
-    StreamEventType,
-)
-
-# ── v1.1.0: reliability + DX upgrades ────────────────────────────────────────
-from nexus_a2a.transport.tracing import TRACE_ID_HEADER, Span, Trace, Tracer, TraceStore
-from nexus_a2a.transport.webhook import (
-    WebhookConfig,
-    WebhookDeliveryError,
-    WebhookDispatcher,
-)
-
-# ── v1.2: PostgresTaskStore ──────────────────────────────────────────────────
-from nexus_a2a.storage.postgres_store import PostgresTaskStore
 
 # ── v1.2: MutualTLS ──────────────────────────────────────────────────────────
 from nexus_a2a.security.mtls import (
@@ -150,24 +121,53 @@ from nexus_a2a.security.mtls import (
     build_server_ssl_context,
     verify_peer_certificate,
 )
+from nexus_a2a.security.rate_limiter import RateLimitConfig, RateLimiter, RateLimitError
+from nexus_a2a.security.trust import (
+    AgentNotAllowedError,
+    SkillNotAllowedError,
+    TrustBoundary,
+    TrustError,
+)
+from nexus_a2a.security.validator import (
+    BlankTextPartError,
+    InvalidPartError,
+    PayloadTooLargeError,
+    PayloadValidator,
+    TooManyPartsError,
+    ValidatorConfig,
+)
+from nexus_a2a.storage.audit_logger import AuditEntry, AuditEvent, AuditLogger
+from nexus_a2a.storage.metrics import MetricsCollector, MetricsSnapshot
 
-# ── v1.2: GracefulShutdown ───────────────────────────────────────────────────
-from nexus_a2a.core.graceful_shutdown import GracefulShutdown
+# ── v1.2: PostgresTaskStore ──────────────────────────────────────────────────
+from nexus_a2a.storage.postgres_store import PostgresTaskStore
+from nexus_a2a.storage.redis_store import RedisTaskStore
+from nexus_a2a.storage.task_store import AbstractTaskStore, InMemoryTaskStore
+from nexus_a2a.transport.http_client import (
+    A2AHttpClient,
+    AgentCardFetchError,
+    AgentUnreachableError,
+    CircuitBreaker,
+    CircuitOpenError,
+    CircuitState,
+    RemoteAgentError,
+    RetryConfig,
+    TransportError,
+)
+from nexus_a2a.transport.sse import (
+    SSEFormatter,
+    SSEStreamer,
+    StreamEvent,
+    StreamEventType,
+)
 
-# ── v1.2: AgentServer ────────────────────────────────────────────────────────
-from nexus_a2a.core.agent_server import AgentServer
-
-# ── v1.2: Config ─────────────────────────────────────────────────────────────
-from nexus_a2a.config import (
-    AgentConfig,
-    ConfigError,
-    NetworkConfig,
-    NexusConfig,
-    ObservabilityConfig,
-    ReliabilityConfig,
-    SecurityConfig,
-    SkillConfig,
-    StorageConfig,
+# ── v1.1.0: reliability + DX upgrades ────────────────────────────────────────
+from nexus_a2a.transport.tracing import TRACE_ID_HEADER, Span, Trace, Tracer, TraceStore
+from nexus_a2a.transport.webhook import (
+    DeliveryRecord,
+    WebhookConfig,
+    WebhookDeliveryError,
+    WebhookDispatcher,
 )
 
 # ── What gets exported when someone does: from nexus_a2a import * ─────────────

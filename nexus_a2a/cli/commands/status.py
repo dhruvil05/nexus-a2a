@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import click
 import httpx
@@ -57,7 +57,7 @@ async def _probe_agent(client: httpx.AsyncClient, url: str) -> dict:
         except Exception:
             pass  # metrics endpoint is optional
 
-        entry["last_seen"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        entry["last_seen"] = datetime.now(UTC).strftime("%H:%M:%S UTC")
         entry["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
     except Exception as exc:
@@ -83,7 +83,9 @@ def _build_summary(agents: list[dict]) -> dict:
 
 
 @click.command("status")
-@click.option("--network", is_flag=True, default=False, help="Show all agents from nexus.toml.")
+@click.option(
+    "--network", is_flag=True, default=False, help="Show all agents from nexus.toml."
+)
 @click.option(
     "--agents",
     multiple=True,
@@ -106,14 +108,16 @@ def status(ctx: NexusContext, network: bool, agents: tuple[str, ...]) -> None:
         urls = cfg.get("network", {}).get("agents", [])
 
     if not urls:
-        print_warning("No agent URLs found. Use --agents or add [network] agents = [...] to nexus.toml.")
+        print_warning(
+            "No agent URLs found. Use --agents or add [network] agents = [...] to nexus.toml."
+        )
         raise SystemExit(0)
 
     try:
         agent_data = asyncio.run(_probe_all(urls))
     except Exception as e:
         print_error(str(e))
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     summary = _build_summary(agent_data)
     render_status(agent_data, summary, fmt=ctx.fmt)
