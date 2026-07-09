@@ -19,6 +19,7 @@ from nexus_a2a.models.task import Task
 
 # ── Abstract interface ────────────────────────────────────────────────────────
 
+
 class AbstractTaskStore(ABC):
     """
     Interface every TaskStore backend must implement.
@@ -43,6 +44,7 @@ class AbstractTaskStore(ABC):
 
 
 # ── In-memory implementation (Phase 2 default) ───────────────────────────────
+
 
 class InMemoryTaskStore(AbstractTaskStore):
     """

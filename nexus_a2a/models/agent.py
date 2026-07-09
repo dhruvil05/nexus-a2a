@@ -17,29 +17,34 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
+
 class AuthScheme(str, Enum):
     """Supported authentication schemes for agent-to-agent calls."""
-    NONE    = "none"
+
+    NONE = "none"
     API_KEY = "api_key"
-    JWT     = "jwt"
-    OAUTH2  = "oauth2"
+    JWT = "jwt"
+    OAUTH2 = "oauth2"
 
 
 class InputMode(str, Enum):
     """MIME types an agent can accept as input."""
-    TEXT       = "text/plain"
-    JSON       = "application/json"
-    MULTIPART  = "multipart/form-data"
+
+    TEXT = "text/plain"
+    JSON = "application/json"
+    MULTIPART = "multipart/form-data"
 
 
 class OutputMode(str, Enum):
     """MIME types an agent can produce as output."""
-    TEXT       = "text/plain"
-    JSON       = "application/json"
-    MARKDOWN   = "text/markdown"
+
+    TEXT = "text/plain"
+    JSON = "application/json"
+    MARKDOWN = "text/markdown"
 
 
 # ── Sub-models ────────────────────────────────────────────────────────────────
+
 
 class AgentAuthentication(BaseModel):
     """
@@ -48,7 +53,8 @@ class AgentAuthentication(BaseModel):
     Example:
         AgentAuthentication(scheme=AuthScheme.JWT, token_url="https://auth.example.com/token")
     """
-    scheme:    AuthScheme = AuthScheme.NONE
+
+    scheme: AuthScheme = AuthScheme.NONE
     token_url: HttpUrl | None = Field(
         default=None,
         description="URL to obtain a token — required for JWT and OAuth2 schemes.",
@@ -66,7 +72,8 @@ class AgentCapabilities(BaseModel):
     Flags that describe what protocol features this agent supports.
     The client uses these to decide how to interact with the agent.
     """
-    streaming:          bool = Field(
+
+    streaming: bool = Field(
         default=False,
         description="Agent supports Server-Sent Events for real-time task updates.",
     )
@@ -74,7 +81,7 @@ class AgentCapabilities(BaseModel):
         default=False,
         description="Agent can POST task updates to a client-provided webhook URL.",
     )
-    multi_turn:         bool = Field(
+    multi_turn: bool = Field(
         default=True,
         description="Agent supports back-and-forth conversations within a single task.",
     )
@@ -94,14 +101,15 @@ class AgentSkill(BaseModel):
             examples=["Search for latest AI papers", "Find Python docs for asyncio"],
         )
     """
-    id:          Annotated[str, Field(min_length=1, max_length=64)]
-    name:        Annotated[str, Field(min_length=1, max_length=128)]
+
+    id: Annotated[str, Field(min_length=1, max_length=64)]
+    name: Annotated[str, Field(min_length=1, max_length=128)]
     description: Annotated[str, Field(min_length=1, max_length=1024)]
-    tags:        list[str] = Field(
+    tags: list[str] = Field(
         default_factory=list,
         description="Keywords that help agents discover this skill.",
     )
-    examples:    list[str] = Field(
+    examples: list[str] = Field(
         default_factory=list,
         description="Sample inputs that demonstrate this skill.",
     )
@@ -114,6 +122,7 @@ class AgentSkill(BaseModel):
 
 
 # ── Primary model ─────────────────────────────────────────────────────────────
+
 
 class AgentCard(BaseModel):
     """
@@ -137,9 +146,9 @@ class AgentCard(BaseModel):
     """
 
     # Identity
-    name:        Annotated[str, Field(min_length=1, max_length=128)]
+    name: Annotated[str, Field(min_length=1, max_length=128)]
     description: Annotated[str, Field(min_length=1, max_length=1024)]
-    version:     str = Field(
+    version: str = Field(
         default="0.1.0",
         description="Semantic version of this agent. Bump when skills change.",
     )
@@ -150,7 +159,7 @@ class AgentCard(BaseModel):
     )
 
     # Protocol
-    capabilities:  AgentCapabilities   = Field(default_factory=AgentCapabilities)
+    capabilities: AgentCapabilities = Field(default_factory=AgentCapabilities)
     authentication: AgentAuthentication = Field(default_factory=AgentAuthentication)
 
     # Skills
@@ -160,7 +169,7 @@ class AgentCard(BaseModel):
     )
 
     # Communication formats
-    input_modes:  list[InputMode]  = Field(
+    input_modes: list[InputMode] = Field(
         default_factory=lambda: [InputMode.TEXT, InputMode.JSON],
     )
     output_modes: list[OutputMode] = Field(
@@ -184,7 +193,7 @@ class AgentCard(BaseModel):
         """Return a flat list of all advertised skill IDs."""
         return [s.id for s in self.skills]
 
-    def to_well_known_dict(self) -> dict[str, Any] :
+    def to_well_known_dict(self) -> dict[str, Any]:
         """
         Serialise to the dict served at /.well-known/agent-card.json.
         URLs are converted to plain strings so JSON serialisation works.

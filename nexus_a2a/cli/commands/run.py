@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import sys
-from typing import Optional
 
 import click
 
@@ -24,6 +22,7 @@ from nexus_a2a.cli.output import console, print_error, print_warning
 def _extract_host_port(url: str) -> tuple[str, int]:
     """Extract host and port from a URL string like http://localhost:8001."""
     from urllib.parse import urlparse
+
     parsed = urlparse(url)
     host = parsed.hostname or "0.0.0.0"
     port = parsed.port or 8000
@@ -37,7 +36,7 @@ async def _run_server(agent_class: type, host: str, port: int, config: dict) -> 
         from nexus_a2a.network import AgentNetwork  # type: ignore
     except ImportError as e:
         print_error(f"nexus_a2a import failed: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     try:
         network = AgentNetwork.from_config_dict(config)
@@ -47,7 +46,9 @@ async def _run_server(agent_class: type, host: str, port: int, config: dict) -> 
 
     server = AgentServer(network=network, host=host, port=port)
     console.print(f"[bold green]Starting agent on http://{host}:{port}[/bold green]")
-    console.print(f"  Agent card: [cyan]http://{host}:{port}/.well-known/agent-card.json[/cyan]")
+    console.print(
+        f"  Agent card: [cyan]http://{host}:{port}/.well-known/agent-card.json[/cyan]"
+    )
     console.print(f"  Health:     [cyan]http://{host}:{port}/health[/cyan]")
     console.print(f"  Metrics:    [cyan]http://{host}:{port}/metrics[/cyan]")
     console.print("\n[dim]Press CTRL+C to stop.[/dim]\n")
@@ -56,8 +57,19 @@ async def _run_server(agent_class: type, host: str, port: int, config: dict) -> 
 
 
 @click.command("run")
-@click.option("--host", default=None, metavar="HOST", help="Override host (default from nexus.toml url).")
-@click.option("--port", default=None, type=int, metavar="PORT", help="Override port (default from nexus.toml url).")
+@click.option(
+    "--host",
+    default=None,
+    metavar="HOST",
+    help="Override host (default from nexus.toml url).",
+)
+@click.option(
+    "--port",
+    default=None,
+    type=int,
+    metavar="PORT",
+    help="Override port (default from nexus.toml url).",
+)
 @click.option(
     "--module",
     default=None,
@@ -65,7 +77,9 @@ async def _run_server(agent_class: type, host: str, port: int, config: dict) -> 
     help="Python dotted path to agent class, e.g. my_package.agent:MyAgent.",
 )
 @pass_ctx
-def run(ctx: NexusContext, host: Optional[str], port: Optional[int], module: Optional[str]) -> None:
+def run(
+    ctx: NexusContext, host: str | None, port: int | None, module: str | None
+) -> None:
     """Start the agent server defined in nexus.toml.
 
     \b
@@ -91,10 +105,12 @@ def run(ctx: NexusContext, host: Optional[str], port: Optional[int], module: Opt
             agent_class = getattr(mod, cls_name)
         except Exception as e:
             print_error(f"Cannot import '{module}': {e}")
-            raise SystemExit(1)
+            raise SystemExit(1) from e
     else:
         # Try to auto-discover from pyproject.toml or config
-        print_warning("No --module specified. Starting server without a specific agent class.")
+        print_warning(
+            "No --module specified. Starting server without a specific agent class."
+        )
 
     try:
         asyncio.run(_run_server(agent_class, final_host, final_port, cfg))
@@ -102,4 +118,4 @@ def run(ctx: NexusContext, host: Optional[str], port: Optional[int], module: Opt
         console.print("\n[dim]Shutting down...[/dim]")
     except Exception as e:
         print_error(str(e))
-        raise SystemExit(1)
+        raise SystemExit(1) from e

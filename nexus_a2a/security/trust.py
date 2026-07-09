@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
 class TrustError(Exception):
     """Base class for all trust boundary errors."""
 
@@ -36,9 +37,7 @@ class AgentNotAllowedError(TrustError):
     """Raised when a caller agent is not permitted to reach a target agent."""
 
     def __init__(self, caller_url: str, target_url: str) -> None:
-        super().__init__(
-            f"Agent '{caller_url}' is not allowed to call '{target_url}'."
-        )
+        super().__init__(f"Agent '{caller_url}' is not allowed to call '{target_url}'.")
         self.caller_url = caller_url
         self.target_url = target_url
 
@@ -55,6 +54,7 @@ class SkillNotAllowedError(TrustError):
 
 
 # ── TrustBoundary ─────────────────────────────────────────────────────────────
+
 
 class TrustBoundary:
     """
@@ -144,17 +144,19 @@ class TrustBoundary:
         # Register the skill ACL
         caller_acl = self._skill_acl.setdefault(caller, {})
         if skills is None:
-            caller_acl[target] = None        # None = unrestricted
+            caller_acl[target] = None  # None = unrestricted
         else:
             existing = caller_acl.get(target)
             if existing is None:
-                caller_acl[target] = set(skills)   # first-time restricted
+                caller_acl[target] = set(skills)  # first-time restricted
             else:
-                existing.update(skills)             # merge with existing
+                existing.update(skills)  # merge with existing
 
         logger.debug(
             "Trust rule: %s → %s  skills=%s",
-            caller, target, skills or "all",
+            caller,
+            target,
+            skills or "all",
         )
 
     def block(self, url: str) -> None:
@@ -259,10 +261,10 @@ class TrustBoundary:
         """Return a human-readable summary of the trust configuration."""
         return {
             "default_allow": self._default_allow,
-            "blocked":       list(self._blocked),
-            "rules":         [
+            "blocked": list(self._blocked),
+            "rules": [
                 {
-                    "caller":  caller,
+                    "caller": caller,
                     "targets": list(targets),
                 }
                 for caller, targets in self._allow_rules.items()
@@ -308,6 +310,9 @@ class TrustBoundary:
                     )
                     if target_matches:
                         # None means all skills allowed
-                        if allowed_skills is not None and skill_id not in allowed_skills:
+                        if (
+                            allowed_skills is not None
+                            and skill_id not in allowed_skills
+                        ):
                             raise SkillNotAllowedError(caller_url, skill_id)
                         return

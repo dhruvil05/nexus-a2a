@@ -31,11 +31,12 @@ from nexus_a2a.models.task import Message, Part, PartType
 logger = logging.getLogger(__name__)
 
 # Sensible production defaults
-_DEFAULT_MAX_BYTES = 1 * 1024 * 1024   # 1 MB
+_DEFAULT_MAX_BYTES = 1 * 1024 * 1024  # 1 MB
 _DEFAULT_MAX_PARTS = 20
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
+
 
 class ValidationError_(Exception):
     """Base class for all payload validation errors."""
@@ -48,7 +49,7 @@ class PayloadTooLargeError(ValidationError_):
         super().__init__(
             f"Payload size {size:,} bytes exceeds the limit of {limit:,} bytes."
         )
-        self.size  = size
+        self.size = size
         self.limit = limit
 
 
@@ -56,9 +57,7 @@ class TooManyPartsError(ValidationError_):
     """Raised when a message contains more parts than allowed."""
 
     def __init__(self, count: int, limit: int) -> None:
-        super().__init__(
-            f"Message has {count} parts, exceeding the limit of {limit}."
-        )
+        super().__init__(f"Message has {count} parts, exceeding the limit of {limit}.")
         self.count = count
         self.limit = limit
 
@@ -68,7 +67,7 @@ class InvalidPartError(ValidationError_):
 
     def __init__(self, index: int, reason: str) -> None:
         super().__init__(f"Part at index {index} is invalid: {reason}")
-        self.index  = index
+        self.index = index
         self.reason = reason
 
 
@@ -84,6 +83,7 @@ class BlankTextPartError(ValidationError_):
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ValidatorConfig:
     """
@@ -97,8 +97,9 @@ class ValidatorConfig:
         strip_text: If True, strip whitespace from text Part content.
                     Default: True.
     """
-    max_bytes:  int  = _DEFAULT_MAX_BYTES
-    max_parts:  int  = _DEFAULT_MAX_PARTS
+
+    max_bytes: int = _DEFAULT_MAX_BYTES
+    max_parts: int = _DEFAULT_MAX_PARTS
     strip_text: bool = True
 
     def __post_init__(self) -> None:
@@ -109,6 +110,7 @@ class ValidatorConfig:
 
 
 # ── PayloadValidator ──────────────────────────────────────────────────────────
+
 
 class PayloadValidator:
     """

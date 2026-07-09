@@ -63,7 +63,7 @@ import logging
 import os
 import ssl
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
+
 
 class MtlsError(Exception):
     """Base class for all mTLS errors."""
@@ -97,11 +98,12 @@ class MtlsCertificateError(MtlsError):
     def __init__(self, reason: str, subject: str | None = None) -> None:
         who = f" (subject: '{subject}')" if subject else ""
         super().__init__(f"Certificate verification failed{who}: {reason}")
-        self.reason  = reason
+        self.reason = reason
         self.subject = subject
 
 
 # ── CertInfo ──────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class CertInfo:
@@ -122,14 +124,15 @@ class CertInfo:
         is_expired:   True if the certificate is past its not_after date.
         days_remaining: Days until expiry (negative if already expired).
     """
-    subject:        str
-    issuer:         str
-    not_before:     datetime
-    not_after:      datetime
-    serial:         str
-    san:            list[str]       = field(default_factory=list)
-    is_expired:     bool            = False
-    days_remaining: int             = 0
+
+    subject: str
+    issuer: str
+    not_before: datetime
+    not_after: datetime
+    serial: str
+    san: list[str] = field(default_factory=list)
+    is_expired: bool = False
+    days_remaining: int = 0
 
     def __str__(self) -> str:
         status = "EXPIRED" if self.is_expired else f"{self.days_remaining}d remaining"
@@ -142,6 +145,7 @@ class CertInfo:
 
 
 # ── MutualTLSConfig ───────────────────────────────────────────────────────────
+
 
 @dataclass
 class MutualTLSConfig:
@@ -173,27 +177,28 @@ class MutualTLSConfig:
         check_expiry_days:  Warn if the local cert expires within this many days.
                             Default: 30. Set 0 to disable expiry warnings.
     """
+
     # File paths
-    cert_file:          str | Path | None = None
-    key_file:           str | Path | None = None
-    ca_file:            str | Path | None = None
+    cert_file: str | Path | None = None
+    key_file: str | Path | None = None
+    ca_file: str | Path | None = None
 
     # In-memory PEM bytes (take precedence over file paths)
-    cert_pem:           bytes | None      = None
-    key_pem:            bytes | None      = None
-    ca_pem:             bytes | None      = None
+    cert_pem: bytes | None = None
+    key_pem: bytes | None = None
+    ca_pem: bytes | None = None
 
     # Behaviour
-    verify_client:      bool              = True
-    verify_hostname:    bool              = True
-    min_tls_version:    ssl.TLSVersion    = ssl.TLSVersion.TLSv1_2
-    ciphers:            str | None        = None
-    check_expiry_days:  int               = 30
+    verify_client: bool = True
+    verify_hostname: bool = True
+    min_tls_version: ssl.TLSVersion = ssl.TLSVersion.TLSv1_2
+    ciphers: str | None = None
+    check_expiry_days: int = 30
 
     # ── Factory methods ───────────────────────────────────────────────────────
 
     @classmethod
-    def from_env(cls) -> "MutualTLSConfig":
+    def from_env(cls) -> MutualTLSConfig:
         """
         Build a MutualTLSConfig from NEXUS_MTLS_* environment variables.
 
@@ -225,7 +230,7 @@ class MutualTLSConfig:
                 raise MtlsConfigError(
                     f"Environment variable {var} is not valid base64: {exc}",
                     field=var,
-                )
+                ) from exe
 
         def get_bool(var: str, default: bool) -> bool:
             val = os.environ.get(var, "").lower()
@@ -256,16 +261,14 @@ class MutualTLSConfig:
         # Must have cert material (file or PEM bytes)
         if not self.cert_pem and not self.cert_file:
             raise MtlsConfigError(
-                "No agent certificate provided. "
-                "Set cert_file= or cert_pem=.",
+                "No agent certificate provided. Set cert_file= or cert_pem=.",
                 field="cert_file",
             )
 
         # Must have key material
         if not self.key_pem and not self.key_file:
             raise MtlsConfigError(
-                "No agent private key provided. "
-                "Set key_file= or key_pem=.",
+                "No agent private key provided. Set key_file= or key_pem=.",
                 field="key_file",
             )
 
@@ -281,16 +284,14 @@ class MutualTLSConfig:
         # Verify files exist and are readable
         for attr, label in (
             ("cert_file", "certificate"),
-            ("key_file",  "private key"),
-            ("ca_file",   "CA bundle"),
+            ("key_file", "private key"),
+            ("ca_file", "CA bundle"),
         ):
             path_val = getattr(self, attr)
             if path_val is not None:
                 p = Path(path_val)
                 if not p.exists():
-                    raise MtlsConfigError(
-                        f"{label} file not found: '{p}'", field=attr
-                    )
+                    raise MtlsConfigError(f"{label} file not found: '{p}'", field=attr)
                 if not p.is_file():
                     raise MtlsConfigError(
                         f"{label} path is not a file: '{p}'", field=attr
@@ -328,6 +329,7 @@ class MutualTLSConfig:
 
 
 # ── SSL context builders ──────────────────────────────────────────────────────
+
 
 def build_client_ssl_context(config: MutualTLSConfig) -> ssl.SSLContext:
     """
@@ -388,9 +390,9 @@ def build_client_ssl_context(config: MutualTLSConfig) -> ssl.SSLContext:
         _check_local_cert_expiry(config)
 
         logger.debug(
-            "mTLS client SSL context built "
-            "(verify_hostname=%s, min_tls=%s)",
-            config.verify_hostname, config.min_tls_version.name,
+            "mTLS client SSL context built (verify_hostname=%s, min_tls=%s)",
+            config.verify_hostname,
+            config.min_tls_version.name,
         )
         return ctx
 
@@ -452,9 +454,9 @@ def build_server_ssl_context(config: MutualTLSConfig) -> ssl.SSLContext:
         _check_local_cert_expiry(config)
 
         logger.debug(
-            "mTLS server SSL context built "
-            "(verify_client=%s, min_tls=%s)",
-            config.verify_client, config.min_tls_version.name,
+            "mTLS server SSL context built (verify_client=%s, min_tls=%s)",
+            config.verify_client,
+            config.min_tls_version.name,
         )
         return ctx
 
@@ -463,6 +465,7 @@ def build_server_ssl_context(config: MutualTLSConfig) -> ssl.SSLContext:
 
 
 # ── Certificate inspection ────────────────────────────────────────────────────
+
 
 def verify_peer_certificate(
     config: MutualTLSConfig,
@@ -518,10 +521,11 @@ def verify_peer_certificate(
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
+
 def _load_ca(ctx: ssl.SSLContext, ca_data: bytes) -> None:
     """Load CA certificate(s) from PEM bytes into an ssl context."""
-    import tempfile
     import os as _os
+    import tempfile
 
     # ssl.SSLContext has no load_verify_data() — must write to a temp file
     with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as tmp:
@@ -535,11 +539,11 @@ def _load_ca(ctx: ssl.SSLContext, ca_data: bytes) -> None:
 
 def _load_cert_and_key(ctx: ssl.SSLContext, config: MutualTLSConfig) -> None:
     """Load the agent's certificate and private key into an ssl context."""
-    import tempfile
     import os as _os
+    import tempfile
 
     cert_data = config._effective_cert()
-    key_data  = config._effective_key()
+    key_data = config._effective_key()
 
     if cert_data and key_data:
         # Write to temp files if using in-memory PEM bytes
@@ -586,7 +590,8 @@ def _check_local_cert_expiry(config: MutualTLSConfig) -> None:
             logger.warning(
                 "mTLS: local agent certificate expires in %d days (%s). "
                 "Renew it before it expires to avoid connection failures.",
-                info.days_remaining, info.not_after.date(),
+                info.days_remaining,
+                info.not_after.date(),
             )
     except Exception as exc:
         logger.debug("mTLS: could not check cert expiry: %s", exc)
@@ -598,8 +603,8 @@ def _parse_pem_cert(pem_data: bytes) -> CertInfo:
 
     Uses Python's ssl module (no cryptography lib needed).
     """
-    import tempfile
     import os as _os
+    import tempfile
 
     # Write to a temp file so ssl.SSLContext can load it
     with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as tmp:
@@ -621,7 +626,7 @@ def _parse_pem_cert(pem_data: bytes) -> CertInfo:
 
     # ssl module doesn't expose a full cert dict from file — build CertInfo
     # from what we can extract via the public API
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     # Fallback info (ssl doesn't parse PEM to dict without a socket context)
     # We extract what we can without the cryptography library
@@ -644,6 +649,7 @@ def _parse_cert_dict(cert_dict: dict[str, Any]) -> tuple[str, str, list[str]]:
     The ssl module returns certs in this format when check_hostname is
     used. This function makes it human-readable.
     """
+
     def dn_to_str(dn: tuple) -> str:
         if not dn:
             return ""
@@ -654,7 +660,7 @@ def _parse_cert_dict(cert_dict: dict[str, Any]) -> tuple[str, str, list[str]]:
         return ",".join(parts)
 
     subject = dn_to_str(cert_dict.get("subject", ()))
-    issuer  = dn_to_str(cert_dict.get("issuer",  ()))
+    issuer = dn_to_str(cert_dict.get("issuer", ()))
     san: list[str] = []
     for san_type, san_val in cert_dict.get("subjectAltName", ()):
         san.append(f"{san_type}:{san_val}")

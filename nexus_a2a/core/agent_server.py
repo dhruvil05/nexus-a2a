@@ -38,7 +38,6 @@ Design:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -56,6 +55,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── AgentServer ───────────────────────────────────────────────────────────────
+
 
 class AgentServer:
     """
@@ -88,18 +88,18 @@ class AgentServer:
 
     def __init__(
         self,
-        network:   "AgentNetwork",
-        host:      str = "0.0.0.0",
-        port:      int = 8080,
+        network: AgentNetwork,
+        host: str = "0.0.0.0",
+        port: int = 8080,
         log_level: str = "warning",
     ) -> None:
-        self.network   = network
-        self.host      = host
-        self.port      = port
+        self.network = network
+        self.host = host
+        self.port = port
         self.log_level = log_level
 
         self._started_at: float | None = None
-        self._server:     uvicorn.Server | None = None
+        self._server: uvicorn.Server | None = None
         self._serve_task: asyncio.Task[None] | None = None
 
         # Build the ASGI app
@@ -127,7 +127,7 @@ class AgentServer:
             log_level=self.log_level,
             loop="asyncio",
         )
-        self._server    = uvicorn.Server(config)
+        self._server = uvicorn.Server(config)
         self._started_at = time.monotonic()
 
         self._serve_task = asyncio.create_task(
@@ -137,9 +137,7 @@ class AgentServer:
 
         # Give uvicorn a moment to bind the port before returning
         await asyncio.sleep(0.05)
-        logger.info(
-            "AgentServer started on http://%s:%d", self.host, self.port
-        )
+        logger.info("AgentServer started on http://%s:%d", self.host, self.port)
 
     async def stop(self, timeout: float = 5.0) -> None:
         """
@@ -154,7 +152,7 @@ class AgentServer:
         if self._serve_task is not None:
             try:
                 await asyncio.wait_for(self._serve_task, timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "AgentServer did not shut down within %.1fs; cancelling.", timeout
                 )
@@ -165,16 +163,13 @@ class AgentServer:
                     pass
 
         self._serve_task = None
-        self._server     = None
+        self._server = None
         logger.info("AgentServer stopped.")
 
     @property
     def is_running(self) -> bool:
         """True if the server background task is alive."""
-        return (
-            self._serve_task is not None
-            and not self._serve_task.done()
-        )
+        return self._serve_task is not None and not self._serve_task.done()
 
     @property
     def uptime_seconds(self) -> float | None:
@@ -185,7 +180,7 @@ class AgentServer:
 
     # ── Async context manager ─────────────────────────────────────────────────
 
-    async def __aenter__(self) -> "AgentServer":
+    async def __aenter__(self) -> AgentServer:
         await self.start()
         return self
 
@@ -211,10 +206,10 @@ class AgentServer:
 
         return Starlette(
             routes=[
-                Route("/health",  health),
-                Route("/ready",   ready),
+                Route("/health", health),
+                Route("/ready", ready),
                 Route("/metrics", metrics),
-                Route("/info",    info),
+                Route("/info", info),
             ],
         )
 
@@ -231,10 +226,12 @@ class AgentServer:
         Response body:
             {"status": "ok", "uptime_seconds": 42.3}
         """
-        return JSONResponse({
-            "status":         "ok",
-            "uptime_seconds": round(self.uptime_seconds or 0.0, 2),
-        })
+        return JSONResponse(
+            {
+                "status": "ok",
+                "uptime_seconds": round(self.uptime_seconds or 0.0, 2),
+            }
+        )
 
     async def _handle_ready(self, request: Request) -> Response:
         """
@@ -314,12 +311,16 @@ class AgentServer:
         """
         lines: list[str] = []
 
-        def gauge(name: str, value: float | int, labels: dict[str, str] | None = None) -> None:
+        def gauge(
+            name: str, value: float | int, labels: dict[str, str] | None = None
+        ) -> None:
             label_str = _format_labels(labels)
             lines.append(f"# TYPE {name} gauge")
             lines.append(f"{name}{label_str} {value}")
 
-        def counter(name: str, value: float | int, labels: dict[str, str] | None = None) -> None:
+        def counter(
+            name: str, value: float | int, labels: dict[str, str] | None = None
+        ) -> None:
             label_str = _format_labels(labels)
             lines.append(f"# TYPE {name} counter")
             lines.append(f"{name}{label_str} {value}")
@@ -331,12 +332,12 @@ class AgentServer:
             metrics_collector = getattr(self.network, "_metrics", None)
             if metrics_collector is not None:
                 snap_data = metrics_collector.snapshot()
-                counter("nexus_a2a_tasks_created_total",   snap_data.tasks_created)
+                counter("nexus_a2a_tasks_created_total", snap_data.tasks_created)
                 counter("nexus_a2a_tasks_completed_total", snap_data.tasks_completed)
-                counter("nexus_a2a_tasks_failed_total",    snap_data.tasks_failed)
+                counter("nexus_a2a_tasks_failed_total", snap_data.tasks_failed)
                 counter("nexus_a2a_tasks_cancelled_total", snap_data.tasks_cancelled)
                 counter("nexus_a2a_rate_limit_hits_total", snap_data.rate_limit_hits)
-                counter("nexus_a2a_auth_failures_total",   snap_data.auth_failures)
+                counter("nexus_a2a_auth_failures_total", snap_data.auth_failures)
 
                 for agent_url, error_count in snap_data.agent_errors.items():
                     counter(
@@ -379,19 +380,19 @@ class AgentServer:
         try:
             dlq = self.network.dead_letter_queue
             gauge("nexus_a2a_dlq_pending", dlq.pending_count())
-            gauge("nexus_a2a_dlq_total",   dlq.count())
+            gauge("nexus_a2a_dlq_total", dlq.count())
         except Exception:
             gauge("nexus_a2a_dlq_pending", 0)
-            gauge("nexus_a2a_dlq_total",   0)
+            gauge("nexus_a2a_dlq_total", 0)
 
         # Registry metrics
         try:
-            all_agents     = self.network.registry.list_all()
+            all_agents = self.network.registry.list_all()
             healthy_agents = self.network.registry.list_healthy()
-            gauge("nexus_a2a_registry_agents_total",  len(all_agents))
+            gauge("nexus_a2a_registry_agents_total", len(all_agents))
             gauge("nexus_a2a_registry_healthy_total", len(healthy_agents))
         except Exception:
-            gauge("nexus_a2a_registry_agents_total",  0)
+            gauge("nexus_a2a_registry_agents_total", 0)
             gauge("nexus_a2a_registry_healthy_total", 0)
 
         # Uptime
@@ -420,6 +421,7 @@ class AgentServer:
         """
         try:
             from nexus_a2a import __version__
+
             version = __version__
         except ImportError:
             version = "unknown"
@@ -429,14 +431,17 @@ class AgentServer:
         except Exception as exc:
             summary = {"error": str(exc)}
 
-        return JSONResponse({
-            "version":        version,
-            "uptime_seconds": round(self.uptime_seconds or 0.0, 2),
-            "network":        summary,
-        })
+        return JSONResponse(
+            {
+                "version": version,
+                "uptime_seconds": round(self.uptime_seconds or 0.0, 2),
+                "network": summary,
+            }
+        )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _format_labels(labels: dict[str, str] | None) -> str:
     """Format a label dict into Prometheus label syntax: {key="val",...}"""

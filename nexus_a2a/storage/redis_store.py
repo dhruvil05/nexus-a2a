@@ -61,18 +61,18 @@ class RedisTaskStore(AbstractTaskStore):
 
     def __init__(
         self,
-        url:        str = "redis://localhost:6379",
-        ttl:        int = _DEFAULT_TTL_SECONDS,
-        db:         int = 0,
-        password:   str | None = None,
+        url: str = "redis://localhost:6379",
+        ttl: int = _DEFAULT_TTL_SECONDS,
+        db: int = 0,
+        password: str | None = None,
         key_prefix: str = _KEY_PREFIX,
     ) -> None:
-        self._url        = url
-        self._ttl        = ttl
-        self._db         = db
-        self._password   = password
-        self._prefix     = key_prefix
-        self._redis: Any = None   # set after connect()
+        self._url = url
+        self._ttl = ttl
+        self._db = db
+        self._password = password
+        self._prefix = key_prefix
+        self._redis: Any = None  # set after connect()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -127,7 +127,7 @@ class RedisTaskStore(AbstractTaskStore):
         Sets the TTL on every save so the clock resets on activity.
         """
         self._require_connected()
-        key  = self._key(task.id)
+        key = self._key(task.id)
         data = task.model_dump_json()
 
         if self._ttl > 0:
@@ -173,7 +173,8 @@ class RedisTaskStore(AbstractTaskStore):
                 except Exception as exc:
                     logger.warning(
                         "RedisTaskStore: could not deserialise key %s: %s",
-                        key, exc,
+                        key,
+                        exc,
                     )
         return tasks
 

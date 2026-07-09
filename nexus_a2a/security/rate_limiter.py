@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
 class RateLimitError(Exception):
     """Raised when an agent exceeds its allowed request rate."""
 
@@ -40,11 +41,12 @@ class RateLimitError(Exception):
             f"Rate limit exceeded for agent '{agent_url}'. "
             f"Retry after {retry_after:.2f}s."
         )
-        self.agent_url   = agent_url
+        self.agent_url = agent_url
         self.retry_after = retry_after  # seconds until next token available
 
 
 # ── Token bucket ──────────────────────────────────────────────────────────────
+
 
 @dataclass
 class _TokenBucket:
@@ -57,21 +59,22 @@ class _TokenBucket:
         tokens:     Current token count.
         last_refill: Timestamp of the last refill (monotonic clock).
     """
-    rate:        float
-    burst:       float
-    tokens:      float = field(init=False)
+
+    rate: float
+    burst: float
+    tokens: float = field(init=False)
     last_refill: float = field(init=False)
 
     def __post_init__(self) -> None:
         # Start full so the first burst of requests goes through immediately
-        self.tokens      = self.burst
+        self.tokens = self.burst
         self.last_refill = time.monotonic()
 
     def _refill(self) -> None:
         """Add tokens based on elapsed time since last refill."""
-        now     = time.monotonic()
+        now = time.monotonic()
         elapsed = now - self.last_refill
-        self.tokens      = min(self.burst, self.tokens + elapsed * self.rate)
+        self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
         self.last_refill = now
 
     def consume(self) -> float:
@@ -92,6 +95,7 @@ class _TokenBucket:
 
 # ── Rate limit config ─────────────────────────────────────────────────────────
 
+
 @dataclass
 class RateLimitConfig:
     """
@@ -105,8 +109,9 @@ class RateLimitConfig:
         RateLimitConfig(rate=1, burst=5)    # 1 req/s, burst up to 5
         RateLimitConfig(rate=10, burst=50)  # 10 req/s, burst up to 50
     """
-    rate:  float = 10.0   # tokens per second
-    burst: float = 20.0   # max bucket size
+
+    rate: float = 10.0  # tokens per second
+    burst: float = 20.0  # max bucket size
 
     def __post_init__(self) -> None:
         if self.rate <= 0:
@@ -115,8 +120,8 @@ class RateLimitConfig:
             raise ValueError(f"burst must be > 0, got {self.burst}")
 
 
-
 # ── RateLimiter ───────────────────────────────────────────────────────────────
+
 
 class RateLimiter:
     """
@@ -172,7 +177,9 @@ class RateLimiter:
         self._buckets.pop(url, None)
         logger.info(
             "Rate limit set for %s: %.1f req/s, burst=%d",
-            url, config.rate, config.burst,
+            url,
+            config.rate,
+            config.burst,
         )
 
     def remove_limit(self, agent_url: str) -> None:
@@ -194,14 +201,16 @@ class RateLimiter:
         Raises:
             RateLimitError: If the rate limit is exceeded.
         """
-        url    = agent_url.rstrip("/")
+        url = agent_url.rstrip("/")
         bucket = await self._get_or_create_bucket(url)
 
         async with self._lock:
             retry_after = bucket.consume()
 
         if retry_after > 0:
-            logger.warning("Rate limit exceeded for %s (retry in %.2fs)", url, retry_after)
+            logger.warning(
+                "Rate limit exceeded for %s (retry in %.2fs)", url, retry_after
+            )
             raise RateLimitError(agent_url, retry_after)
 
     async def is_allowed(self, agent_url: str) -> bool:
@@ -222,7 +231,7 @@ class RateLimiter:
         Return the current token count for an agent (after refill).
         Useful for monitoring and debugging.
         """
-        url    = agent_url.rstrip("/")
+        url = agent_url.rstrip("/")
         bucket = await self._get_or_create_bucket(url)
         async with self._lock:
             bucket._refill()

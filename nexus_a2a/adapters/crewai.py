@@ -67,10 +67,7 @@ class CrewAIAdapter(BaseAdapter):
     def validate(self) -> None:
         """Assert the crew has a kickoff_async method."""
         super().validate()
-        if not (
-            hasattr(self.agent, "kickoff_async")
-            or hasattr(self.agent, "kickoff")
-        ):
+        if not (hasattr(self.agent, "kickoff_async") or hasattr(self.agent, "kickoff")):
             raise AdapterConfigError(
                 "CrewAIAdapter requires a CrewAI Crew object with "
                 "a 'kickoff_async' or 'kickoff' method."
@@ -96,7 +93,8 @@ class CrewAIAdapter(BaseAdapter):
 
         logger.debug(
             "CrewAIAdapter: kicking off crew for task %s input=%r",
-            task.id, input_text[:80],
+            task.id,
+            input_text[:80],
         )
 
         try:
@@ -105,6 +103,7 @@ class CrewAIAdapter(BaseAdapter):
                 crew_output = await self.agent.kickoff_async(inputs=inputs)
             else:
                 import asyncio
+
                 loop = asyncio.get_event_loop()
                 crew_output = await loop.run_in_executor(
                     None,
@@ -118,7 +117,8 @@ class CrewAIAdapter(BaseAdapter):
 
         logger.debug(
             "CrewAIAdapter: task %s completed output=%r",
-            task.id, output_text[:80],
+            task.id,
+            output_text[:80],
         )
 
         return self.make_result(
@@ -126,7 +126,7 @@ class CrewAIAdapter(BaseAdapter):
             artifact_name="crew_result",
             metadata={
                 "framework": "crewai",
-                "task_id":   task.id,
+                "task_id": task.id,
                 "input_key": self._input_key,
             },
         )

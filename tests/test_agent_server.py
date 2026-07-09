@@ -17,16 +17,15 @@ Coverage:
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from starlette.testclient import TestClient
 
 from nexus_a2a.core.agent_server import AgentServer, _format_labels
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
 
 def make_mock_network(
     *,
@@ -48,24 +47,26 @@ def make_mock_network(
     network.task_manager._store = store
 
     # registry
-    all_cards    = [MagicMock() for _ in range(agents)]
+    all_cards = [MagicMock() for _ in range(agents)]
     healthy_list = all_cards[:healthy_agents]
-    network.registry.list_all     = MagicMock(return_value=all_cards)
+    network.registry.list_all = MagicMock(return_value=all_cards)
     network.registry.list_healthy = MagicMock(return_value=healthy_list)
 
     # DLQ
     network.dead_letter_queue.pending_count = MagicMock(return_value=dlq_pending)
-    network.dead_letter_queue.count         = MagicMock(return_value=dlq_total)
+    network.dead_letter_queue.count = MagicMock(return_value=dlq_total)
 
     # summary
-    network.summary = MagicMock(return_value={
-        "total_agents":   agents,
-        "healthy_agents": healthy_agents,
-        "dlq": {"pending": dlq_pending, "total": dlq_total},
-    })
+    network.summary = MagicMock(
+        return_value={
+            "total_agents": agents,
+            "healthy_agents": healthy_agents,
+            "dlq": {"pending": dlq_pending, "total": dlq_total},
+        }
+    )
 
     # No metrics collector by default
-    del network._metrics   # ensure getattr returns None via hasattr path
+    del network._metrics  # ensure getattr returns None via hasattr path
 
     return network
 
@@ -76,14 +77,15 @@ def make_test_client(network: MagicMock | None = None) -> TestClient:
     server = AgentServer(network=net, port=9999)
     # Inject a fake start time so uptime is nonzero
     import time
+
     server._started_at = time.monotonic() - 10.0
     return TestClient(server._app)
 
 
 # ── _format_labels() ──────────────────────────────────────────────────────────
 
-class TestFormatLabels:
 
+class TestFormatLabels:
     def test_none_returns_empty_string(self):
         assert _format_labels(None) == ""
 
@@ -96,16 +98,16 @@ class TestFormatLabels:
 
     def test_multiple_labels(self):
         result = _format_labels({"env": "prod", "region": "us-east"})
-        assert "env=\"prod\"" in result
-        assert "region=\"us-east\"" in result
+        assert 'env="prod"' in result
+        assert 'region="us-east"' in result
         assert result.startswith("{")
         assert result.endswith("}")
 
 
 # ── GET /health ───────────────────────────────────────────────────────────────
 
-class TestHealthEndpoint:
 
+class TestHealthEndpoint:
     def test_returns_200(self):
         client = make_test_client()
         resp = client.get("/health")
@@ -132,6 +134,7 @@ class TestHealthEndpoint:
     def test_health_is_fast(self):
         """Health endpoint must not do any I/O."""
         import time
+
         client = make_test_client()
         t0 = time.monotonic()
         client.get("/health")
@@ -142,8 +145,8 @@ class TestHealthEndpoint:
 
 # ── GET /ready ────────────────────────────────────────────────────────────────
 
-class TestReadyEndpoint:
 
+class TestReadyEndpoint:
     def test_returns_200_when_store_ok_no_agents(self):
         client = make_test_client(make_mock_network(store_ok=True, agents=0))
         resp = client.get("/ready")
@@ -180,17 +183,13 @@ class TestReadyEndpoint:
         assert data["checks"]["registry"] == "no_agents"
 
     def test_healthy_agents_passes_registry_check(self):
-        client = make_test_client(
-            make_mock_network(agents=3, healthy_agents=2)
-        )
+        client = make_test_client(make_mock_network(agents=3, healthy_agents=2))
         data = client.get("/ready").json()
         assert "ok" in data["checks"]["registry"]
         assert "2/3" in data["checks"]["registry"]
 
     def test_all_unhealthy_agents_fails_check(self):
-        client = make_test_client(
-            make_mock_network(agents=2, healthy_agents=0)
-        )
+        client = make_test_client(make_mock_network(agents=2, healthy_agents=0))
         resp = client.get("/ready")
         data = resp.json()
         assert resp.status_code == 503
@@ -207,8 +206,8 @@ class TestReadyEndpoint:
 
 # ── GET /metrics ──────────────────────────────────────────────────────────────
 
-class TestMetricsEndpoint:
 
+class TestMetricsEndpoint:
     def test_returns_200(self):
         client = make_test_client()
         assert client.get("/metrics").status_code == 200
@@ -281,11 +280,7 @@ class TestMetricsEndpoint:
         client = make_test_client()
         body = client.get("/metrics").text
         lines = body.splitlines()
-        type_lines = {
-            line.split(" ")[2]
-            for line in lines
-            if line.startswith("# TYPE")
-        }
+        type_lines = {line.split(" ")[2] for line in lines if line.startswith("# TYPE")}
         assert "nexus_a2a_tasks_created_total" in type_lines
         assert "nexus_a2a_dlq_pending" in type_lines
 
@@ -310,6 +305,7 @@ class TestMetricsEndpoint:
 
         server = AgentServer(network=network, port=9999)
         import time
+
         server._started_at = time.monotonic() - 5.0
         client = TestClient(server._app)
 
@@ -320,8 +316,8 @@ class TestMetricsEndpoint:
 
 # ── GET /info ─────────────────────────────────────────────────────────────────
 
-class TestInfoEndpoint:
 
+class TestInfoEndpoint:
     def test_returns_200(self):
         client = make_test_client()
         assert client.get("/info").status_code == 200
@@ -361,8 +357,8 @@ class TestInfoEndpoint:
 
 # ── AgentServer lifecycle ─────────────────────────────────────────────────────
 
-class TestAgentServerLifecycle:
 
+class TestAgentServerLifecycle:
     def test_is_running_false_before_start(self):
         net = make_mock_network()
         server = AgentServer(network=net, port=19876)

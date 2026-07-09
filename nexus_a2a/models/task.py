@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, field_validator
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _new_id() -> str:
     """Generate a short, unique ID using uuid4."""
     return str(uuid.uuid4())
@@ -34,17 +35,19 @@ def _utcnow() -> datetime:
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
+
 class TaskState(str, Enum):
     """
     All possible states a Task can be in.
     Mirrors the A2A protocol specification's task lifecycle.
     """
-    SUBMITTED       = "submitted"       # Client sent the task, not yet picked up
-    WORKING         = "working"         # Agent is actively processing
-    INPUT_REQUIRED  = "input_required"  # Agent needs more info from client
-    COMPLETED       = "completed"       # Task finished successfully
-    FAILED          = "failed"          # Task ended with an error
-    CANCELLED       = "cancelled"       # Task was cancelled by client or system
+
+    SUBMITTED = "submitted"  # Client sent the task, not yet picked up
+    WORKING = "working"  # Agent is actively processing
+    INPUT_REQUIRED = "input_required"  # Agent needs more info from client
+    COMPLETED = "completed"  # Task finished successfully
+    FAILED = "failed"  # Task ended with an error
+    CANCELLED = "cancelled"  # Task was cancelled by client or system
 
     @property
     def is_terminal(self) -> bool:
@@ -58,6 +61,7 @@ class TaskState(str, Enum):
 
 class PartType(str, Enum):
     """The kind of content carried inside a Part."""
+
     TEXT = "text"
     JSON = "json"
     FILE = "file"
@@ -65,11 +69,13 @@ class PartType(str, Enum):
 
 class MessageRole(str, Enum):
     """Who sent this message — the human-side client or the agent."""
-    USER  = "user"
+
+    USER = "user"
     AGENT = "agent"
 
 
 # ── Content building blocks ───────────────────────────────────────────────────
+
 
 class Part(BaseModel):
     """
@@ -81,8 +87,9 @@ class Part(BaseModel):
         Part(type=PartType.JSON, content={"query": "AI papers 2025"})
         Part(type=PartType.FILE, content="https://example.com/doc.pdf", mime_type="application/pdf")
     """
-    type:      PartType
-    content:   Any = Field(description="The actual payload — string, dict, or URL.")
+
+    type: PartType
+    content: Any = Field(description="The actual payload — string, dict, or URL.")
     mime_type: str | None = Field(
         default=None,
         description="MIME type hint — mainly used when type=FILE.",
@@ -107,10 +114,11 @@ class Message(BaseModel):
             parts=[Part(type=PartType.TEXT, content="Summarise this article.")],
         )
     """
-    id:         str         = Field(default_factory=_new_id)
-    role:       MessageRole
-    parts:      list[Part]  = Field(min_length=1)
-    created_at: datetime    = Field(default_factory=_utcnow)
+
+    id: str = Field(default_factory=_new_id)
+    role: MessageRole
+    parts: list[Part] = Field(min_length=1)
+    created_at: datetime = Field(default_factory=_utcnow)
 
     model_config = {"use_enum_values": True}
 
@@ -137,11 +145,7 @@ class Message(BaseModel):
         Extract all TEXT parts and join them into a single string.
         Useful for simple agents that only deal with plain text.
         """
-        return " ".join(
-            str(p.content)
-            for p in self.parts
-            if p.type == PartType.TEXT
-        )
+        return " ".join(str(p.content) for p in self.parts if p.type == PartType.TEXT)
 
 
 class Artifact(BaseModel):
@@ -157,14 +161,16 @@ class Artifact(BaseModel):
             parts=[Part(type=PartType.TEXT, content="The article discusses...")],
         )
     """
-    id:          str        = Field(default_factory=_new_id)
-    name:        str        = Field(min_length=1, max_length=128)
+
+    id: str = Field(default_factory=_new_id)
+    name: str = Field(min_length=1, max_length=128)
     description: str | None = None
-    parts:       list[Part] = Field(min_length=1)
-    created_at:  datetime   = Field(default_factory=_utcnow)
+    parts: list[Part] = Field(min_length=1)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 # ── Primary model ─────────────────────────────────────────────────────────────
+
 
 class Task(BaseModel):
     """
@@ -182,30 +188,30 @@ class Task(BaseModel):
     """
 
     # Identity
-    id:         str      = Field(default_factory=_new_id)
-    context_id: str      = Field(
+    id: str = Field(default_factory=_new_id)
+    context_id: str = Field(
         default_factory=_new_id,
         description="Groups related tasks together in one conversation context.",
     )
-    skill_id:   str | None = Field(
+    skill_id: str | None = Field(
         default=None,
         description="Which agent skill this task targets.",
     )
 
     # State
-    state:      TaskState = Field(default=TaskState.SUBMITTED)
-    error:      str | None = Field(
+    state: TaskState = Field(default=TaskState.SUBMITTED)
+    error: str | None = Field(
         default=None,
         description="Human-readable error message — populated when state=FAILED.",
     )
 
     # Content
-    history:   list[Message]  = Field(default_factory=list)
+    history: list[Message] = Field(default_factory=list)
     artifacts: list[Artifact] = Field(default_factory=list)
 
     # Timestamps
-    created_at:  datetime = Field(default_factory=_utcnow)
-    updated_at:  datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
     model_config = {"use_enum_values": False}  # keep enum objects, not raw strings
 
@@ -237,13 +243,21 @@ class Task(BaseModel):
 
     # Valid transitions: which states can move to which
     _TRANSITIONS: dict[TaskState, set[TaskState]] = {
-        TaskState.SUBMITTED:      {TaskState.WORKING, TaskState.CANCELLED},
-        TaskState.WORKING:        {TaskState.COMPLETED, TaskState.FAILED,
-                                   TaskState.INPUT_REQUIRED, TaskState.CANCELLED},
-        TaskState.INPUT_REQUIRED: {TaskState.WORKING, TaskState.FAILED, TaskState.CANCELLED},
-        TaskState.COMPLETED:      set(),   # terminal
-        TaskState.FAILED:         set(),   # terminal
-        TaskState.CANCELLED:      set(),   # terminal
+        TaskState.SUBMITTED: {TaskState.WORKING, TaskState.CANCELLED},
+        TaskState.WORKING: {
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+            TaskState.INPUT_REQUIRED,
+            TaskState.CANCELLED,
+        },
+        TaskState.INPUT_REQUIRED: {
+            TaskState.WORKING,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        },
+        TaskState.COMPLETED: set(),  # terminal
+        TaskState.FAILED: set(),  # terminal
+        TaskState.CANCELLED: set(),  # terminal
     }
 
     def transition(self, new_state: TaskState, error: str | None = None) -> None:
@@ -265,10 +279,12 @@ class Task(BaseModel):
                 f"Allowed: {[s.value for s in allowed]}"
             )
         if new_state == TaskState.FAILED and not error:
-            raise ValueError("Must provide an error message when transitioning to FAILED.")
+            raise ValueError(
+                "Must provide an error message when transitioning to FAILED."
+            )
 
-        self.state      = new_state
-        self.error      = error
+        self.state = new_state
+        self.error = error
         self.updated_at = _utcnow()
 
     # ── Helpers ───────────────────────────────────────────────────────────────

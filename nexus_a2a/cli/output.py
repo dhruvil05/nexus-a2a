@@ -12,7 +12,13 @@ from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
@@ -34,6 +40,7 @@ def status_icon(ok: bool) -> str:
 
 # ── Generic helpers ────────────────────────────────────────────────────────────
 
+
 def print_json(data: Any) -> None:
     """Dump data as pretty JSON to stdout."""
     console.print_json(json.dumps(data, default=str))
@@ -53,6 +60,7 @@ def print_warning(msg: str) -> None:
 
 # ── Ping output ────────────────────────────────────────────────────────────────
 
+
 def render_ping(result: dict[str, Any], fmt: str = "table") -> None:
     """Render nexus ping result."""
     if fmt == "json":
@@ -63,21 +71,30 @@ def render_ping(result: dict[str, Any], fmt: str = "table") -> None:
     latency = result.get("latency_ms")
     latency_str = f"{latency:.1f}ms" if latency is not None else "n/a"
 
-    table = Table(title=f"Agent Ping — {result.get('url', '')}", show_header=True, header_style="bold cyan")
+    table = Table(
+        title=f"Agent Ping — {result.get('url', '')}",
+        show_header=True,
+        header_style="bold cyan",
+    )
     table.add_column("Field", style="dim", width=20)
     table.add_column("Value")
 
-    table.add_row("Status", f"{icon} {'healthy' if result.get('healthy') else 'unhealthy'}")
+    table.add_row(
+        "Status", f"{icon} {'healthy' if result.get('healthy') else 'unhealthy'}"
+    )
     table.add_row("Name", result.get("name", "—"))
     table.add_row("Version", result.get("version", "—"))
     table.add_row("Skills", str(result.get("skills_count", 0)))
     table.add_row("Latency", latency_str)
-    table.add_row("Health endpoint", status_icon(result.get("health_endpoint_present", False)))
+    table.add_row(
+        "Health endpoint", status_icon(result.get("health_endpoint_present", False))
+    )
 
     console.print(table)
 
 
 # ── Inspect output ─────────────────────────────────────────────────────────────
+
 
 def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
     """Pretty-print a full AgentCard."""
@@ -86,7 +103,9 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
         return
 
     panel_title = f"[bold cyan]{card.get('name', 'Unknown Agent')}[/bold cyan]  v{card.get('version', '?')}"
-    console.print(Panel(card.get("description", ""), title=panel_title, border_style="cyan"))
+    console.print(
+        Panel(card.get("description", ""), title=panel_title, border_style="cyan")
+    )
 
     # Capabilities
     caps = card.get("capabilities", {})
@@ -94,7 +113,9 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
     cap_table.add_column("Key", style="dim")
     cap_table.add_column("Value")
     cap_table.add_row("Streaming", status_icon(caps.get("streaming", False)))
-    cap_table.add_row("Push notifications", status_icon(caps.get("push_notifications", False)))
+    cap_table.add_row(
+        "Push notifications", status_icon(caps.get("push_notifications", False))
+    )
     cap_table.add_row("Multi-turn", status_icon(caps.get("multi_turn", False)))
     console.print(Panel(cap_table, title="Capabilities", border_style="dim"))
 
@@ -103,7 +124,9 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
     auth_table = Table(show_header=False, box=None, padding=(0, 2))
     auth_table.add_column("Key", style="dim")
     auth_table.add_column("Value")
-    auth_table.add_row("Scheme", auth.get("schemes", ["none"])[0] if auth.get("schemes") else "none")
+    auth_table.add_row(
+        "Scheme", auth.get("schemes", ["none"])[0] if auth.get("schemes") else "none"
+    )
     auth_table.add_row("Token URL", auth.get("token_url") or "—")
     auth_table.add_row("Header", auth.get("header_name") or "—")
     console.print(Panel(auth_table, title="Authentication", border_style="dim"))
@@ -112,8 +135,12 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
     modes_table = Table(show_header=False, box=None, padding=(0, 2))
     modes_table.add_column("Key", style="dim")
     modes_table.add_column("Value")
-    modes_table.add_row("Input modes", ", ".join(card.get("input_modes", ["text/plain"])))
-    modes_table.add_row("Output modes", ", ".join(card.get("output_modes", ["text/plain"])))
+    modes_table.add_row(
+        "Input modes", ", ".join(card.get("input_modes", ["text/plain"]))
+    )
+    modes_table.add_row(
+        "Output modes", ", ".join(card.get("output_modes", ["text/plain"]))
+    )
     console.print(Panel(modes_table, title="Modes", border_style="dim"))
 
     # Skills
@@ -133,7 +160,10 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
 
 # ── Status / network table ─────────────────────────────────────────────────────
 
-def render_status(agents: list[dict[str, Any]], summary: dict[str, Any], fmt: str = "table") -> None:
+
+def render_status(
+    agents: list[dict[str, Any]], summary: dict[str, Any], fmt: str = "table"
+) -> None:
     """Render nexus status --network table."""
     if fmt == "json":
         print_json({"agents": agents, "summary": summary})
@@ -243,6 +273,7 @@ def render_trace(trace: dict[str, Any], fmt: str = "table") -> None:
 
 # ── Replay output ──────────────────────────────────────────────────────────────
 
+
 def render_replay_preview(entries: list[dict[str, Any]], fmt: str = "table") -> None:
     """Show DLQ entries before replay confirmation."""
     if fmt == "json":
@@ -277,6 +308,7 @@ def render_replay_result(succeeded: int, failed: int) -> None:
 
 
 # ── Progress bar factory ───────────────────────────────────────────────────────
+
 
 def make_progress(description: str = "Working") -> Progress:
     return Progress(

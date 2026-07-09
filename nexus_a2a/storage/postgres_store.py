@@ -53,7 +53,6 @@ Requires: pip install nexus-a2a[postgres]
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -103,18 +102,18 @@ class PostgresTaskStore(AbstractTaskStore):
 
     def __init__(
         self,
-        dsn:           str,
-        min_size:      int  = 2,
-        max_size:      int  = 10,
-        table:         str  = _DEFAULT_TABLE,
+        dsn: str,
+        min_size: int = 2,
+        max_size: int = 10,
+        table: str = _DEFAULT_TABLE,
         create_schema: bool = True,
     ) -> None:
-        self._dsn           = dsn
-        self._min_size      = min_size
-        self._max_size      = max_size
-        self._table         = table
+        self._dsn = dsn
+        self._min_size = min_size
+        self._max_size = max_size
+        self._table = table
         self._create_schema = create_schema
-        self._pool: Any     = None   # asyncpg.Pool — set after connect()
+        self._pool: Any = None  # asyncpg.Pool — set after connect()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -148,7 +147,9 @@ class PostgresTaskStore(AbstractTaskStore):
 
         logger.info(
             "PostgresTaskStore: connected (pool %d-%d, table='%s')",
-            self._min_size, self._max_size, self._table,
+            self._min_size,
+            self._max_size,
+            self._table,
         )
 
     async def disconnect(self) -> None:
@@ -165,7 +166,7 @@ class PostgresTaskStore(AbstractTaskStore):
 
     # ── Context manager ───────────────────────────────────────────────────────
 
-    async def __aenter__(self) -> "PostgresTaskStore":
+    async def __aenter__(self) -> PostgresTaskStore:
         await self.connect()
         return self
 
@@ -206,7 +207,9 @@ class PostgresTaskStore(AbstractTaskStore):
             task.created_at,
             task.updated_at,
         )
-        logger.debug("PostgresTaskStore: saved task %s (state=%s)", task.id, task.state.value)
+        logger.debug(
+            "PostgresTaskStore: saved task %s (state=%s)", task.id, task.state.value
+        )
 
     async def get(self, task_id: str) -> Task | None:
         """
@@ -353,7 +356,8 @@ class PostgresTaskStore(AbstractTaskStore):
         deleted = int(result.split()[-1]) if result else 0
         logger.info(
             "PostgresTaskStore: deleted %d tasks older than %d days.",
-            deleted, days,
+            deleted,
+            days,
         )
         return deleted
 
@@ -407,9 +411,7 @@ class PostgresTaskStore(AbstractTaskStore):
                 ON {self._table} (updated_at DESC)
             """)
 
-        logger.debug(
-            "PostgresTaskStore: schema verified (table='%s').", self._table
-        )
+        logger.debug("PostgresTaskStore: schema verified (table='%s').", self._table)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

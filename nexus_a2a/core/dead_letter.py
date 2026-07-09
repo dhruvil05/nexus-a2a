@@ -55,6 +55,7 @@ ReplayRunner = Callable[[str, Message], Awaitable[Task]]
 
 # ── DLQ entry ─────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class DLQEntry:
     """
@@ -70,14 +71,15 @@ class DLQEntry:
         last_retry_at: Unix timestamp of the most recent replay attempt.
         replayed:     True once a replay succeeds.
     """
-    task:          Task
-    error:         str
-    failed_at:     float       = field(default_factory=time.time)
-    agent_url:     str | None  = None
-    skill_id:      str | None  = None
-    retry_count:   int         = 0
+
+    task: Task
+    error: str
+    failed_at: float = field(default_factory=time.time)
+    agent_url: str | None = None
+    skill_id: str | None = None
+    retry_count: int = 0
     last_retry_at: float | None = None
-    replayed:      bool        = False
+    replayed: bool = False
 
     @property
     def task_id(self) -> str:
@@ -90,29 +92,32 @@ class DLQEntry:
 
     def to_dict(self) -> dict:
         return {
-            "task_id":      self.task_id,
-            "error":        self.error,
-            "failed_at":    self.failed_at,
-            "agent_url":    self.agent_url,
-            "skill_id":     self.skill_id,
-            "retry_count":  self.retry_count,
+            "task_id": self.task_id,
+            "error": self.error,
+            "failed_at": self.failed_at,
+            "agent_url": self.agent_url,
+            "skill_id": self.skill_id,
+            "retry_count": self.retry_count,
             "last_retry_at": self.last_retry_at,
-            "replayed":     self.replayed,
+            "replayed": self.replayed,
         }
 
 
 # ── Replay result ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ReplayResult:
     """Outcome of a single DLQ replay attempt."""
-    task_id:   str
+
+    task_id: str
     succeeded: bool
-    new_task:  Task | None  = None
-    error:     str | None   = None
+    new_task: Task | None = None
+    error: str | None = None
 
 
 # ── DeadLetterQueue ───────────────────────────────────────────────────────────
+
 
 class DeadLetterQueue:
     """
@@ -154,19 +159,19 @@ class DeadLetterQueue:
 
     def __init__(
         self,
-        runner:         ReplayRunner | None = None,
-        max_retries:    int                 = 3,
-        retry_delay:    float               = 2.0,
-        max_queue_size: int                 = 500,
+        runner: ReplayRunner | None = None,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
+        max_queue_size: int = 500,
     ) -> None:
-        self._runner         = runner
-        self._max_retries    = max_retries
-        self._retry_delay    = retry_delay
-        self._max_size       = max_queue_size
+        self._runner = runner
+        self._max_retries = max_retries
+        self._retry_delay = retry_delay
+        self._max_size = max_queue_size
         # task_id → DLQEntry
         self._entries: dict[str, DLQEntry] = {}
-        self._hooks:   list[FailureHook]   = []
-        self._lock     = asyncio.Lock()
+        self._hooks: list[FailureHook] = []
+        self._lock = asyncio.Lock()
 
     def set_runner(self, runner: ReplayRunner) -> None:
         """Set (or replace) the replay runner after construction."""
@@ -202,9 +207,9 @@ class DeadLetterQueue:
 
     async def capture(
         self,
-        task:      Task,
+        task: Task,
         agent_url: str | None = None,
-        skill_id:  str | None = None,
+        skill_id: str | None = None,
     ) -> DLQEntry:
         """
         Add a FAILED task to the DLQ and fire all failure hooks.
@@ -236,7 +241,9 @@ class DeadLetterQueue:
 
         logger.warning(
             "DLQ captured task %s (error=%r skill=%s)",
-            task.id, entry.error, skill_id,
+            task.id,
+            entry.error,
+            skill_id,
         )
 
         # Fire failure hooks concurrently
@@ -283,12 +290,10 @@ class DeadLetterQueue:
             List of ReplayResult, one per entry attempted.
         """
         entries = [
-            e for e in self._entries.values()
+            e
+            for e in self._entries.values()
             if not e.replayed
-            and (
-                max_retries_filter is None
-                or e.retry_count < max_retries_filter
-            )
+            and (max_retries_filter is None or e.retry_count < max_retries_filter)
         ]
 
         if not entries:
@@ -307,13 +312,14 @@ class DeadLetterQueue:
         succeeded = sum(1 for r in results if r.succeeded)
         logger.info(
             "DLQ replay_all complete: %d/%d succeeded",
-            succeeded, len(results),
+            succeeded,
+            len(results),
         )
         return results
 
     async def replay_where(
         self,
-        skill_id:  str | None = None,
+        skill_id: str | None = None,
         agent_url: str | None = None,
     ) -> list[ReplayResult]:
         """
@@ -327,7 +333,8 @@ class DeadLetterQueue:
             List of ReplayResult for matched entries.
         """
         entries = [
-            e for e in self._entries.values()
+            e
+            for e in self._entries.values()
             if not e.replayed
             and (skill_id is None or e.skill_id == skill_id)
             and (agent_url is None or e.agent_url == agent_url)
@@ -369,7 +376,7 @@ class DeadLetterQueue:
     def summary(self) -> dict:
         """Return a human-readable summary of the DLQ state."""
         return {
-            "total":   self.count(),
+            "total": self.count(),
             "pending": self.pending_count(),
             "entries": [e.to_dict() for e in self._entries.values()],
         }
@@ -400,8 +407,8 @@ class DeadLetterQueue:
                 error="No agent_url recorded — cannot route replay.",
             )
 
-        entry.retry_count   += 1
-        entry.last_retry_at  = time.time()
+        entry.retry_count += 1
+        entry.last_retry_at = time.time()
         delay = min(
             self._retry_delay * (2 ** (entry.retry_count - 1)),
             60.0,
@@ -409,7 +416,9 @@ class DeadLetterQueue:
 
         logger.info(
             "DLQ replaying task %s (attempt %d, delay=%.1fs)",
-            entry.task_id, entry.retry_count, delay,
+            entry.task_id,
+            entry.retry_count,
+            delay,
         )
 
         try:
@@ -423,13 +432,12 @@ class DeadLetterQueue:
             )
         except Exception as exc:
             error = str(exc)
-            logger.warning(
-                "DLQ replay failed for task %s: %s", entry.task_id, error
-            )
+            logger.warning("DLQ replay failed for task %s: %s", entry.task_id, error)
             if entry.retry_count >= self._max_retries:
                 logger.error(
                     "DLQ task %s exhausted %d retries — giving up",
-                    entry.task_id, self._max_retries,
+                    entry.task_id,
+                    self._max_retries,
                 )
             return ReplayResult(
                 task_id=entry.task_id,
@@ -439,6 +447,7 @@ class DeadLetterQueue:
 
     async def _fire_hooks(self, entry: DLQEntry) -> None:
         """Call all failure hooks concurrently. Swallows individual errors."""
+
         async def _safe(hook: FailureHook) -> None:
             try:
                 await hook(entry)

@@ -39,6 +39,7 @@ _DEFAULT_API_KEY_HEADER = "X-API-Key"
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
 class AuthError(Exception):
     """Base class for all authentication errors."""
 
@@ -71,6 +72,7 @@ class ExpiredCredentialsError(AuthError):
 
 # ── Per-agent credential config ───────────────────────────────────────────────
 
+
 @dataclass
 class AgentCredentialConfig:
     """
@@ -84,14 +86,16 @@ class AgentCredentialConfig:
         header_name:     Header to read the API key from.
                          Defaults to 'X-API-Key'.
     """
-    scheme:       AuthScheme = AuthScheme.NONE
-    api_key:      str | None = None
-    jwt_secret:   str | None = None
+
+    scheme: AuthScheme = AuthScheme.NONE
+    api_key: str | None = None
+    jwt_secret: str | None = None
     jwt_audience: str | None = None
-    header_name:  str        = field(default=_DEFAULT_API_KEY_HEADER)
+    header_name: str = field(default=_DEFAULT_API_KEY_HEADER)
 
 
 # ── AuthManager ───────────────────────────────────────────────────────────────
+
 
 class AuthManager:
     """
@@ -153,7 +157,8 @@ class AuthManager:
         self._configs[agent_url.rstrip("/")] = config
         logger.info(
             "Auth registered for agent %s with scheme '%s'",
-            agent_url, config.scheme.value,
+            agent_url,
+            config.scheme.value,
         )
 
     def unregister_agent(self, agent_url: str) -> None:
@@ -233,9 +238,7 @@ class AuthManager:
                 f"Agent at '{agent_url}' uses scheme '{config.scheme.value}', not 'jwt'."
             )
         if not config.jwt_secret:
-            raise ValueError(
-                f"Agent at '{agent_url}' has no jwt_secret configured."
-            )
+            raise ValueError(f"Agent at '{agent_url}' has no jwt_secret configured.")
 
         now = int(time.time())
         payload: dict[str, Any] = {
@@ -247,7 +250,9 @@ class AuthManager:
         if config.jwt_audience:
             payload["aud"] = config.jwt_audience
 
-        return cast(str, jwt.encode(payload, config.jwt_secret, algorithm=_JWT_ALGORITHM))
+        return cast(
+            str, jwt.encode(payload, config.jwt_secret, algorithm=_JWT_ALGORITHM)
+        )
 
     def build_auth_headers(
         self,
@@ -316,7 +321,7 @@ class AuthManager:
         if not auth_header or not auth_header.startswith("Bearer "):
             raise MissingCredentialsError(AuthScheme.JWT)
 
-        token = auth_header[len("Bearer "):]
+        token = auth_header[len("Bearer ") :]
 
         try:
             options: dict[str, Any] = {}

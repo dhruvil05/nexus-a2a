@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
 class ConfigError(Exception):
     """
     Raised when nexus.toml is missing a required field, has an invalid
@@ -61,67 +62,75 @@ class ConfigError(Exception):
 
 # ── Section dataclasses ───────────────────────────────────────────────────────
 
+
 @dataclass
 class SkillConfig:
     """One entry in [[agent.skills]]."""
-    id:          str
-    name:        str
-    description: str                  = ""
-    tags:        list[str]            = field(default_factory=list)
-    examples:    list[str]            = field(default_factory=list)
+
+    id: str
+    name: str
+    description: str = ""
+    tags: list[str] = field(default_factory=list)
+    examples: list[str] = field(default_factory=list)
 
 
 @dataclass
 class AgentConfig:
     """[agent] section."""
-    name:        str
-    description: str                  = ""
-    version:     str                  = "1.0.0"
-    url:         str                  = "http://localhost:8000"
-    streaming:   bool                 = False
-    skills:      list[SkillConfig]    = field(default_factory=list)
+
+    name: str
+    description: str = ""
+    version: str = "1.0.0"
+    url: str = "http://localhost:8000"
+    streaming: bool = False
+    skills: list[SkillConfig] = field(default_factory=list)
 
 
 @dataclass
 class NetworkConfig:
     """[network] section."""
+
     agents: list[str] = field(default_factory=list)
 
 
 @dataclass
 class ReliabilityConfig:
     """[reliability] section."""
-    task_timeout_sec:          float     = 120.0
-    max_retries:               int       = 3
-    retry_on:                  list[int] = field(default_factory=lambda: [500, 502, 503, 504])
-    circuit_breaker_threshold: int       = 5
-    circuit_recovery_sec:      float     = 30.0
-    base_delay_sec:            float     = 1.0
-    max_delay_sec:             float     = 30.0
+
+    task_timeout_sec: float = 120.0
+    max_retries: int = 3
+    retry_on: list[int] = field(default_factory=lambda: [500, 502, 503, 504])
+    circuit_breaker_threshold: int = 5
+    circuit_recovery_sec: float = 30.0
+    base_delay_sec: float = 1.0
+    max_delay_sec: float = 30.0
 
 
 @dataclass
 class SecurityConfig:
     """[security] section."""
-    auth_scheme: str  = "none"   # "none" | "jwt" | "api_key"
-    auth_secret: str  = ""       # JWT secret or API key value
-    trust_mode:  str  = "off"    # "strict" | "warn" | "off"
+
+    auth_scheme: str = "none"  # "none" | "jwt" | "api_key"
+    auth_secret: str = ""  # JWT secret or API key value
+    trust_mode: str = "off"  # "strict" | "warn" | "off"
 
 
 @dataclass
 class StorageConfig:
     """[storage] section."""
-    backend: str  = "memory"   # "memory" | "redis" | "postgres"
-    url:     str  = ""         # redis:// or postgres:// connection URL
-    ttl_sec: int  = 3600       # TTL for Redis keys (ignored for memory/postgres)
+
+    backend: str = "memory"  # "memory" | "redis" | "postgres"
+    url: str = ""  # redis:// or postgres:// connection URL
+    ttl_sec: int = 3600  # TTL for Redis keys (ignored for memory/postgres)
 
 
 @dataclass
 class ObservabilityConfig:
     """[observability] section."""
-    tracing:   bool  = True
-    metrics:   bool  = True
-    log_level: str   = "INFO"
+
+    tracing: bool = True
+    metrics: bool = True
+    log_level: str = "INFO"
 
 
 @dataclass
@@ -137,17 +146,18 @@ class NexusConfig:
 
     Everything else is optional and has safe defaults.
     """
-    agent:         AgentConfig         = field(default_factory=AgentConfig)
-    network:       NetworkConfig       = field(default_factory=NetworkConfig)
-    reliability:   ReliabilityConfig   = field(default_factory=ReliabilityConfig)
-    security:      SecurityConfig      = field(default_factory=SecurityConfig)
-    storage:       StorageConfig       = field(default_factory=StorageConfig)
+
+    agent: AgentConfig = field(default_factory=AgentConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
+    reliability: ReliabilityConfig = field(default_factory=ReliabilityConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
     # ── Factory methods ───────────────────────────────────────────────────────
 
     @classmethod
-    def from_file(cls, path: str | Path = "nexus.toml") -> "NexusConfig":
+    def from_file(cls, path: str | Path = "nexus.toml") -> NexusConfig:
         """
         Parse a nexus.toml file and apply environment variable overrides.
 
@@ -183,7 +193,7 @@ class NexusConfig:
         return config
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "NexusConfig":
+    def from_dict(cls, raw: dict[str, Any]) -> NexusConfig:
         """
         Parse config from a raw Python dict (useful for testing).
 
@@ -204,7 +214,7 @@ class NexusConfig:
     # ── Internal: parsing ─────────────────────────────────────────────────────
 
     @classmethod
-    def _parse(cls, raw: dict[str, Any]) -> "NexusConfig":
+    def _parse(cls, raw: dict[str, Any]) -> NexusConfig:
         """Convert raw TOML dict to a NexusConfig with typed sections."""
         return cls(
             agent=cls._parse_agent(raw.get("agent", {})),
@@ -220,16 +230,22 @@ class NexusConfig:
         skills: list[SkillConfig] = []
         for i, s in enumerate(raw.get("skills", [])):
             if "id" not in s:
-                raise ConfigError("Missing 'id' in skill entry", f"agent.skills[{i}].id")
+                raise ConfigError(
+                    "Missing 'id' in skill entry", f"agent.skills[{i}].id"
+                )
             if "name" not in s:
-                raise ConfigError("Missing 'name' in skill entry", f"agent.skills[{i}].name")
-            skills.append(SkillConfig(
-                id=s["id"],
-                name=s["name"],
-                description=s.get("description", ""),
-                tags=s.get("tags", []),
-                examples=s.get("examples", []),
-            ))
+                raise ConfigError(
+                    "Missing 'name' in skill entry", f"agent.skills[{i}].name"
+                )
+            skills.append(
+                SkillConfig(
+                    id=s["id"],
+                    name=s["name"],
+                    description=s.get("description", ""),
+                    tags=s.get("tags", []),
+                    examples=s.get("examples", []),
+                )
+            )
 
         return AgentConfig(
             name=raw.get("name", ""),
@@ -257,7 +273,9 @@ class NexusConfig:
     def _parse_reliability(raw: dict[str, Any]) -> ReliabilityConfig:
         retry_on = raw.get("retry_on", [500, 502, 503, 504])
         if not isinstance(retry_on, list):
-            raise ConfigError("'retry_on' must be a list of HTTP status codes", "reliability.retry_on")
+            raise ConfigError(
+                "'retry_on' must be a list of HTTP status codes", "reliability.retry_on"
+            )
 
         return ReliabilityConfig(
             task_timeout_sec=float(raw.get("task_timeout_sec", 120.0)),
@@ -461,6 +479,7 @@ class NexusConfig:
 
         if backend == "memory":
             from nexus_a2a.storage.task_store import InMemoryTaskStore
+
             return InMemoryTaskStore()
 
         if backend == "redis":
@@ -476,7 +495,9 @@ class NexusConfig:
 
         if backend == "postgres":
             try:
-                from nexus_a2a.storage.postgres_store import PostgresTaskStore  # type: ignore[import]
+                from nexus_a2a.storage.postgres_store import (
+                    PostgresTaskStore,  # type: ignore[import]
+                )
             except ImportError:
                 raise ConfigError(
                     "PostgresTaskStore requires the 'postgres' extra. "
@@ -491,6 +512,7 @@ class NexusConfig:
     def build_retry_config(self) -> Any:
         """Build a RetryConfig from [reliability] settings."""
         from nexus_a2a.transport.http_client import RetryConfig
+
         return RetryConfig(
             max_retries=self.reliability.max_retries,
             retry_on=set(self.reliability.retry_on),
@@ -501,6 +523,7 @@ class NexusConfig:
     def build_circuit_breaker(self) -> Any:
         """Build a CircuitBreaker from [reliability] settings."""
         from nexus_a2a.transport.http_client import CircuitBreaker
+
         return CircuitBreaker(
             failure_threshold=self.reliability.circuit_breaker_threshold,
             recovery_timeout=self.reliability.circuit_recovery_sec,
@@ -514,12 +537,11 @@ class NexusConfig:
         For per-agent credentials, call manager.register_agent() manually
         after building the network.
         """
-        from nexus_a2a.models.agent import AuthScheme
         from nexus_a2a.security.auth import AgentCredentialConfig, AuthManager
 
         scheme_map = {
-            "none":    AuthScheme.NONE,
-            "jwt":     AuthScheme.JWT,
+            "none": AuthScheme.NONE,
+            "jwt": AuthScheme.JWT,
             "api_key": AuthScheme.API_KEY,
         }
         scheme = scheme_map[self.security.auth_scheme]
@@ -551,17 +573,17 @@ class NexusConfig:
         """
         return {
             "agent": {
-                "name":        self.agent.name,
+                "name": self.agent.name,
                 "description": self.agent.description,
-                "version":     self.agent.version,
-                "url":         self.agent.url,
-                "streaming":   self.agent.streaming,
-                "skills":      [
+                "version": self.agent.version,
+                "url": self.agent.url,
+                "streaming": self.agent.streaming,
+                "skills": [
                     {
-                        "id":          s.id,
-                        "name":        s.name,
+                        "id": s.id,
+                        "name": s.name,
                         "description": s.description,
-                        "tags":        s.tags,
+                        "tags": s.tags,
                     }
                     for s in self.agent.skills
                 ],
@@ -570,25 +592,25 @@ class NexusConfig:
                 "agents": self.network.agents,
             },
             "reliability": {
-                "task_timeout_sec":          self.reliability.task_timeout_sec,
-                "max_retries":               self.reliability.max_retries,
-                "retry_on":                  self.reliability.retry_on,
+                "task_timeout_sec": self.reliability.task_timeout_sec,
+                "max_retries": self.reliability.max_retries,
+                "retry_on": self.reliability.retry_on,
                 "circuit_breaker_threshold": self.reliability.circuit_breaker_threshold,
-                "circuit_recovery_sec":      self.reliability.circuit_recovery_sec,
+                "circuit_recovery_sec": self.reliability.circuit_recovery_sec,
             },
             "security": {
                 "auth_scheme": self.security.auth_scheme,
                 "auth_secret": "***REDACTED***" if self.security.auth_secret else "",
-                "trust_mode":  self.security.trust_mode,
+                "trust_mode": self.security.trust_mode,
             },
             "storage": {
                 "backend": self.storage.backend,
-                "url":     self.storage.url,
+                "url": self.storage.url,
                 "ttl_sec": self.storage.ttl_sec,
             },
             "observability": {
-                "tracing":   self.observability.tracing,
-                "metrics":   self.observability.metrics,
+                "tracing": self.observability.tracing,
+                "metrics": self.observability.metrics,
                 "log_level": self.observability.log_level,
             },
         }

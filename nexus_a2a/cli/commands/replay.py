@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import click
 
@@ -31,7 +30,9 @@ def _parse_duration(value: str) -> timedelta:
     pattern = re.compile(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
     m = pattern.fullmatch(value.strip())
     if not m or not any(m.groups()):
-        raise click.BadParameter(f"Cannot parse duration '{value}'. Use e.g. 1h, 30m, 2h30m, 7d.")
+        raise click.BadParameter(
+            f"Cannot parse duration '{value}'. Use e.g. 1h, 30m, 2h30m, 7d."
+        )
     days = int(m.group(1) or 0)
     hours = int(m.group(2) or 0)
     minutes = int(m.group(3) or 0)
@@ -43,6 +44,7 @@ def _load_dlq() -> object:
     """Load DeadLetterQueue singleton from the package."""
     try:
         from nexus_a2a.core.dead_letter import DeadLetterQueue  # type: ignore
+
         return DeadLetterQueue.instance()
     except Exception as e:
         raise RuntimeError(f"Cannot access DeadLetterQueue: {e}") from e
@@ -52,13 +54,15 @@ def _dlq_entries_to_dicts(entries: list) -> list[dict]:
     """Convert DLQ entry objects to plain dicts for rendering."""
     result = []
     for entry in entries:
-        result.append({
-            "task_id": getattr(entry, "task_id", str(entry)),
-            "skill_id": getattr(entry, "skill_id", None),
-            "failed_at": str(getattr(entry, "failed_at", "—")),
-            "attempts": getattr(entry, "attempts", 1),
-            "error": str(getattr(entry, "error", "—")),
-        })
+        result.append(
+            {
+                "task_id": getattr(entry, "task_id", str(entry)),
+                "skill_id": getattr(entry, "skill_id", None),
+                "failed_at": str(getattr(entry, "failed_at", "—")),
+                "attempts": getattr(entry, "attempts", 1),
+                "error": str(getattr(entry, "error", "—")),
+            }
+        )
     return result
 
 
@@ -76,7 +80,9 @@ async def _replay_entries(dlq: object, entries: list, verbose: bool) -> tuple[in
             except Exception as exc:
                 failed += 1
                 if verbose:
-                    console.print(f"[red]  ✗ {getattr(entry, 'task_id', entry)}: {exc}[/red]")
+                    console.print(
+                        f"[red]  ✗ {getattr(entry, 'task_id', entry)}: {exc}[/red]"
+                    )
             finally:
                 progress.advance(task)
 
@@ -84,17 +90,31 @@ async def _replay_entries(dlq: object, entries: list, verbose: bool) -> tuple[in
 
 
 @click.command("replay")
-@click.option("--failed", is_flag=True, default=False, help="Replay all failed (DLQ) tasks.")
+@click.option(
+    "--failed", is_flag=True, default=False, help="Replay all failed (DLQ) tasks."
+)
 @click.option("--skill", default=None, metavar="SKILL_ID", help="Filter by skill ID.")
-@click.option("--last", default=None, metavar="DURATION", help="Only tasks failed within duration (e.g. 1h, 30m, 7d).")
-@click.option("--dry-run", is_flag=True, default=False, help="Preview matching tasks without replaying.")
-@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
+@click.option(
+    "--last",
+    default=None,
+    metavar="DURATION",
+    help="Only tasks failed within duration (e.g. 1h, 30m, 7d).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Preview matching tasks without replaying.",
+)
+@click.option(
+    "--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt."
+)
 @pass_ctx
 def replay(
     ctx: NexusContext,
     failed: bool,
-    skill: Optional[str],
-    last: Optional[str],
+    skill: str | None,
+    last: str | None,
     dry_run: bool,
     yes: bool,
 ) -> None:
@@ -113,38 +133,35 @@ def replay(
         raise SystemExit(0)
 
     # ── Build filter ──────────────────────────────────────────────────────────
-    since: Optional[datetime] = None
+    since: datetime | None = None
     if last:
         try:
             delta = _parse_duration(last)
         except click.BadParameter as e:
             print_error(str(e))
-            raise SystemExit(1)
-        since = datetime.now(timezone.utc) - delta
+            raise SystemExit(1) from e
+        since = datetime.now(UTC) - delta
 
     # ── Load DLQ ──────────────────────────────────────────────────────────────
     try:
         dlq = _load_dlq()
     except RuntimeError as e:
         print_error(str(e))
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     # ── Fetch matching entries ────────────────────────────────────────────────
     try:
         all_entries = asyncio.run(_get_entries(dlq))
     except Exception as e:
         print_error(f"Failed to read DLQ: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     # Apply filters
     entries = all_entries
     if skill:
         entries = [e for e in entries if getattr(e, "skill_id", None) == skill]
     if since:
-        entries = [
-            e for e in entries
-            if _entry_failed_after(e, since)
-        ]
+        entries = [e for e in entries if _entry_failed_after(e, since)]
 
     if not entries:
         print_warning("No matching DLQ entries found.")
@@ -154,7 +171,9 @@ def replay(
     render_replay_preview(entry_dicts, fmt=ctx.fmt)
 
     if dry_run:
-        console.print(f"\n[dim]Dry run — {len(entries)} task(s) would be replayed.[/dim]")
+        console.print(
+            f"\n[dim]Dry run — {len(entries)} task(s) would be replayed.[/dim]"
+        )
         raise SystemExit(0)
 
     # ── Confirmation ──────────────────────────────────────────────────────────
@@ -163,10 +182,12 @@ def replay(
 
     # ── Execute replay ────────────────────────────────────────────────────────
     try:
-        succeeded, failed_count = asyncio.run(_replay_entries(dlq, entries, ctx.verbose))
+        succeeded, failed_count = asyncio.run(
+            _replay_entries(dlq, entries, ctx.verbose)
+        )
     except Exception as e:
         print_error(f"Replay error: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     render_replay_result(succeeded, failed_count)
 
@@ -196,5 +217,5 @@ def _entry_failed_after(entry: object, since: datetime) -> bool:
         except ValueError:
             return True
     if failed_at.tzinfo is None:
-        failed_at = failed_at.replace(tzinfo=timezone.utc)
+        failed_at = failed_at.replace(tzinfo=UTC)
     return failed_at >= since

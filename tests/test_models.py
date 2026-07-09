@@ -11,7 +11,6 @@ from pydantic import ValidationError
 from nexus_a2a import (
     AgentCard,
     AgentSkill,
-    AgentCapabilities,
     Artifact,
     Message,
     MessageRole,
@@ -21,10 +20,10 @@ from nexus_a2a import (
     TaskState,
 )
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # AgentSkill
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestAgentSkill:
     def test_valid_skill(self):
@@ -39,7 +38,9 @@ class TestAgentSkill:
 
     def test_strips_whitespace_from_tags(self):
         skill = AgentSkill(
-            id="s1", name="S", description="D",
+            id="s1",
+            name="S",
+            description="D",
             tags=["  ai  ", "", "  ml"],
         )
         assert skill.tags == ["ai", "ml"]  # empty string dropped, whitespace stripped
@@ -52,6 +53,7 @@ class TestAgentSkill:
 # ══════════════════════════════════════════════════════════════════════════════
 # AgentCard
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestAgentCard:
     def _make_card(self, **kwargs) -> AgentCard:
@@ -87,6 +89,7 @@ class TestAgentCard:
 
     def test_to_well_known_dict_is_serialisable(self):
         import json
+
         card = self._make_card()
         d = card.to_well_known_dict()
         # Must be JSON-serialisable without errors
@@ -96,7 +99,9 @@ class TestAgentCard:
     def test_extra_fields_ignored(self):
         # Simulates parsing an external agent's card that has unknown keys
         card = AgentCard(
-            name="X", description="D", url="http://localhost:9000",
+            name="X",
+            description="D",
+            url="http://localhost:9000",
             unknown_future_field="should be ignored",  # type: ignore[call-arg]
         )
         assert card.name == "X"
@@ -109,6 +114,7 @@ class TestAgentCard:
 # ══════════════════════════════════════════════════════════════════════════════
 # Part & Message
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestPart:
     def test_text_part(self):
@@ -155,6 +161,7 @@ class TestMessage:
 # Task
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestTask:
     def _make_task(self) -> Task:
         return Task.create(
@@ -187,7 +194,7 @@ class TestTask:
         task = self._make_task()
         task.transition(TaskState.WORKING)
         with pytest.raises(ValueError, match="error message"):
-            task.transition(TaskState.FAILED)   # must pass error=
+            task.transition(TaskState.FAILED)  # must pass error=
 
     def test_failed_with_error(self):
         task = self._make_task()

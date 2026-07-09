@@ -40,9 +40,9 @@ def inspect(ctx: NexusContext, url: str) -> None:
         card = asyncio.run(_fetch_card(url))
     except httpx.HTTPStatusError as e:
         print_error(f"HTTP {e.response.status_code} from {url}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
     except Exception as e:
         print_error(str(e))
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     render_inspect(card, fmt=ctx.fmt)

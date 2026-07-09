@@ -23,43 +23,43 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nexus_a2a.core.graceful_shutdown import GracefulShutdown, _ACTIVE_STATES
+from nexus_a2a.core.graceful_shutdown import GracefulShutdown
 from nexus_a2a.models.task import TaskState
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
 
 def make_task(state: TaskState) -> MagicMock:
     t = MagicMock()
     t.state = state
-    t.id    = f"task-{state.value}"
+    t.id = f"task-{state.value}"
     return t
 
 
 def make_mock_network(tasks: list[MagicMock] | None = None) -> MagicMock:
     network = MagicMock()
-    network.task_manager.list_all    = AsyncMock(return_value=tasks or [])
-    network.task_manager.cancel      = AsyncMock()
+    network.task_manager.list_all = AsyncMock(return_value=tasks or [])
+    network.task_manager.cancel = AsyncMock()
     network.task_manager.stop_watchdog = AsyncMock()
-    network.bus.publish              = AsyncMock()
+    network.bus.publish = AsyncMock()
     return network
 
 
 def make_mock_server(running: bool = True) -> MagicMock:
     server = MagicMock()
     server.is_running = running
-    server.stop       = AsyncMock()
+    server.stop = AsyncMock()
     return server
 
 
 # ── Properties ────────────────────────────────────────────────────────────────
 
-class TestProperties:
 
+class TestProperties:
     def test_is_draining_false_initially(self):
         sd = GracefulShutdown(network=make_mock_network())
         assert sd.is_draining is False
@@ -79,8 +79,8 @@ class TestProperties:
 
 # ── _trigger() ────────────────────────────────────────────────────────────────
 
-class TestTrigger:
 
+class TestTrigger:
     def test_trigger_sets_shutdown_event(self):
         sd = GracefulShutdown(network=make_mock_network())
         assert not sd._shutdown_event.is_set()
@@ -100,22 +100,24 @@ class TestTrigger:
     def test_trigger_idempotent_first_signal_wins(self):
         sd = GracefulShutdown(network=make_mock_network())
         sd._trigger("SIGTERM")
-        sd._trigger("SIGINT")   # second signal ignored
+        sd._trigger("SIGINT")  # second signal ignored
         assert sd.received_signal == "SIGTERM"
 
 
 # ── install() / uninstall() ───────────────────────────────────────────────────
 
-class TestInstallUninstall:
 
+class TestInstallUninstall:
     @pytest.mark.asyncio
     async def test_install_registers_handlers(self):
         sd = GracefulShutdown(network=make_mock_network())
         loop = asyncio.get_running_loop()
         registered = []
         original = loop.add_signal_handler
+
         def capture(sig, *args, **kwargs):
             registered.append(sig)
+
         with patch.object(loop, "add_signal_handler", side_effect=capture):
             sd.install()
         # On POSIX both SIGTERM and SIGINT should be registered
@@ -129,8 +131,10 @@ class TestInstallUninstall:
         sd.install()
         loop = asyncio.get_running_loop()
         removed = []
+
         def capture_remove(sig):
             removed.append(sig)
+
         with patch.object(loop, "remove_signal_handler", side_effect=capture_remove):
             sd.uninstall()
         # Verify at least SIGINT was removed (SIGTERM on non-Windows)
@@ -161,7 +165,9 @@ class TestInstallUninstall:
         """Some event loops raise NotImplementedError on remove_signal_handler."""
         sd = GracefulShutdown(network=make_mock_network())
         loop = asyncio.get_running_loop()
-        with patch.object(loop, "remove_signal_handler", side_effect=NotImplementedError):
+        with patch.object(
+            loop, "remove_signal_handler", side_effect=NotImplementedError
+        ):
             sd.uninstall()  # must not raise
 
     @pytest.mark.asyncio
@@ -170,8 +176,10 @@ class TestInstallUninstall:
         sd = GracefulShutdown(network=make_mock_network())
         loop = asyncio.get_running_loop()
         registered = []
+
         def capture(sig, *args, **kwargs):
             registered.append(sig)
+
         with patch.object(loop, "add_signal_handler", side_effect=capture):
             sd.install()
         assert signal.SIGINT in registered
@@ -180,8 +188,8 @@ class TestInstallUninstall:
 
 # ── wait() ────────────────────────────────────────────────────────────────────
 
-class TestWait:
 
+class TestWait:
     @pytest.mark.asyncio
     async def test_wait_returns_after_trigger(self):
         sd = GracefulShutdown(network=make_mock_network())
@@ -213,8 +221,8 @@ class TestWait:
 
 # ── drain(): clean path ───────────────────────────────────────────────────────
 
-class TestDrainClean:
 
+class TestDrainClean:
     @pytest.mark.asyncio
     async def test_drain_sets_is_drained(self):
         sd = GracefulShutdown(network=make_mock_network())
@@ -262,7 +270,7 @@ class TestDrainClean:
     @pytest.mark.asyncio
     async def test_drain_stops_server_if_running(self):
         network = make_mock_network()
-        server  = make_mock_server(running=True)
+        server = make_mock_server(running=True)
         sd = GracefulShutdown(network=network, server=server)
         await sd.drain()
         server.stop.assert_awaited_once()
@@ -270,7 +278,7 @@ class TestDrainClean:
     @pytest.mark.asyncio
     async def test_drain_skips_server_stop_if_not_running(self):
         network = make_mock_network()
-        server  = make_mock_server(running=False)
+        server = make_mock_server(running=False)
         sd = GracefulShutdown(network=network, server=server)
         await sd.drain()
         server.stop.assert_not_awaited()
@@ -279,7 +287,7 @@ class TestDrainClean:
     async def test_drain_skips_server_stop_if_no_server(self):
         network = make_mock_network()
         sd = GracefulShutdown(network=network, server=None)
-        await sd.drain()   # should not raise
+        await sd.drain()  # should not raise
 
     @pytest.mark.asyncio
     async def test_drain_with_no_active_tasks_is_immediate(self):
@@ -287,6 +295,7 @@ class TestDrainClean:
         network = make_mock_network(tasks=[])
         sd = GracefulShutdown(network=network, poll_interval_sec=0.01)
         import time
+
         t0 = time.monotonic()
         await sd.drain()
         elapsed = time.monotonic() - t0
@@ -303,9 +312,9 @@ class TestDrainClean:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
-                return [task]   # first 2 polls: task still active
+                return [task]  # first 2 polls: task still active
             task.state = TaskState.COMPLETED
-            return [task]       # 3rd poll: task done
+            return [task]  # 3rd poll: task done
 
         network = make_mock_network()
         network.task_manager.list_all = AsyncMock(side_effect=list_all_side_effect)
@@ -334,8 +343,8 @@ class TestDrainClean:
 
 # ── drain(): forced cancellation path ────────────────────────────────────────
 
-class TestDrainForced:
 
+class TestDrainForced:
     @pytest.mark.asyncio
     async def test_drain_cancels_tasks_on_timeout(self):
         """Tasks still WORKING after drain window → force-cancelled."""
@@ -343,7 +352,7 @@ class TestDrainForced:
         network = make_mock_network(tasks=[task])
         sd = GracefulShutdown(
             network=network,
-            drain_timeout_sec=0.05,   # very short timeout
+            drain_timeout_sec=0.05,  # very short timeout
             poll_interval_sec=0.01,
         )
         await sd.drain()
@@ -376,13 +385,13 @@ class TestDrainForced:
             poll_interval_sec=0.01,
         )
         await sd.drain()
-        assert sd.is_drained is True   # drain completed despite error
+        assert sd.is_drained is True  # drain completed despite error
 
 
 # ── drain() idempotency ───────────────────────────────────────────────────────
 
-class TestDrainIdempotency:
 
+class TestDrainIdempotency:
     @pytest.mark.asyncio
     async def test_drain_twice_only_runs_once(self):
         network = make_mock_network()
@@ -405,8 +414,8 @@ class TestDrainIdempotency:
 
 # ── Resilience: errors in helpers ────────────────────────────────────────────
 
-class TestDrainResilience:
 
+class TestDrainResilience:
     @pytest.mark.asyncio
     async def test_drain_survives_list_all_error(self):
         network = make_mock_network()
@@ -418,7 +427,9 @@ class TestDrainResilience:
     @pytest.mark.asyncio
     async def test_drain_survives_stop_watchdog_error(self):
         network = make_mock_network()
-        network.task_manager.stop_watchdog = AsyncMock(side_effect=Exception("watchdog error"))
+        network.task_manager.stop_watchdog = AsyncMock(
+            side_effect=Exception("watchdog error")
+        )
         sd = GracefulShutdown(network=network)
         await sd.drain()
         assert sd.is_drained is True
@@ -434,7 +445,7 @@ class TestDrainResilience:
     @pytest.mark.asyncio
     async def test_drain_survives_server_stop_error(self):
         network = make_mock_network()
-        server  = make_mock_server(running=True)
+        server = make_mock_server(running=True)
         server.stop = AsyncMock(side_effect=Exception("server error"))
         sd = GracefulShutdown(network=network, server=server)
         await sd.drain()
@@ -443,23 +454,27 @@ class TestDrainResilience:
 
 # ── Async context manager ─────────────────────────────────────────────────────
 
-class TestAsyncContextManager:
 
+class TestAsyncContextManager:
     @pytest.mark.asyncio
     async def test_aenter_installs_handlers(self):
         sd = GracefulShutdown(network=make_mock_network())
-        with patch.object(sd, "install") as mock_install, \
-             patch.object(sd, "uninstall"), \
-             patch.object(sd, "drain", new_callable=AsyncMock):
+        with (
+            patch.object(sd, "install") as mock_install,
+            patch.object(sd, "uninstall"),
+            patch.object(sd, "drain", new_callable=AsyncMock),
+        ):
             async with sd:
                 mock_install.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_aexit_calls_drain(self):
         sd = GracefulShutdown(network=make_mock_network())
-        with patch.object(sd, "install"), \
-             patch.object(sd, "uninstall"), \
-             patch.object(sd, "drain", new_callable=AsyncMock) as mock_drain:
+        with (
+            patch.object(sd, "install"),
+            patch.object(sd, "uninstall"),
+            patch.object(sd, "drain", new_callable=AsyncMock) as mock_drain,
+        ):
             async with sd:
                 pass
             mock_drain.assert_awaited_once()
@@ -467,9 +482,11 @@ class TestAsyncContextManager:
     @pytest.mark.asyncio
     async def test_aexit_uninstalls_handlers(self):
         sd = GracefulShutdown(network=make_mock_network())
-        with patch.object(sd, "install"), \
-             patch.object(sd, "uninstall") as mock_uninstall, \
-             patch.object(sd, "drain", new_callable=AsyncMock):
+        with (
+            patch.object(sd, "install"),
+            patch.object(sd, "uninstall") as mock_uninstall,
+            patch.object(sd, "drain", new_callable=AsyncMock),
+        ):
             async with sd:
                 pass
             mock_uninstall.assert_called_once()
@@ -492,12 +509,18 @@ class TestAsyncContextManager:
     async def test_full_context_manager_workflow(self):
         """End-to-end: signal fires inside the context, drain happens on exit."""
         network = make_mock_network()
-        server  = make_mock_server(running=True)
+        server = make_mock_server(running=True)
 
-        with patch.object(asyncio.get_running_loop(), "add_signal_handler", return_value=None), \
-             patch.object(asyncio.get_running_loop(), "remove_signal_handler", return_value=None):
+        with (
+            patch.object(
+                asyncio.get_running_loop(), "add_signal_handler", return_value=None
+            ),
+            patch.object(
+                asyncio.get_running_loop(), "remove_signal_handler", return_value=None
+            ),
+        ):
             async with GracefulShutdown(network=network, server=server) as sd:
-                sd._trigger("SIGTERM")   # simulate signal
+                sd._trigger("SIGTERM")  # simulate signal
 
         assert sd.is_drained is True
         assert sd.received_signal == "SIGTERM"
@@ -507,8 +530,8 @@ class TestAsyncContextManager:
 
 # ── _count_active_tasks / _cancel_active_tasks ────────────────────────────────
 
-class TestHelpers:
 
+class TestHelpers:
     @pytest.mark.asyncio
     async def test_count_active_tasks_zero_with_no_tasks(self):
         sd = GracefulShutdown(network=make_mock_network(tasks=[]))

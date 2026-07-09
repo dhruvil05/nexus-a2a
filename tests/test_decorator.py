@@ -7,13 +7,13 @@ Run with:  uv run pytest tests/test_decorator.py -v
 
 import pytest
 
-from nexus_a2a import agent, get_card, AgentCard, AgentSkill, AuthScheme
+from nexus_a2a import AgentCard, AgentSkill, AuthScheme, agent, get_card
 from nexus_a2a.models.task import Task
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Basic decoration
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestAgentDecoratorBasic:
     def test_decorator_with_arguments(self):
@@ -35,6 +35,7 @@ class TestAgentDecoratorBasic:
         @agent
         class MySimpleAgent:
             """Does simple things."""
+
             async def run(self, task: Task) -> str:
                 return "ok"
 
@@ -55,6 +56,7 @@ class TestAgentDecoratorBasic:
 # ══════════════════════════════════════════════════════════════════════════════
 # Skills
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestAgentDecoratorSkills:
     def test_skills_as_dicts(self):
@@ -93,7 +95,9 @@ class TestAgentDecoratorSkills:
         assert card.skills[0].id == "search"
 
     def test_no_skills_is_valid(self):
-        @agent(name="NoSkillAgent", description="Bare agent.", url="http://localhost:8005")
+        @agent(
+            name="NoSkillAgent", description="Bare agent.", url="http://localhost:8005"
+        )
         class NoSkillAgent:
             async def run(self, task: Task) -> str:
                 return ""
@@ -105,10 +109,15 @@ class TestAgentDecoratorSkills:
 # Capabilities
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestAgentDecoratorCapabilities:
     def test_streaming_flag(self):
-        @agent(name="StreamAgent", description="Streams.", url="http://localhost:8006",
-               streaming=True)
+        @agent(
+            name="StreamAgent",
+            description="Streams.",
+            url="http://localhost:8006",
+            streaming=True,
+        )
         class StreamAgent:
             async def run(self, task: Task) -> str:
                 return ""
@@ -116,8 +125,12 @@ class TestAgentDecoratorCapabilities:
         assert get_card(StreamAgent).capabilities.streaming is True
 
     def test_push_notifications_flag(self):
-        @agent(name="PushAgent", description="Pushes.", url="http://localhost:8007",
-               push_notifications=True)
+        @agent(
+            name="PushAgent",
+            description="Pushes.",
+            url="http://localhost:8007",
+            push_notifications=True,
+        )
         class PushAgent:
             async def run(self, task: Task) -> str:
                 return ""
@@ -135,8 +148,12 @@ class TestAgentDecoratorCapabilities:
         assert caps.push_notifications is False
 
     def test_auth_scheme(self):
-        @agent(name="SecureAgent", description="Secure.", url="http://localhost:8009",
-               auth_scheme=AuthScheme.JWT)
+        @agent(
+            name="SecureAgent",
+            description="Secure.",
+            url="http://localhost:8009",
+            auth_scheme=AuthScheme.JWT,
+        )
         class SecureAgent:
             async def run(self, task: Task) -> str:
                 return ""
@@ -148,9 +165,11 @@ class TestAgentDecoratorCapabilities:
 # Error cases
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestAgentDecoratorErrors:
     def test_missing_async_run_raises(self):
         with pytest.raises(TypeError, match="async def run"):
+
             @agent(name="BadAgent", description="No run.", url="http://localhost:8010")
             class BadAgent:
                 def run(self, task: Task) -> str:  # sync, not async
@@ -158,7 +177,10 @@ class TestAgentDecoratorErrors:
 
     def test_no_run_at_all_raises(self):
         with pytest.raises(TypeError, match="async def run"):
-            @agent(name="NoRunAgent", description="No run.", url="http://localhost:8011")
+
+            @agent(
+                name="NoRunAgent", description="No run.", url="http://localhost:8011"
+            )
             class NoRunAgent:
                 pass
 
@@ -185,9 +207,12 @@ class TestAgentDecoratorErrors:
 # Class still works normally after decoration
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestDecoratedClassBehaviour:
     def test_class_is_still_instantiable(self):
-        @agent(name="LiveAgent", description="Works normally.", url="http://localhost:8013")
+        @agent(
+            name="LiveAgent", description="Works normally.", url="http://localhost:8013"
+        )
         class LiveAgent:
             def __init__(self):
                 self.ready = True
@@ -206,5 +231,5 @@ class TestDecoratedClassBehaviour:
                 return "async result"
 
         instance = AsyncAgent()
-        msg = await instance.run(None)   # type: ignore[arg-type]
+        msg = await instance.run(None)  # type: ignore[arg-type]
         assert msg == "async result"

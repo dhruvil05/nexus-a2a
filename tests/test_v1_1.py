@@ -17,34 +17,40 @@ from __future__ import annotations
 
 import asyncio
 import time
-import pytest
-import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from nexus_a2a.models.agent import AgentCard, AgentCapabilities, AgentSkill
-from nexus_a2a.models.task import Message, Task, TaskState, Part, PartType
-from nexus_a2a.transport.tracing import Span, Trace, TraceStore, Tracer, TRACE_ID_HEADER
-from nexus_a2a.transport.http_client import (
-    A2AHttpClient,
-    CircuitBreaker,
-    CircuitOpenError,
-    CircuitState,
-    RetryConfig,
-    AgentUnreachableError,
-    RemoteAgentError,
+import httpx
+import pytest
+
+from nexus_a2a.core.dead_letter import DeadLetterQueue, DLQEntry
+from nexus_a2a.core.input_handler import (
+    InputHandler,
+    InputTimeoutError,
+    NoInputWaiterError,
 )
-from nexus_a2a.core.task_manager import TaskManager, TaskNotFoundError, TaskAlreadyDoneError
-from nexus_a2a.core.input_handler import InputHandler, InputTimeoutError, NoInputWaiterError
-from nexus_a2a.core.dead_letter import DeadLetterQueue, DLQEntry, ReplayResult
+from nexus_a2a.core.task_manager import (
+    TaskManager,
+)
+from nexus_a2a.models.agent import AgentCapabilities, AgentCard
+from nexus_a2a.models.task import Message, Task, TaskState
+from nexus_a2a.network import AgentNetwork
 from nexus_a2a.security.capability_guard import (
     CapabilityGuard,
     CapabilityMismatchError,
     CapabilityNotSupportedError,
 )
-from nexus_a2a.network import AgentNetwork, EventBus
-
+from nexus_a2a.transport.http_client import (
+    A2AHttpClient,
+    AgentUnreachableError,
+    CircuitBreaker,
+    CircuitOpenError,
+    CircuitState,
+    RetryConfig,
+)
+from nexus_a2a.transport.tracing import TRACE_ID_HEADER, Span, Tracer, TraceStore
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
+
 
 def _make_task(state: TaskState = TaskState.WORKING) -> Task:
     task = Task.create(initial_message=Message.user_text("test"))
@@ -72,6 +78,7 @@ def _make_card(streaming: bool = False, push: bool = False) -> AgentCard:
 # ══════════════════════════════════════════════════════════════════════════════
 # Tracer + TraceStore
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestTracer:
     def test_new_trace_id_is_unique(self):
@@ -117,7 +124,7 @@ class TestTracer:
     async def test_span_auto_completes_if_not_set(self):
         store = TraceStore()
         async with Tracer.span("trace-3", "http://agent:8001", store=store):
-            pass   # never call set_status
+            pass  # never call set_status
 
         trace = store.get("trace-3")
         assert trace.spans[0].status == "completed"
@@ -129,7 +136,7 @@ class TestTracer:
         async with Tracer.span("trace-4", "http://b:8002", store=store) as s2:
             s2.set_status("failed", error="timeout")
 
-        trace  = store.get("trace-4")
+        trace = store.get("trace-4")
         output = trace.format_tree()
         assert "trace-4" in output
         assert "http://a:8001" in output
@@ -140,7 +147,7 @@ class TestTracer:
 class TestTraceStore:
     async def test_record_and_get(self):
         store = TraceStore()
-        span  = Span(trace_id="t1", agent_url="http://a:8001")
+        span = Span(trace_id="t1", agent_url="http://a:8001")
         await store.record(span)
         trace = store.get("t1")
         assert trace is not None
@@ -166,6 +173,7 @@ class TestTraceStore:
 # CircuitBreaker
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestCircuitBreaker:
     def test_starts_closed(self):
         cb = CircuitBreaker()
@@ -188,10 +196,10 @@ class TestCircuitBreaker:
         cb = CircuitBreaker(failure_threshold=3)
         cb.on_failure()
         cb.on_failure()
-        cb.on_success()   # reset
+        cb.on_success()  # reset
         cb.on_failure()
         cb.on_failure()
-        assert cb.state == CircuitState.CLOSED   # need one more failure to open
+        assert cb.state == CircuitState.CLOSED  # need one more failure to open
 
     def test_half_open_after_recovery_timeout(self):
         cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
@@ -225,12 +233,13 @@ class TestCircuitBreaker:
 # RetryConfig
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestRetryConfig:
     def test_delay_increases_exponentially(self):
         cfg = RetryConfig(base_delay=1.0, jitter=False)
-        d1  = cfg.delay_for(1)
-        d2  = cfg.delay_for(2)
-        d3  = cfg.delay_for(3)
+        d1 = cfg.delay_for(1)
+        d2 = cfg.delay_for(2)
+        d3 = cfg.delay_for(3)
         assert d2 == pytest.approx(d1 * 2, rel=0.01)
         assert d3 == pytest.approx(d1 * 4, rel=0.01)
 
@@ -239,40 +248,49 @@ class TestRetryConfig:
         assert cfg.delay_for(1) == 5.0
 
     def test_jitter_adds_variance(self):
-        cfg     = RetryConfig(base_delay=1.0, jitter=True)
-        delays  = {cfg.delay_for(1) for _ in range(20)}
-        assert len(delays) > 1   # jitter should produce varying values
+        cfg = RetryConfig(base_delay=1.0, jitter=True)
+        delays = {cfg.delay_for(1) for _ in range(20)}
+        assert len(delays) > 1  # jitter should produce varying values
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # A2AHttpClient — 5xx retry + circuit breaker
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestA2AHttpClientV11:
     def _mock_response(self, status: int, body: dict | None = None) -> MagicMock:
         resp = MagicMock()
         resp.status_code = status
-        resp.json        = MagicMock(return_value=body or {
-            "jsonrpc": "2.0", "id": "x",
-            "result": {
-                "id": "task-1", "context_id": "ctx-1",
-                "state": "submitted", "history": [],
-                "artifacts": [], "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z",
+        resp.json = MagicMock(
+            return_value=body
+            or {
+                "jsonrpc": "2.0",
+                "id": "x",
+                "result": {
+                    "id": "task-1",
+                    "context_id": "ctx-1",
+                    "state": "submitted",
+                    "history": [],
+                    "artifacts": [],
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                },
             }
-        })
-        resp.is_success  = (200 <= status < 300)
+        )
+        resp.is_success = 200 <= status < 300
         resp.raise_for_status = MagicMock(
-            side_effect=None if resp.is_success
+            side_effect=None
+            if resp.is_success
             else httpx.HTTPStatusError("err", request=MagicMock(), response=resp)
         )
         return resp
 
     def _patch_client(self, responses: list) -> patch:
-        mock_http   = AsyncMock()
+        mock_http = AsyncMock()
         mock_http.post = AsyncMock(side_effect=responses)
         mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http.__aexit__  = AsyncMock(return_value=False)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
         return patch(
             "nexus_a2a.transport.http_client.httpx.AsyncClient",
             return_value=mock_http,
@@ -280,13 +298,17 @@ class TestA2AHttpClientV11:
 
     async def test_retries_on_500(self):
         success_body = {
-            "jsonrpc": "2.0", "id": "x",
+            "jsonrpc": "2.0",
+            "id": "x",
             "result": {
-                "id": "task-1", "context_id": "ctx-1",
-                "state": "submitted", "history": [],
-                "artifacts": [], "created_at": "2026-01-01T00:00:00Z",
+                "id": "task-1",
+                "context_id": "ctx-1",
+                "state": "submitted",
+                "history": [],
+                "artifacts": [],
+                "created_at": "2026-01-01T00:00:00Z",
                 "updated_at": "2026-01-01T00:00:00Z",
-            }
+            },
         }
         responses = [
             self._mock_response(500),
@@ -353,6 +375,7 @@ class TestA2AHttpClientV11:
 # TaskManager — timeout watchdog
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestTaskManagerWatchdog:
     async def test_watchdog_starts_and_stops(self):
         async with TaskManager(timeout_sec=60) as manager:
@@ -368,14 +391,14 @@ class TestTaskManagerWatchdog:
             timed_out.append(task)
 
         manager = TaskManager(
-            timeout_sec=0.05,       # 50ms timeout
-            watchdog_interval=0.02, # scan every 20ms
+            timeout_sec=0.05,  # 50ms timeout
+            watchdog_interval=0.02,  # scan every 20ms
             on_timeout=on_timeout,
         )
         await manager.start_watchdog()
 
         task = await manager.create(Message.user_text("test"))
-        await manager.start(task.id)   # WORKING
+        await manager.start(task.id)  # WORKING
 
         # Wait for watchdog to fire
         await asyncio.sleep(0.2)
@@ -401,7 +424,7 @@ class TestTaskManagerWatchdog:
 
         task = await manager.create(Message.user_text("test"))
         await manager.start(task.id)
-        await manager.complete(task.id)   # already done before watchdog fires
+        await manager.complete(task.id)  # already done before watchdog fires
 
         await asyncio.sleep(0.1)
         await manager.stop_watchdog()
@@ -413,15 +436,16 @@ class TestTaskManagerWatchdog:
 # InputHandler — pause / resume
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestInputHandler:
     async def test_wait_and_submit_resumes_correctly(self):
         manager = TaskManager()
-        task    = await manager.create(Message.user_text("start"))
+        task = await manager.create(Message.user_text("start"))
         await manager.start(task.id)
 
         handler = InputHandler(manager)
-        prompt  = Message.agent_text("What is your name?")
-        reply   = Message.user_text("Alice")
+        prompt = Message.agent_text("What is your name?")
+        reply = Message.user_text("Alice")
 
         async def agent_side() -> Message:
             return await handler.wait_for_input(task.id, prompt, timeout=2.0)
@@ -435,7 +459,7 @@ class TestInputHandler:
 
     async def test_is_waiting_true_while_suspended(self):
         manager = TaskManager()
-        task    = await manager.create(Message.user_text("start"))
+        task = await manager.create(Message.user_text("start"))
         await manager.start(task.id)
 
         handler = InputHandler(manager)
@@ -458,7 +482,7 @@ class TestInputHandler:
 
     async def test_timeout_raises_and_fails_task(self):
         manager = TaskManager()
-        task    = await manager.create(Message.user_text("start"))
+        task = await manager.create(Message.user_text("start"))
         await manager.start(task.id)
 
         handler = InputHandler(manager)
@@ -489,14 +513,11 @@ class TestInputHandler:
 
         async def wait(tid: str) -> None:
             try:
-                await handler.wait_for_input(
-                    tid, Message.agent_text("?"), timeout=0.3
-                )
+                await handler.wait_for_input(tid, Message.agent_text("?"), timeout=0.3)
             except InputTimeoutError:
                 pass
 
-        tasks = [asyncio.create_task(wait(t1.id)),
-                 asyncio.create_task(wait(t2.id))]
+        tasks = [asyncio.create_task(wait(t1.id)), asyncio.create_task(wait(t2.id))]
         await asyncio.sleep(0.05)
         assert handler.waiting_count() == 2
         await asyncio.gather(*tasks)
@@ -505,6 +526,7 @@ class TestInputHandler:
 # ══════════════════════════════════════════════════════════════════════════════
 # DeadLetterQueue
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestDeadLetterQueue:
     def _failed_task(self) -> Task:
@@ -517,14 +539,14 @@ class TestDeadLetterQueue:
         raise ConnectionError("still down")
 
     async def test_capture_adds_entry(self):
-        dlq  = DeadLetterQueue()
+        dlq = DeadLetterQueue()
         task = self._failed_task()
         await dlq.capture(task, agent_url="http://agent:8001")
         assert dlq.count() == 1
         assert dlq.pending_count() == 1
 
     async def test_failure_hook_fires_on_capture(self):
-        dlq   = DeadLetterQueue()
+        dlq = DeadLetterQueue()
         fired: list[DLQEntry] = []
 
         @dlq.on_failure
@@ -537,7 +559,7 @@ class TestDeadLetterQueue:
         assert fired[0].task_id == task.id
 
     async def test_replay_succeeds(self):
-        dlq  = DeadLetterQueue(runner=self._success_runner)
+        dlq = DeadLetterQueue(runner=self._success_runner)
         task = self._failed_task()
         await dlq.capture(task, agent_url="http://agent:8001")
         result = await dlq.replay(task.id)
@@ -555,7 +577,7 @@ class TestDeadLetterQueue:
         assert dlq.pending_count() == 0
 
     async def test_replay_failure_increments_retry_count(self):
-        dlq  = DeadLetterQueue(runner=self._failing_runner, max_retries=2)
+        dlq = DeadLetterQueue(runner=self._failing_runner, max_retries=2)
         task = self._failed_task()
         await dlq.capture(task, agent_url="http://agent:8001")
 
@@ -566,8 +588,8 @@ class TestDeadLetterQueue:
 
     async def test_replay_where_filters_by_skill(self):
         dlq = DeadLetterQueue(runner=self._success_runner)
-        t1  = self._failed_task()
-        t2  = self._failed_task()
+        t1 = self._failed_task()
+        t2 = self._failed_task()
         await dlq.capture(t1, agent_url="http://a:8001", skill_id="search")
         await dlq.capture(t2, agent_url="http://b:8002", skill_id="summarise")
 
@@ -576,7 +598,7 @@ class TestDeadLetterQueue:
         assert results[0].succeeded is True
 
     async def test_replay_without_runner_raises(self):
-        dlq  = DeadLetterQueue()   # no runner
+        dlq = DeadLetterQueue()  # no runner
         task = self._failed_task()
         await dlq.capture(task, agent_url="http://agent:8001")
         with pytest.raises(RuntimeError, match="runner"):
@@ -590,7 +612,7 @@ class TestDeadLetterQueue:
             ids.append(t.id)
             await dlq.capture(t)
         assert dlq.count() == 3
-        assert dlq.get_entry(ids[0]) is None   # oldest dropped
+        assert dlq.get_entry(ids[0]) is None  # oldest dropped
         assert dlq.get_entry(ids[4]) is not None
 
     async def test_clear_replayed(self):
@@ -605,7 +627,7 @@ class TestDeadLetterQueue:
         assert dlq.count() == 0
 
     async def test_summary(self):
-        dlq  = DeadLetterQueue()
+        dlq = DeadLetterQueue()
         task = self._failed_task()
         await dlq.capture(task)
         s = dlq.summary()
@@ -617,23 +639,24 @@ class TestDeadLetterQueue:
 # CapabilityGuard
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestCapabilityGuard:
 
+class TestCapabilityGuard:
     # ── Agent class validation ────────────────────────────────────────────────
 
     def test_non_streaming_agent_with_streaming_flag_raises(self):
         guard = CapabilityGuard(mode="strict")
-        card  = _make_card(streaming=True)
+        card = _make_card(streaming=True)
 
         class SyncAgent:
-            async def run(self, task): return "result"  # not a generator
+            async def run(self, task):
+                return "result"  # not a generator
 
         with pytest.raises(CapabilityMismatchError, match="streaming"):
             guard.validate_agent_class(SyncAgent, card)
 
     def test_async_generator_agent_passes_streaming_check(self):
         guard = CapabilityGuard(mode="strict")
-        card  = _make_card(streaming=True)
+        card = _make_card(streaming=True)
 
         class StreamAgent:
             async def run(self, task):
@@ -645,42 +668,49 @@ class TestCapabilityGuard:
 
     def test_stream_method_passes_streaming_check(self):
         guard = CapabilityGuard(mode="strict")
-        card  = _make_card(streaming=True)
+        card = _make_card(streaming=True)
 
         class StreamMethodAgent:
-            async def run(self, task): return "result"
-            async def stream(self, task): yield "chunk"
+            async def run(self, task):
+                return "result"
+
+            async def stream(self, task):
+                yield "chunk"
 
         warnings = guard.validate_agent_class(StreamMethodAgent, card)
         assert warnings == []
 
     def test_streaming_class_attr_bypasses_check(self):
         guard = CapabilityGuard(mode="strict")
-        card  = _make_card(streaming=True)
+        card = _make_card(streaming=True)
 
         class AdapterAgent:
-            STREAMING = True   # handled by framework adapter
-            async def run(self, task): return "result"
+            STREAMING = True  # handled by framework adapter
+
+            async def run(self, task):
+                return "result"
 
         warnings = guard.validate_agent_class(AdapterAgent, card)
         assert warnings == []
 
     def test_warn_mode_does_not_raise(self):
         guard = CapabilityGuard(mode="warn")
-        card  = _make_card(streaming=True)
+        card = _make_card(streaming=True)
 
         class SyncAgent:
-            async def run(self, task): return "result"
+            async def run(self, task):
+                return "result"
 
         warnings = guard.validate_agent_class(SyncAgent, card)
-        assert len(warnings) == 1   # warning returned, not raised
+        assert len(warnings) == 1  # warning returned, not raised
 
     def test_off_mode_skips_all_checks(self):
         guard = CapabilityGuard(mode="off")
-        card  = _make_card(streaming=True)
+        card = _make_card(streaming=True)
 
         class SyncAgent:
-            async def run(self, task): return "result"
+            async def run(self, task):
+                return "result"
 
         warnings = guard.validate_agent_class(SyncAgent, card)
         assert warnings == []
@@ -689,12 +719,12 @@ class TestCapabilityGuard:
 
     def test_caller_wants_streaming_agent_has_it(self):
         guard = CapabilityGuard()
-        card  = _make_card(streaming=True)
+        card = _make_card(streaming=True)
         guard.validate_compatibility({"streaming": True}, card)  # no raise
 
     def test_caller_wants_streaming_agent_lacks_it(self):
         guard = CapabilityGuard()
-        card  = _make_card(streaming=False)
+        card = _make_card(streaming=False)
         with pytest.raises(CapabilityNotSupportedError, match="streaming"):
             guard.validate_compatibility({"streaming": True}, card)
 
@@ -716,6 +746,7 @@ class TestCapabilityGuard:
 # ══════════════════════════════════════════════════════════════════════════════
 # AgentNetwork v1.1 wiring
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestAgentNetworkV11:
     async def test_network_has_dlq(self):

@@ -5,7 +5,9 @@ Paste output back to Claude so tests match exactly.
 Usage:
     python inspect_api.py
 """
-import importlib, inspect, sys
+
+import importlib
+import inspect
 
 MODULES = [
     "nexus_a2a.core.orchestrator",
@@ -18,9 +20,9 @@ MODULES = [
 for mod_name in MODULES:
     try:
         mod = importlib.import_module(mod_name)
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"MODULE: {mod_name}")
-        print('='*60)
+        print("=" * 60)
         for cls_name, cls in inspect.getmembers(mod, inspect.isclass):
             if cls.__module__ != mod_name:
                 continue

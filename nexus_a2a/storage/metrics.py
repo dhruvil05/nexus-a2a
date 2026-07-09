@@ -36,21 +36,23 @@ logger = logging.getLogger(__name__)
 
 # ── In-memory snapshot ────────────────────────────────────────────────────────
 
+
 @dataclass
 class MetricsSnapshot:
     """
     A point-in-time snapshot of all collected metrics.
     Returned by MetricsCollector.snapshot().
     """
-    tasks_created:    int                  = 0
-    tasks_completed:  int                  = 0
-    tasks_failed:     int                  = 0
-    tasks_cancelled:  int                  = 0
-    rate_limit_hits:  int                  = 0
-    auth_failures:    int                  = 0
-    agent_errors:     dict[str, int]       = field(default_factory=dict)
+
+    tasks_created: int = 0
+    tasks_completed: int = 0
+    tasks_failed: int = 0
+    tasks_cancelled: int = 0
+    rate_limit_hits: int = 0
+    auth_failures: int = 0
+    agent_errors: dict[str, int] = field(default_factory=dict)
     # agent_url → list of latency floats (seconds)
-    call_durations:   dict[str, list[float]] = field(default_factory=dict)
+    call_durations: dict[str, list[float]] = field(default_factory=dict)
 
     def avg_latency(self, agent_url: str) -> float | None:
         """Return the mean call latency for an agent, or None if no data."""
@@ -70,6 +72,7 @@ class MetricsSnapshot:
 
 
 # ── MetricsCollector ──────────────────────────────────────────────────────────
+
 
 class MetricsCollector:
     """
@@ -99,17 +102,17 @@ class MetricsCollector:
     """
 
     def __init__(self, max_durations: int = 1000) -> None:
-        self._max_dur  = max_durations
+        self._max_dur = max_durations
         # Counters
-        self._tasks_created:   int = 0
+        self._tasks_created: int = 0
         self._tasks_completed: int = 0
-        self._tasks_failed:    int = 0
+        self._tasks_failed: int = 0
         self._tasks_cancelled: int = 0
         self._rate_limit_hits: int = 0
-        self._auth_failures:   int = 0
+        self._auth_failures: int = 0
         # Per-agent
-        self._agent_errors:    dict[str, int]         = defaultdict(int)
-        self._call_durations:  dict[str, list[float]] = defaultdict(list)
+        self._agent_errors: dict[str, int] = defaultdict(int)
+        self._call_durations: dict[str, list[float]] = defaultdict(list)
         # Optional OTEL instruments (set by with_otel())
         self._otel: dict[str, Any] | None = None
 
@@ -129,7 +132,7 @@ class MetricsCollector:
         instance = cls()
         try:
             instance._otel = {
-                "tasks_created":   meter.create_counter(
+                "tasks_created": meter.create_counter(
                     "nexus_a2a.tasks_created",
                     description="Total A2A tasks created",
                 ),
@@ -137,16 +140,16 @@ class MetricsCollector:
                     "nexus_a2a.tasks_completed",
                     description="Total A2A tasks completed successfully",
                 ),
-                "tasks_failed":    meter.create_counter(
+                "tasks_failed": meter.create_counter(
                     "nexus_a2a.tasks_failed",
                     description="Total A2A tasks that failed",
                 ),
-                "agent_latency":   meter.create_histogram(
+                "agent_latency": meter.create_histogram(
                     "nexus_a2a.agent_call_duration",
                     unit="s",
                     description="A2A agent call latency in seconds",
                 ),
-                "agent_errors":    meter.create_counter(
+                "agent_errors": meter.create_counter(
                     "nexus_a2a.agent_errors",
                     description="Total agent call errors",
                 ),
@@ -154,7 +157,7 @@ class MetricsCollector:
                     "nexus_a2a.rate_limit_hits",
                     description="Total rate limit rejections",
                 ),
-                "auth_failures":   meter.create_counter(
+                "auth_failures": meter.create_counter(
                     "nexus_a2a.auth_failures",
                     description="Total authentication failures",
                 ),
@@ -225,9 +228,7 @@ class MetricsCollector:
                 pass
 
     @contextmanager
-    def record_agent_call(
-        self, agent_url: str
-    ) -> Generator[None, None, None]:
+    def record_agent_call(self, agent_url: str) -> Generator[None, None, None]:
         """
         Context manager that automatically records call duration
         and errors for an agent call.
@@ -261,19 +262,18 @@ class MetricsCollector:
             auth_failures=self._auth_failures,
             agent_errors=dict(self._agent_errors),
             call_durations={
-                url: list(durs)
-                for url, durs in self._call_durations.items()
+                url: list(durs) for url, durs in self._call_durations.items()
             },
         )
 
     def reset(self) -> None:
         """Reset all counters and samples. Mainly useful in tests."""
-        self._tasks_created   = 0
+        self._tasks_created = 0
         self._tasks_completed = 0
-        self._tasks_failed    = 0
+        self._tasks_failed = 0
         self._tasks_cancelled = 0
         self._rate_limit_hits = 0
-        self._auth_failures   = 0
+        self._auth_failures = 0
         self._agent_errors.clear()
         self._call_durations.clear()
 

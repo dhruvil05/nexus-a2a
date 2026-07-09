@@ -7,28 +7,29 @@ Run with:  uv run pytest tests/test_phase2.py -v
 
 from __future__ import annotations
 
-import pytest
-import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from nexus_a2a.models.agent import AgentCard, AgentSkill, AgentCapabilities
-from nexus_a2a.models.task import Artifact, Message, Part, PartType, Task, TaskState
-from nexus_a2a.storage.task_store import InMemoryTaskStore
+import httpx
+import pytest
+
+from nexus_a2a.core.registry import AgentRegistry
 from nexus_a2a.core.task_manager import (
+    TaskAlreadyDoneError,
     TaskManager,
     TaskNotFoundError,
-    TaskAlreadyDoneError,
 )
+from nexus_a2a.models.agent import AgentCard, AgentSkill
+from nexus_a2a.models.task import Artifact, Message, Part, PartType, Task, TaskState
+from nexus_a2a.storage.task_store import InMemoryTaskStore
 from nexus_a2a.transport.http_client import (
     A2AHttpClient,
     AgentUnreachableError,
     RemoteAgentError,
     RetryConfig,
 )
-from nexus_a2a.core.registry import AgentRegistry
-
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def sample_card() -> AgentCard:
@@ -39,13 +40,16 @@ def sample_card() -> AgentCard:
         skills=[AgentSkill(id="search", name="Search", description="Searches.")],
     )
 
+
 @pytest.fixture
 def user_msg() -> Message:
     return Message.user_text("Do something useful")
 
+
 @pytest.fixture
 def store() -> InMemoryTaskStore:
     return InMemoryTaskStore()
+
 
 @pytest.fixture
 def manager() -> TaskManager:
@@ -55,6 +59,7 @@ def manager() -> TaskManager:
 # ══════════════════════════════════════════════════════════════════════════════
 # InMemoryTaskStore
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestInMemoryTaskStore:
     async def test_save_and_get(self, store, user_msg):
@@ -107,6 +112,7 @@ class TestInMemoryTaskStore:
 # ══════════════════════════════════════════════════════════════════════════════
 # TaskManager
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestTaskManager:
     async def test_create_returns_submitted_task(self, manager, user_msg):
@@ -219,13 +225,19 @@ class TestTaskManager:
 # A2AHttpClient
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 # Helper: build a fake JSON-RPC 2.0 success response
 def _rpc_response(result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": "test-id", "result": result}
 
+
 # Helper: build a fake JSON-RPC 2.0 error response
 def _rpc_error(code: int, message: str) -> dict:
-    return {"jsonrpc": "2.0", "id": "test-id", "error": {"code": code, "message": message}}
+    return {
+        "jsonrpc": "2.0",
+        "id": "test-id",
+        "error": {"code": code, "message": message},
+    }
 
 
 class TestA2AHttpClient:
@@ -257,7 +269,9 @@ class TestA2AHttpClient:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
-        mock_response.json = MagicMock(return_value=_rpc_error(-32601, "Method not found"))
+        mock_response.json = MagicMock(
+            return_value=_rpc_error(-32601, "Method not found")
+        )
 
         with patch("nexus_a2a.transport.http_client.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
@@ -266,7 +280,9 @@ class TestA2AHttpClient:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            async with A2AHttpClient("http://localhost:9001", retry=RetryConfig(max_retries=1)) as client:
+            async with A2AHttpClient(
+                "http://localhost:9001", retry=RetryConfig(max_retries=1)
+            ) as client:
                 client._client = instance
                 with pytest.raises(RemoteAgentError, match="Method not found"):
                     await client._rpc("message/send", {})
@@ -279,7 +295,9 @@ class TestA2AHttpClient:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=instance)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            async with A2AHttpClient("http://localhost:9001", retry=RetryConfig(max_retries=2)) as client:
+            async with A2AHttpClient(
+                "http://localhost:9001", retry=RetryConfig(max_retries=2)
+            ) as client:
                 client._client = instance
                 with pytest.raises(AgentUnreachableError):
                     await client._rpc("message/send", {})
@@ -296,6 +314,7 @@ class TestA2AHttpClient:
 # ══════════════════════════════════════════════════════════════════════════════
 # AgentRegistry
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestAgentRegistry:
     """
