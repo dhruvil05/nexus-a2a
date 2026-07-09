@@ -74,7 +74,7 @@ Requires **Python 3.11+**.
 
 ```python
 from nexus_a2a import agent
-from nexus_a2a.models.task import Task
+from nexus_a2a import Task
 
 @agent(
     name="SummaryAgent",
@@ -105,8 +105,8 @@ python -m mypackage.agent
 
 ```python
 import asyncio
-from nexus_a2a.models.task import Message
-from nexus_a2a.transport.http_client import A2AHttpClient
+from nexus_a2a import Message
+from nexus_a2a import A2AHttpClient
 
 async def main():
     async with A2AHttpClient("http://localhost:8001") as client:
@@ -133,7 +133,7 @@ SUBMITTED ──▶ WORKING ──▶ COMPLETED
 ```
 
 ```python
-from nexus_a2a.models.task import Task, TaskState, Message
+from nexus_a2a import Task, TaskState, Message
 
 task = Task.create(initial_message=Message.user_text("hello"))
 # task.state == TaskState.SUBMITTED
@@ -151,7 +151,7 @@ task2.transition(TaskState.FAILED, error="oops") # ✓
 ### Message and Part
 
 ```python
-from nexus_a2a.models.task import Message, Part, PartType, MessageRole
+from nexus_a2a import Message, Part, PartType, MessageRole
 
 # Shortcut (most common)
 msg = Message.user_text("What is the weather today?")
@@ -178,7 +178,7 @@ The primary way to define an agent. Auto-generates an `AgentCard`.
 
 ```python
 from nexus_a2a import agent
-from nexus_a2a.models.task import Task
+from nexus_a2a import Task
 
 @agent(
     name="ResearchAgent",
@@ -233,12 +233,12 @@ card = get_card(ResearchAgent)
 ### A2AHttpClient
 
 ```python
-from nexus_a2a.transport.http_client import (
+from nexus_a2a import (
     A2AHttpClient,
     RetryConfig,
     CircuitBreaker,
 )
-from nexus_a2a.models.task import Message, TaskState
+from nexus_a2a import Message, TaskState
 
 async with A2AHttpClient(
     "http://localhost:8001",
@@ -273,7 +273,7 @@ Prevents hammering a failing agent. Automatically opens after N failures
 and lets a test request through after the recovery window.
 
 ```python
-from nexus_a2a.transport.http_client import CircuitBreaker, CircuitOpenError
+from nexus_a2a import CircuitBreaker, CircuitOpenError
 
 cb = CircuitBreaker(
     failure_threshold=5,    # open after 5 consecutive failures
@@ -293,7 +293,7 @@ async with A2AHttpClient("http://localhost:8001", circuit_breaker=cb) as client:
 ## Agent Registry & Discovery
 
 ```python
-from nexus_a2a.core.registry import AgentRegistry
+from nexus_a2a import AgentRegistry
 
 registry = AgentRegistry(
     card_ttl_seconds=300.0,       # re-fetch card after 5 min
@@ -336,9 +336,9 @@ print(registry.summary())
 Each agent's output becomes the next agent's input.
 
 ```python
-from nexus_a2a.core.orchestrator import Orchestrator
-from nexus_a2a.transport.http_client import A2AHttpClient
-from nexus_a2a.models.task import Message, TaskState
+from nexus_a2a import Orchestrator
+from nexus_a2a import A2AHttpClient
+from nexus_a2a import Message, TaskState
 
 async def runner(url: str, message: Message) -> Task:
     async with A2AHttpClient(url) as client:
@@ -382,7 +382,7 @@ for step in result.steps:
 Dependency-aware execution. Agents with no pending dependencies run concurrently.
 
 ```python
-from nexus_a2a.core.orchestrator import DAGNode
+from nexus_a2a import DAGNode
 
 nodes = [
     DAGNode(agent_url="http://fetcher:8001",    depends_on=[]),
@@ -407,8 +407,8 @@ result = await orchestrator.dag(
 Three schemes supported. Each registered agent can use a different scheme.
 
 ```python
-from nexus_a2a.security.auth import AuthManager, AgentCredentialConfig
-from nexus_a2a.models.agent import AuthScheme
+from nexus_a2a import AuthManager, AgentCredentialConfig
+from nexus_a2a import AuthScheme
 
 auth = AuthManager()
 
@@ -432,7 +432,7 @@ auth.register("http://agent-c:8003", AgentCredentialConfig(
 ))
 
 # Verify an incoming request
-from nexus_a2a.security.auth import AuthError
+from nexus_a2a import AuthError
 try:
     await auth.verify("http://agent-a:8001", headers={"X-API-Key": "my-secret-key"})
 except AuthError as e:
@@ -444,7 +444,7 @@ except AuthError as e:
 Token-bucket algorithm. In-process, zero dependencies.
 
 ```python
-from nexus_a2a.security.rate_limiter import RateLimiter, RateLimitConfig, RateLimitError
+from nexus_a2a import RateLimiter, RateLimitConfig, RateLimitError
 
 limiter = RateLimiter()
 limiter.configure("http://agent-a:8001", RateLimitConfig(
@@ -463,7 +463,7 @@ except RateLimitError as e:
 Default-deny permission matrix between agents.
 
 ```python
-from nexus_a2a.security.trust import TrustBoundary
+from nexus_a2a import TrustBoundary
 
 trust = TrustBoundary()
 
@@ -485,17 +485,17 @@ if trust.is_allowed("http://orchestrator:8000", "http://worker-a:8001"):
 ### Payload Validation
 
 ```python
-from nexus_a2a.security.validator import PayloadValidator
+from nexus_a2a import PayloadValidator
 
 validator = PayloadValidator(
     max_size_bytes=1_000_000,   # 1 MB
     max_parts=50,
 )
 
-from nexus_a2a.security.validator import ValidationError
+from nexus_a2a import PayloadTooLargeError, TooManyPartsError, InvalidPartError, BlankTextPartError
 try:
     validator.validate(message)
-except ValidationError as e:
+except (PayloadTooLargeError, TooManyPartsError, InvalidPartError, BlankTextPartError) as e:
     print("Invalid payload:", e)
 ```
 
@@ -504,7 +504,7 @@ except ValidationError as e:
 Both agents verify each other's certificates.
 
 ```python
-from nexus_a2a.security.mtls import MutualTLSConfig, build_client_ssl_context
+from nexus_a2a import MutualTLSConfig, build_client_ssl_context
 
 config = MutualTLSConfig(
     cert_file="/certs/agent.crt",
@@ -530,7 +530,7 @@ async with httpx.AsyncClient(verify=ssl_ctx) as http:
 ### In-Memory (default)
 
 ```python
-from nexus_a2a.storage.task_store import InMemoryTaskStore
+from nexus_a2a import InMemoryTaskStore
 
 store = InMemoryTaskStore()
 ```
@@ -538,7 +538,7 @@ store = InMemoryTaskStore()
 ### Redis
 
 ```python
-from nexus_a2a.storage.redis_store import RedisTaskStore
+from nexus_a2a import RedisTaskStore
 
 store = RedisTaskStore(
     url="redis://localhost:6379",
@@ -550,7 +550,7 @@ await store.connect()
 ### PostgreSQL
 
 ```python
-from nexus_a2a.storage.postgres_store import PostgresTaskStore
+from nexus_a2a import PostgresTaskStore
 
 store = PostgresTaskStore(dsn="postgresql://user:pass@localhost/nexus")
 await store.connect()   # creates tables if not present
@@ -561,7 +561,7 @@ await store.connect()   # creates tables if not present
 Wraps any store with lifecycle operations and a watchdog that auto-fails stuck tasks.
 
 ```python
-from nexus_a2a.core.task_manager import TaskManager
+from nexus_a2a import TaskManager
 
 manager = TaskManager(
     store=store,
@@ -585,7 +585,7 @@ await manager.fail(task.id, error="API call timed out")
 Failed tasks land in the DLQ for inspection and replay.
 
 ```python
-from nexus_a2a.core.dead_letter import DeadLetterQueue
+from nexus_a2a import DeadLetterQueue
 
 dlq = DeadLetterQueue(
     max_retries=3,
@@ -635,7 +635,7 @@ print(f"Cleaned {removed} entries")
 Pause a task, wait for human input, then resume.
 
 ```python
-from nexus_a2a.core.input_handler import InputHandler
+from nexus_a2a import InputHandler
 
 handler = InputHandler()
 
@@ -650,7 +650,7 @@ await handler.provide_input(task.id, "user-provided-api-key")
 ### Graceful Shutdown
 
 ```python
-from nexus_a2a.core.graceful_shutdown import GracefulShutdown
+from nexus_a2a import GracefulShutdown
 
 shutdown = GracefulShutdown(
     manager=task_manager,
@@ -671,7 +671,7 @@ await shutdown.shutdown()
 ### SSE Streaming
 
 ```python
-from nexus_a2a.transport.sse import SSEStreamer, SSEFormatter
+from nexus_a2a import SSEStreamer, SSEFormatter
 
 # Server side — send events
 formatter = SSEFormatter()
@@ -692,7 +692,7 @@ async with A2AHttpClient("http://localhost:8001") as client:
 HMAC-SHA256 signed delivery with exponential backoff retries.
 
 ```python
-from nexus_a2a.transport.webhook import WebhookDispatcher
+from nexus_a2a import WebhookDispatcher
 
 dispatcher = WebhookDispatcher(
     secret="your-webhook-secret",
@@ -725,7 +725,7 @@ Wrap existing agents from popular frameworks with zero changes to your existing 
 ### LangGraph
 
 ```python
-from nexus_a2a.adapters.langgraph import LangGraphAdapter
+from nexus_a2a import LangGraphAdapter
 
 adapter = LangGraphAdapter(graph=compiled_graph)
 result = await adapter.run(task)
@@ -735,7 +735,7 @@ print(result.text)
 ### CrewAI
 
 ```python
-from nexus_a2a.adapters.crewai import CrewAIAdapter
+from nexus_a2a import CrewAIAdapter
 
 adapter = CrewAIAdapter(crew=my_crew)
 result = await adapter.run(task)
@@ -744,7 +744,7 @@ result = await adapter.run(task)
 ### AutoGen
 
 ```python
-from nexus_a2a.adapters.autogen import AutoGenAdapter
+from nexus_a2a import AutoGenAdapter
 
 adapter = AutoGenAdapter(agent=my_autogen_agent)
 result = await adapter.run(task)
@@ -753,7 +753,7 @@ result = await adapter.run(task)
 ### Google ADK
 
 ```python
-from nexus_a2a.adapters.google_adk import GoogleADKAdapter
+from nexus_a2a import GoogleADKAdapter
 
 adapter = GoogleADKAdapter(agent=my_adk_agent)
 result = await adapter.run(task)
@@ -798,7 +798,7 @@ nexus --format json status --network
 ### Audit Logger
 
 ```python
-from nexus_a2a.storage.audit_logger import AuditLogger
+from nexus_a2a import AuditLogger
 import sys
 
 logger = AuditLogger(
@@ -818,7 +818,7 @@ await logger.log("task_completed", {
 ### Metrics
 
 ```python
-from nexus_a2a.storage.metrics import MetricsCollector
+from nexus_a2a import MetricsCollector
 
 metrics = MetricsCollector()
 
@@ -840,7 +840,7 @@ text = metrics.to_prometheus()
 ### Distributed Tracing
 
 ```python
-from nexus_a2a.transport.tracing import Tracer, TraceStore
+from nexus_a2a import Tracer, TraceStore
 
 tracer = Tracer()
 trace_store = TraceStore(max_traces=1000)
@@ -910,7 +910,7 @@ agents = [
 Load programmatically:
 
 ```python
-from nexus_a2a.network import AgentNetwork
+from nexus_a2a import AgentNetwork
 
 network = AgentNetwork.from_config("nexus.toml")
 ```
@@ -937,7 +937,7 @@ Every error in nexus-a2a is typed. Catch specific exceptions rather than bare `E
 ### Transport errors
 
 ```python
-from nexus_a2a.transport.http_client import (
+from nexus_a2a import (
     AgentUnreachableError,   # agent is down / DNS failure
     AgentCardFetchError,     # /.well-known/agent-card.json failed
     RemoteAgentError,        # agent returned JSON-RPC error
@@ -960,7 +960,7 @@ except TransportError as e:
 ### Auth errors
 
 ```python
-from nexus_a2a.security.auth import (
+from nexus_a2a import (
     AuthError,                   # base
     MissingCredentialsError,     # no credentials in request
     InvalidCredentialsError,     # wrong key / bad token
@@ -978,7 +978,7 @@ except InvalidCredentialsError as e:
 ### Rate limit errors
 
 ```python
-from nexus_a2a.security.rate_limiter import RateLimitError
+from nexus_a2a import RateLimitError
 
 try:
     await limiter.check(agent_url)
@@ -990,7 +990,7 @@ except RateLimitError as e:
 ### Task state errors
 
 ```python
-from nexus_a2a.core.task_manager import TaskNotFoundError, TaskAlreadyDoneError
+from nexus_a2a import TaskNotFoundError, TaskAlreadyDoneError
 
 try:
     await manager.complete(task_id)
@@ -1003,7 +1003,7 @@ except TaskAlreadyDoneError:
 ### Orchestration errors
 
 ```python
-from nexus_a2a.core.orchestrator import (
+from nexus_a2a import (
     OrchestratorError,      # base
     WorkflowCycleError,     # DAG has a cycle
     WorkflowStepError,      # individual step failed
@@ -1018,7 +1018,7 @@ except WorkflowCycleError as e:
 ### Config errors
 
 ```python
-from nexus_a2a.config import ConfigError
+from nexus_a2a import ConfigError
 
 try:
     network = AgentNetwork.from_config("nexus.toml")
