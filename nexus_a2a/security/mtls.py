@@ -230,7 +230,7 @@ class MutualTLSConfig:
                 raise MtlsConfigError(
                     f"Environment variable {var} is not valid base64: {exc}",
                     field=var,
-                ) from exe
+                ) from exc
 
         def get_bool(var: str, default: bool) -> bool:
             val = os.environ.get(var, "").lower()
