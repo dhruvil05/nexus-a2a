@@ -26,6 +26,18 @@ from nexus_a2a.adapters.crewai import CrewAIAdapter
 from nexus_a2a.adapters.google_adk import GoogleADKAdapter
 from nexus_a2a.adapters.langgraph import LangGraphAdapter
 from nexus_a2a.core.dead_letter import DeadLetterQueue, DLQEntry, ReplayResult
+from nexus_a2a.core.registry import RegistryEntry  
+from nexus_a2a.core.task_manager import TaskTimeoutError  
+from nexus_a2a.security.trust import TrustError  
+from nexus_a2a.security.validator import (  
+    BlankTextPartError,
+    InvalidPartError,
+    PayloadTooLargeError,
+    TooManyPartsError,
+)
+from nexus_a2a.storage.task_store import AbstractTaskStore  
+from nexus_a2a.transport.http_client import AgentCardFetchError, TransportError  
+from nexus_a2a.transport.webhook import DeliveryRecord  
 from nexus_a2a.core.input_handler import (
     InputHandler,
     InputTimeoutError,
@@ -173,13 +185,28 @@ __all__ = [
     "OutputMode",
     # Phase 2 — Core engine
     "AgentRegistry",
+    "RegistryEntry",
     "TaskManager",
     "TaskNotFoundError",
     "TaskAlreadyDoneError",
+    "TaskTimeoutError",
     "InMemoryTaskStore",
+    "AbstractTaskStore",
     "A2AHttpClient",
     "AgentUnreachableError",
+    "AgentCardFetchError",
     "RemoteAgentError",
+    "TransportError",
+    "CircuitBreaker",
+    "CircuitOpenError",
+    "CircuitState",
+    "RetryConfig",
+    "InputHandler",
+    "InputTimeoutError",
+    "NoInputWaiterError",
+    "DeadLetterQueue",
+    "DLQEntry",
+    "ReplayResult",
     # Phase 3 — Security
     "AuthManager",
     "AgentCredentialConfig",
@@ -188,13 +215,29 @@ __all__ = [
     "InvalidCredentialsError",
     "ExpiredCredentialsError",
     "TrustBoundary",
+    "TrustError",
     "AgentNotAllowedError",
     "SkillNotAllowedError",
+    "CapabilityGuard",
+    "CapabilityMismatchError",
+    "CapabilityNotSupportedError",
     "RateLimiter",
     "RateLimitConfig",
     "RateLimitError",
     "PayloadValidator",
     "ValidatorConfig",
+    "PayloadTooLargeError",
+    "TooManyPartsError",
+    "InvalidPartError",
+    "BlankTextPartError",
+    "MutualTLSConfig",
+    "CertInfo",
+    "MtlsError",
+    "MtlsConfigError",
+    "MtlsCertificateError",
+    "build_client_ssl_context",
+    "build_server_ssl_context",
+    "verify_peer_certificate",
     # Phase 4 — Orchestration + streaming
     "AgentNetwork",
     "EventBus",
@@ -212,6 +255,14 @@ __all__ = [
     "WebhookDispatcher",
     "WebhookConfig",
     "WebhookDeliveryError",
+    "DeliveryRecord",
+    "Tracer",
+    "Trace",
+    "Span",
+    "TraceStore",
+    "TRACE_ID_HEADER",
+    "GracefulShutdown",
+    "AgentServer",
     # Phase 5 — Adapters + observability
     "BaseAdapter",
     "AdapterResult",
@@ -223,11 +274,22 @@ __all__ = [
     "GoogleADKAdapter",
     "AutoGenAdapter",
     "RedisTaskStore",
+    "PostgresTaskStore",
     "AuditLogger",
     "AuditEvent",
     "AuditEntry",
     "MetricsCollector",
     "MetricsSnapshot",
+    # Config
+    "NexusConfig",
+    "AgentConfig",
+    "NetworkConfig",
+    "SecurityConfig",
+    "SkillConfig",
+    "StorageConfig",
+    "ReliabilityConfig",
+    "ObservabilityConfig",
+    "ConfigError",
     # Task models
     "Task",
     "TaskState",
