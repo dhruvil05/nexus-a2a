@@ -147,11 +147,11 @@ class GracefulShutdown:
         """
         try:
             loop = asyncio.get_running_loop()
-        except RuntimeError:
+        except RuntimeError as exc:
             raise RuntimeError(
                 "GracefulShutdown.install() must be called from inside a running "
                 "asyncio event loop (i.e. inside an async function)."
-            )
+            ) from exc
 
         if sys.platform == "win32":
             # Windows: only SIGINT available via asyncio

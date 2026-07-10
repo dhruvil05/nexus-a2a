@@ -204,12 +204,24 @@ class AgentServer:
         async def info(request: Request) -> Response:
             return await self._handle_info(request)
 
+        async def trace_lookup(request: Request) -> Response:
+            return await self._handle_trace(request)
+
+        async def dlq_list(request: Request) -> Response:
+            return await self._handle_dlq_list(request)
+
+        async def dlq_replay(request: Request) -> Response:
+            return await self._handle_dlq_replay(request)
+
         return Starlette(
             routes=[
                 Route("/health", health),
                 Route("/ready", ready),
                 Route("/metrics", metrics),
                 Route("/info", info),
+                Route("/traces/{trace_id}", trace_lookup),
+                Route("/dlq", dlq_list),
+                Route("/dlq/replay", dlq_replay, methods=["POST"]),
             ],
         )
 
@@ -327,7 +339,6 @@ class AgentServer:
 
         # Get metrics snapshot
         try:
-            snap = self.network.task_manager._store  # type: ignore[attr-defined]
             # Try to get a metrics collector from the network if wired
             metrics_collector = getattr(self.network, "_metrics", None)
             if metrics_collector is not None:
@@ -436,6 +447,130 @@ class AgentServer:
                 "version": version,
                 "uptime_seconds": round(self.uptime_seconds or 0.0, 2),
                 "network": summary,
+            }
+        )
+
+    async def _handle_trace(self, request: Request) -> Response:
+        """
+        GET /traces/{trace_id} — Look up a distributed trace by ID.
+
+        Reads from the process-wide TraceStore
+        (nexus_a2a.transport.tracing.default_store), which Tracer.span()
+        records into automatically for every outbound call made through
+        this process. Returns 404 if the trace ID is unknown.
+
+        Response body:
+            {
+                "trace_id": "...",
+                "hops": [
+                    {"url": "...", "duration_ms": 12.3, "status": "completed",
+                     "error": null, "children": []},
+                    ...
+                ]
+            }
+        """
+        trace_id = request.path_params["trace_id"]
+        from nexus_a2a.transport.tracing import default_store
+
+        trace = default_store.get(trace_id)
+        if trace is None:
+            return JSONResponse(
+                {"error": f"trace '{trace_id}' not found"}, status_code=404
+            )
+
+        hops: list[dict[str, Any]] = [
+            {
+                "url": getattr(span, "agent_url", "unknown"),
+                "duration_ms": getattr(span, "duration_ms", None),
+                "status": getattr(span, "status", "unknown"),
+                "error": getattr(span, "error", None),
+                "children": [],
+            }
+            for span in getattr(trace, "spans", [])
+        ]
+        return JSONResponse({"trace_id": trace_id, "hops": hops})
+
+    async def _handle_dlq_list(self, request: Request) -> Response:
+        """
+        GET /dlq — List Dead Letter Queue entries for this agent.
+
+        Query params:
+            skill:   optional skill_id filter
+            pending: "true" to return only entries not yet successfully
+                     replayed (default: return all entries)
+
+        Response body:
+            {"entries": [
+                {"task_id": "...", "error": "...", "failed_at": 1720000000.0,
+                 "agent_url": "...", "skill_id": "...", "retry_count": 0,
+                 "last_retry_at": null, "replayed": false},
+                ...
+            ]}
+        """
+        dlq = self.network.dead_letter_queue
+        pending_only = request.query_params.get("pending", "").lower() == "true"
+        skill = request.query_params.get("skill")
+
+        entries = dlq.pending_entries() if pending_only else dlq.all_entries()
+        if skill:
+            entries = [e for e in entries if e.skill_id == skill]
+
+        return JSONResponse({"entries": [e.to_dict() for e in entries]})
+
+    async def _handle_dlq_replay(self, request: Request) -> Response:
+        """
+        POST /dlq/replay — Replay one or more failed tasks from the DLQ.
+
+        Request body (JSON), one of:
+            {"task_id": "abc-123"}            — replay a single entry
+            {"skill_id": "web_search"}        — replay all matching a skill
+            {"agent_url": "http://agent:8001"} — replay all from one agent
+            {}                                 — replay every pending entry
+
+        Response body:
+            {
+                "succeeded": 2, "failed": 1,
+                "results": [
+                    {"task_id": "...", "succeeded": true, "error": null},
+                    ...
+                ]
+            }
+        """
+        dlq = self.network.dead_letter_queue
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        task_id = payload.get("task_id")
+        skill_id = payload.get("skill_id")
+        agent_url = payload.get("agent_url")
+
+        try:
+            if task_id:
+                results = [await dlq.replay(task_id)]
+            elif skill_id or agent_url:
+                results = await dlq.replay_where(skill_id=skill_id, agent_url=agent_url)
+            else:
+                results = await dlq.replay_all()
+        except KeyError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+        succeeded = sum(1 for r in results if getattr(r, "succeeded", False))
+        return JSONResponse(
+            {
+                "succeeded": succeeded,
+                "failed": len(results) - succeeded,
+                "results": [
+                    {
+                        "task_id": getattr(r, "task_id", None),
+                        "succeeded": getattr(r, "succeeded", False),
+                        "error": getattr(r, "error", None),
+                    }
+                    for r in results
+                ],
             }
         )
 

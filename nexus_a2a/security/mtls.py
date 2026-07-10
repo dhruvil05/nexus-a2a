@@ -618,7 +618,7 @@ def _parse_pem_cert(pem_data: bytes) -> CertInfo:
         # Read the cert as a dict using load_cert_chain indirectly
         # ssl module exposes limited cert parsing; use the DER→dict path
         der = ssl.PEM_cert_to_DER_cert(pem_data.decode())
-        cert_dict = ssl.DER_cert_to_PEM_cert(der)  # round-trip for validation
+        ssl.DER_cert_to_PEM_cert(der)  # round-trip for validation
     except ssl.SSLError as exc:
         raise MtlsCertificateError(f"Cannot parse certificate: {exc}") from exc
     finally:
@@ -650,7 +650,7 @@ def _parse_cert_dict(cert_dict: dict[str, Any]) -> tuple[str, str, list[str]]:
     used. This function makes it human-readable.
     """
 
-    def dn_to_str(dn: tuple) -> str:
+    def dn_to_str(dn: tuple[Any, ...]) -> str:
         if not dn:
             return ""
         parts = []

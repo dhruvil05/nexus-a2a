@@ -1,9 +1,13 @@
 """
 nexus replay --failed [--skill web_search] [--last 1h] [--dry-run]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Query DeadLetterQueue with filters. Show matching entries in a table.
-Confirm before replay (unless --yes). Progress bar during replay.
-Summary: N succeeded, M failed.
+Query a running agent's Dead Letter Queue over HTTP (GET /dlq), apply
+filters, show matching entries in a table, confirm, then replay each
+one (POST /dlq/replay). Summary: N succeeded, M failed.
+
+DeadLetterQueue has no global/in-process singleton — it lives on the
+running AgentServer's AgentNetwork. This command always talks to a
+running agent over HTTP; there is no local/offline mode.
 """
 
 from __future__ import annotations
@@ -11,8 +15,10 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import click
+import httpx
 
 from nexus_a2a.cli.main import NexusContext, pass_ctx
 from nexus_a2a.cli.output import (
@@ -40,53 +46,71 @@ def _parse_duration(value: str) -> timedelta:
     return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
 
-def _load_dlq() -> object:
-    """Load DeadLetterQueue singleton from the package."""
-    try:
-        from nexus_a2a.core.dead_letter import DeadLetterQueue  # type: ignore
-
-        return DeadLetterQueue.instance()
-    except Exception as e:
-        raise RuntimeError(f"Cannot access DeadLetterQueue: {e}") from e
-
-
-def _dlq_entries_to_dicts(entries: list) -> list[dict]:
-    """Convert DLQ entry objects to plain dicts for rendering."""
-    result = []
-    for entry in entries:
-        result.append(
-            {
-                "task_id": getattr(entry, "task_id", str(entry)),
-                "skill_id": getattr(entry, "skill_id", None),
-                "failed_at": str(getattr(entry, "failed_at", "—")),
-                "attempts": getattr(entry, "attempts", 1),
-                "error": str(getattr(entry, "error", "—")),
-            }
-        )
-    return result
+async def _fetch_dlq_entries(agent_url: str, skill: str | None) -> list[dict[str, Any]]:
+    """GET /dlq from a running agent. Raises on network/HTTP errors."""
+    agent_url = agent_url.rstrip("/")
+    params = {"skill": skill} if skill else {}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(f"{agent_url}/dlq", params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        result: list[dict[str, Any]] = data.get("entries", [])
+        return result
 
 
-async def _replay_entries(dlq: object, entries: list, verbose: bool) -> tuple[int, int]:
-    """Replay each entry with a progress bar. Returns (succeeded, failed)."""
+async def _replay_remote(
+    agent_url: str, task_ids: list[str], verbose: bool
+) -> tuple[int, int]:
+    """POST /dlq/replay once per task_id, with a progress bar. Returns (succeeded, failed)."""
+    agent_url = agent_url.rstrip("/")
     succeeded = 0
     failed = 0
 
-    with make_progress("Replaying tasks") as progress:
-        task = progress.add_task("replay", total=len(entries))
-        for entry in entries:
-            try:
-                await dlq.replay(getattr(entry, "task_id", None))
-                succeeded += 1
-            except Exception as exc:
-                failed += 1
-                if verbose:
-                    console.print(
-                        f"[red]  ✗ {getattr(entry, 'task_id', entry)}: {exc}[/red]"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        with make_progress("Replaying tasks") as progress:
+            task = progress.add_task("replay", total=len(task_ids))
+            for task_id in task_ids:
+                try:
+                    resp = await client.post(
+                        f"{agent_url}/dlq/replay", json={"task_id": task_id}
                     )
-            finally:
-                progress.advance(task)
+                    resp.raise_for_status()
+                    body = resp.json()
+                    if body.get("succeeded", 0) >= 1:
+                        succeeded += 1
+                    else:
+                        failed += 1
+                        if verbose:
+                            err = body.get("results", [{}])[0].get("error")
+                            console.print(f"[red]  ✗ {task_id}: {err}[/red]")
+                except Exception as exc:
+                    failed += 1
+                    if verbose:
+                        console.print(f"[red]  ✗ {task_id}: {exc}[/red]")
+                finally:
+                    progress.advance(task)
 
     return succeeded, failed
+
+
+def _entry_failed_after(entry: dict[str, Any], since: datetime) -> bool:
+    """Return True if entry's failed_at (unix timestamp) is after `since`."""
+    failed_at = entry.get("failed_at")
+    if failed_at is None:
+        return True  # no timestamp → include it
+    return datetime.fromtimestamp(float(failed_at), tz=UTC) >= since
+
+
+def _for_display(entry: dict[str, Any]) -> dict[str, Any]:
+    """Map the server's DLQEntry.to_dict() shape onto what render_replay_preview expects."""
+    display = dict(entry)
+    display["attempts"] = entry.get("retry_count", 0)
+    failed_at = entry.get("failed_at")
+    if isinstance(failed_at, int | float):
+        display["failed_at"] = datetime.fromtimestamp(failed_at, tz=UTC).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+    return display
 
 
 @click.command("replay")
@@ -99,6 +123,13 @@ async def _replay_entries(dlq: object, entries: list, verbose: bool) -> tuple[in
     default=None,
     metavar="DURATION",
     help="Only tasks failed within duration (e.g. 1h, 30m, 7d).",
+)
+@click.option(
+    "--agent",
+    "agent_url",
+    default=None,
+    metavar="URL",
+    help="Agent URL to replay against (default: agent.url from nexus.toml).",
 )
 @click.option(
     "--dry-run",
@@ -115,14 +146,16 @@ def replay(
     failed: bool,
     skill: str | None,
     last: str | None,
+    agent_url: str | None,
     dry_run: bool,
     yes: bool,
 ) -> None:
-    """Replay failed tasks from the Dead Letter Queue.
+    """Replay failed tasks from a running agent's Dead Letter Queue.
 
     \b
     Examples:
       nexus replay --failed
+      nexus replay --failed --agent http://localhost:8001
       nexus replay --failed --skill web_search
       nexus replay --failed --last 1h
       nexus replay --failed --dry-run
@@ -131,6 +164,17 @@ def replay(
     if not failed:
         print_warning("Specify --failed to select tasks for replay.")
         raise SystemExit(0)
+
+    # ── Resolve target agent ──────────────────────────────────────────────────
+    if agent_url is None:
+        cfg = ctx.load_config()
+        agent_url = cfg.get("agent", {}).get("url")
+    if not agent_url:
+        print_error(
+            "No agent URL. Pass --agent http://host:port or set agent.url in "
+            "nexus.toml."
+        )
+        raise SystemExit(1)
 
     # ── Build filter ──────────────────────────────────────────────────────────
     since: datetime | None = None
@@ -142,24 +186,14 @@ def replay(
             raise SystemExit(1) from e
         since = datetime.now(UTC) - delta
 
-    # ── Load DLQ ──────────────────────────────────────────────────────────────
+    # ── Fetch matching entries from the running agent ────────────────────────
     try:
-        dlq = _load_dlq()
-    except RuntimeError as e:
-        print_error(str(e))
-        raise SystemExit(1) from e
-
-    # ── Fetch matching entries ────────────────────────────────────────────────
-    try:
-        all_entries = asyncio.run(_get_entries(dlq))
+        all_entries = asyncio.run(_fetch_dlq_entries(agent_url, skill))
     except Exception as e:
-        print_error(f"Failed to read DLQ: {e}")
+        print_error(f"Failed to read DLQ from {agent_url}: {e}")
         raise SystemExit(1) from e
 
-    # Apply filters
     entries = all_entries
-    if skill:
-        entries = [e for e in entries if getattr(e, "skill_id", None) == skill]
     if since:
         entries = [e for e in entries if _entry_failed_after(e, since)]
 
@@ -167,8 +201,7 @@ def replay(
         print_warning("No matching DLQ entries found.")
         raise SystemExit(0)
 
-    entry_dicts = _dlq_entries_to_dicts(entries)
-    render_replay_preview(entry_dicts, fmt=ctx.fmt)
+    render_replay_preview([_for_display(e) for e in entries], fmt=ctx.fmt)
 
     if dry_run:
         console.print(
@@ -181,9 +214,10 @@ def replay(
         click.confirm(f"\nReplay {len(entries)} task(s)?", abort=True)
 
     # ── Execute replay ────────────────────────────────────────────────────────
+    task_ids = [e["task_id"] for e in entries]
     try:
         succeeded, failed_count = asyncio.run(
-            _replay_entries(dlq, entries, ctx.verbose)
+            _replay_remote(agent_url, task_ids, ctx.verbose)
         )
     except Exception as e:
         print_error(f"Replay error: {e}")
@@ -193,29 +227,3 @@ def replay(
 
     if failed_count > 0:
         raise SystemExit(1)
-
-
-async def _get_entries(dlq: object) -> list:
-    """Fetch all DLQ entries (handles both sync and async list() methods)."""
-    list_fn = getattr(dlq, "list_all", None) or getattr(dlq, "entries", None)
-    if list_fn is None:
-        return []
-    result = list_fn()
-    if asyncio.iscoroutine(result):
-        result = await result
-    return list(result)
-
-
-def _entry_failed_after(entry: object, since: datetime) -> bool:
-    """Return True if entry's failed_at is after `since`."""
-    failed_at = getattr(entry, "failed_at", None)
-    if failed_at is None:
-        return True  # no timestamp → include it
-    if isinstance(failed_at, str):
-        try:
-            failed_at = datetime.fromisoformat(failed_at)
-        except ValueError:
-            return True
-    if failed_at.tzinfo is None:
-        failed_at = failed_at.replace(tzinfo=UTC)
-    return failed_at >= since

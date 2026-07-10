@@ -29,19 +29,24 @@ def _extract_host_port(url: str) -> tuple[str, int]:
     return host, port
 
 
-async def _run_server(agent_class: type, host: str, port: int, config: dict) -> None:
+async def _run_server(
+    agent_class: type | None, host: str, port: int, config_path: str
+) -> None:
     """Build and start the AgentServer from nexus.toml config."""
     try:
-        from nexus_a2a.core.agent_server import AgentServer  # type: ignore
-        from nexus_a2a.network import AgentNetwork  # type: ignore
+        from nexus_a2a.core.agent_server import AgentServer
+        from nexus_a2a.network import AgentNetwork
     except ImportError as e:
         print_error(f"nexus_a2a import failed: {e}")
         raise SystemExit(1) from e
 
     try:
-        network = AgentNetwork.from_config_dict(config)
-    except Exception:
-        # Minimal fallback if from_config_dict doesn't exist yet
+        network = AgentNetwork.from_config(config_path)
+    except Exception as e:
+        print_warning(
+            f"Could not load config from '{config_path}' ({e}); "
+            "starting with an empty AgentNetwork."
+        )
         network = AgentNetwork()
 
     server = AgentServer(network=network, host=host, port=port)
@@ -53,7 +58,11 @@ async def _run_server(agent_class: type, host: str, port: int, config: dict) -> 
     console.print(f"  Metrics:    [cyan]http://{host}:{port}/metrics[/cyan]")
     console.print("\n[dim]Press CTRL+C to stop.[/dim]\n")
 
-    await server.serve()
+    await server.start()
+    try:
+        await asyncio.Event().wait()  # block until cancelled (Ctrl+C / SIGTERM)
+    finally:
+        await server.stop()
 
 
 @click.command("run")
@@ -113,7 +122,9 @@ def run(
         )
 
     try:
-        asyncio.run(_run_server(agent_class, final_host, final_port, cfg))
+        asyncio.run(
+            _run_server(agent_class, final_host, final_port, str(ctx.config_path))
+        )
     except KeyboardInterrupt:
         console.print("\n[dim]Shutting down...[/dim]")
     except Exception as e:

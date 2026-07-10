@@ -321,7 +321,7 @@ class TestA2AHttpClientV11:
         with patch_ctx:
             async with A2AHttpClient("http://agent:8001", retry=retry) as client:
                 client._client = mock_http
-                result = await client._rpc("message/send", {})
+                await client._rpc("message/send", {})
 
         assert mock_http.post.call_count == 3
 

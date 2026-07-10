@@ -331,7 +331,7 @@ class Tracer:
         Silently does nothing if the OTEL SDK is not installed.
         """
         try:
-            from opentelemetry import trace as otel_trace  # type: ignore[import]
+            from opentelemetry import trace as otel_trace
 
             tracer = otel_trace.get_tracer("nexus-a2a")
             with tracer.start_as_current_span(

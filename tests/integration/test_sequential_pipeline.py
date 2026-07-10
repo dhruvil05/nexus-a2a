@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from nexus_a2a.models.task import Message, TaskState
+from nexus_a2a.models.task import Message, Task, TaskState
 from tests.integration.conftest import AgentServer, get_free_port, make_agent_app
 
 
