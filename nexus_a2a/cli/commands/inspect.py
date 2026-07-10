@@ -9,6 +9,7 @@ input modes, output modes, all skills with descriptions and tags.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import click
 import httpx
@@ -17,12 +18,13 @@ from nexus_a2a.cli.main import NexusContext, pass_ctx
 from nexus_a2a.cli.output import print_error, render_inspect
 
 
-async def _fetch_card(url: str) -> dict:
+async def _fetch_card(url: str) -> dict[str, Any]:
     url = url.rstrip("/")
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{url}/.well-known/agent-card.json")
         resp.raise_for_status()
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
 
 @click.command("inspect")

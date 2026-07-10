@@ -78,7 +78,7 @@ class SkillConfig:
 class AgentConfig:
     """[agent] section."""
 
-    name: str
+    name: str = "agent"
     description: str = ""
     version: str = "1.0.0"
     url: str = "http://localhost:8000"
@@ -384,11 +384,11 @@ class NexusConfig:
         if timeout := os.environ.get("NEXUS_TASK_TIMEOUT"):
             try:
                 self.reliability.task_timeout_sec = float(timeout)
-            except ValueError:
+            except ValueError as exc:
                 raise ConfigError(
                     f"NEXUS_TASK_TIMEOUT='{timeout}' is not a valid number",
                     "reliability.task_timeout_sec",
-                )
+                ) from exc
 
         # [observability]
         if level := os.environ.get("NEXUS_LOG_LEVEL"):
@@ -485,25 +485,23 @@ class NexusConfig:
         if backend == "redis":
             try:
                 from nexus_a2a.storage.redis_store import RedisTaskStore
-            except ImportError:
+            except ImportError as exc:
                 raise ConfigError(
                     "RedisTaskStore requires the 'redis' extra. "
                     "Install with: pip install nexus-a2a[redis]",
                     "storage.backend",
-                )
+                ) from exc
             return RedisTaskStore(url=self.storage.url, ttl=self.storage.ttl_sec)
 
         if backend == "postgres":
             try:
-                from nexus_a2a.storage.postgres_store import (
-                    PostgresTaskStore,  # type: ignore[import]
-                )
-            except ImportError:
+                from nexus_a2a.storage.postgres_store import PostgresTaskStore
+            except ImportError as exc:
                 raise ConfigError(
                     "PostgresTaskStore requires the 'postgres' extra. "
                     "Install with: pip install nexus-a2a[postgres]",
                     "storage.backend",
-                )
+                ) from exc
             return PostgresTaskStore(dsn=self.storage.url)
 
         # Should never reach here — _parse_storage already validated backend

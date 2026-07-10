@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any
 
 import click
 import httpx
@@ -17,9 +18,13 @@ from nexus_a2a.cli.main import NexusContext, pass_ctx
 from nexus_a2a.cli.output import print_error, render_ping
 
 
-async def _do_ping(url: str) -> dict:
+async def _do_ping(url: str) -> dict[str, Any]:
     url = url.rstrip("/")
-    result: dict = {"url": url, "healthy": False, "health_endpoint_present": False}
+    result: dict[str, Any] = {
+        "url": url,
+        "healthy": False,
+        "health_endpoint_present": False,
+    }
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         # 1. Fetch AgentCard

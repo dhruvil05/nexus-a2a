@@ -113,7 +113,6 @@ class TestInstallUninstall:
         sd = GracefulShutdown(network=make_mock_network())
         loop = asyncio.get_running_loop()
         registered = []
-        original = loop.add_signal_handler
 
         def capture(sig, *args, **kwargs):
             registered.append(sig)

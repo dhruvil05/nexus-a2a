@@ -209,7 +209,7 @@ class RetryConfig:
 
     def delay_for(self, attempt: int) -> float:
         """Return the delay (seconds) before attempt N (1-indexed)."""
-        delay = min(self.base_delay * (2 ** (attempt - 1)), self.max_delay)
+        delay: float = min(self.base_delay * (2 ** (attempt - 1)), self.max_delay)
         if self.jitter:
             delay *= 0.8 + random.random() * 0.4  # ±20% jitter
         return delay
@@ -452,7 +452,8 @@ class A2AHttpClient:
                 code=err.get("code", -1),
                 message=err.get("message", "Unknown error"),
             )
-        return body.get("result", {})
+        result: dict[str, Any] = body.get("result", {})
+        return result
 
     async def _post(self, path: str, payload: dict[str, Any]) -> httpx.Response:
         """Send a POST and return the raw response (no raise_for_status)."""
@@ -480,7 +481,8 @@ class A2AHttpClient:
                 response.raise_for_status()
                 if self._cb:
                     self._cb.on_success()
-                return response.json()
+                data: dict[str, Any] = response.json()
+                return data
             except CircuitOpenError:
                 raise
             except (httpx.ConnectError, httpx.TimeoutException) as exc:

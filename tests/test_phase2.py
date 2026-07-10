@@ -197,7 +197,7 @@ class TestTaskManager:
 
     async def test_iter_by_state(self, manager, user_msg):
         t1 = await manager.create(user_msg)
-        t2 = await manager.create(user_msg)
+        t2 = await manager.create(user_msg)  # noqa: F841 - kept alive for state assertions below
         await manager.start(t1.id)
         # t2 stays SUBMITTED
 

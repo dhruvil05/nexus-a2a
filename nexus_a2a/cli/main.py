@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -43,14 +44,14 @@ class NexusContext:
         self.verbose = verbose
         self.fmt = fmt  # "table" | "json"
 
-    def load_config(self) -> dict:
+    def load_config(self) -> dict[str, Any]:
         """Load nexus.toml if it exists; return empty dict otherwise."""
         if self.config_path.exists():
             try:
                 import tomllib  # Python 3.11+
             except ImportError:
                 try:
-                    import tomli as tomllib  # fallback for older Python
+                    import tomli as tomllib  # type: ignore[no-redef]
                 except ImportError:
                     print_error(
                         "tomllib not available. Install tomli for Python <3.11."
@@ -100,7 +101,6 @@ def cli(ctx: click.Context, config: str, verbose: bool, fmt: str) -> None:
       nexus replay --failed
     """
     _configure_logging(verbose)
-    ctx.ensure_object(NexusContext)
     ctx.obj = NexusContext(
         config_path=Path(config),
         verbose=verbose,

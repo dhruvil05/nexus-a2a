@@ -40,6 +40,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from nexus_a2a.models.task import Message, Task
 
@@ -90,7 +91,7 @@ class DLQEntry:
         """The first message in the task's history — the original input."""
         return self.task.history[0] if self.task.history else None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
             "error": self.error,
@@ -373,7 +374,7 @@ class DeadLetterQueue:
             del self._entries[tid]
         return len(to_remove)
 
-    def summary(self) -> dict:
+    def summary(self) -> dict[str, Any]:
         """Return a human-readable summary of the DLQ state."""
         return {
             "total": self.count(),

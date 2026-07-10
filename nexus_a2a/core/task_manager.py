@@ -112,7 +112,7 @@ class TaskManager:
         self._timeout_sec = timeout_sec
         self._watchdog_interval = watchdog_interval
         self._on_timeout = on_timeout
-        self._watchdog_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task[None] | None = None
 
     # ── Async context manager ─────────────────────────────────────────────────
 

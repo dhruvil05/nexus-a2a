@@ -12,6 +12,7 @@ Output modes:
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import click
 import httpx
@@ -20,7 +21,7 @@ from nexus_a2a.cli.main import NexusContext, pass_ctx
 from nexus_a2a.cli.output import print_error, print_warning, render_trace
 
 
-async def _fetch_trace_remote(agent_url: str, trace_id: str) -> dict | None:
+async def _fetch_trace_remote(agent_url: str, trace_id: str) -> dict[str, Any] | None:
     """Ask a running agent server for a specific trace via GET /traces/<id>."""
     agent_url = agent_url.rstrip("/")
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -28,20 +29,20 @@ async def _fetch_trace_remote(agent_url: str, trace_id: str) -> dict | None:
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
 
-def _try_local_trace_store(trace_id: str) -> dict | None:
+def _try_local_trace_store(trace_id: str) -> dict[str, Any] | None:
     """
     Try to read from an in-process TraceStore if this command is run
     inside the same process (e.g. during testing or embedded use).
     Returns None if the store is not accessible.
     """
     try:
-        from nexus_a2a.transport.tracing import TraceStore  # type: ignore
+        from nexus_a2a.transport.tracing import default_store
 
-        store = TraceStore.instance()  # returns singleton if exists
-        raw = store.get(trace_id)
+        raw = default_store.get(trace_id)
         if raw is None:
             return None
         # Convert Trace object to dict for rendering
@@ -50,10 +51,10 @@ def _try_local_trace_store(trace_id: str) -> dict | None:
         return None
 
 
-def _trace_to_dict(trace: object) -> dict:
+def _trace_to_dict(trace: object) -> dict[str, Any]:
     """Convert a Trace dataclass/object to a render-friendly dict."""
     try:
-        hops = []
+        hops: list[dict[str, Any]] = []
         for span in getattr(trace, "spans", []):
             hops.append(
                 {
@@ -91,7 +92,7 @@ def trace(ctx: NexusContext, task_id: str, agent_url: str | None) -> None:
       nexus trace abc-123 --agent http://localhost:8001
       nexus trace abc-123 --format json
     """
-    trace_data: dict | None = None
+    trace_data: dict[str, Any] | None = None
 
     # 1. Try local in-process store first (no HTTP needed)
     trace_data = _try_local_trace_store(task_id)

@@ -157,7 +157,7 @@ class InputHandler:
         try:
             # Suspend — releases event loop to other coroutines
             await asyncio.wait_for(event.wait(), timeout=timeout)
-        except TimeoutError:
+        except TimeoutError as exc:
             self._waiters.pop(task_id, None)
             # Auto-fail the task so it does not stay in INPUT_REQUIRED forever
             try:
@@ -167,7 +167,7 @@ class InputHandler:
                 )
             except Exception:
                 pass
-            raise InputTimeoutError(task_id, timeout)
+            raise InputTimeoutError(task_id, timeout) from exc
 
         # Retrieve the reply that submit_reply() stored
         reply: Message | None = self._waiters.pop(task_id, {}).get("reply")

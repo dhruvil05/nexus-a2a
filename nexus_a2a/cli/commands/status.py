@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 import click
 import httpx
@@ -21,10 +22,10 @@ from nexus_a2a.cli.main import NexusContext, pass_ctx
 from nexus_a2a.cli.output import print_error, print_warning, render_status
 
 
-async def _probe_agent(client: httpx.AsyncClient, url: str) -> dict:
+async def _probe_agent(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
     """Probe a single agent for health, queue depth, and DLQ state."""
     url = url.rstrip("/")
-    entry: dict = {
+    entry: dict[str, Any] = {
         "url": url,
         "name": url,
         "healthy": False,
@@ -66,13 +67,13 @@ async def _probe_agent(client: httpx.AsyncClient, url: str) -> dict:
     return entry
 
 
-async def _probe_all(urls: list[str]) -> list[dict]:
+async def _probe_all(urls: list[str]) -> list[dict[str, Any]]:
     async with httpx.AsyncClient() as client:
         tasks = [_probe_agent(client, url) for url in urls]
         return await asyncio.gather(*tasks)
 
 
-def _build_summary(agents: list[dict]) -> dict:
+def _build_summary(agents: list[dict[str, Any]]) -> dict[str, Any]:
     healthy = sum(1 for a in agents if a.get("healthy"))
     return {
         "total": len(agents),
