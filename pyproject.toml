@@ -33,6 +33,7 @@ dependencies = [
   "python-jose>=3.3",
   "click>=8.1",
   "rich>=13.0",
+  "google-adk>=2.4.0",
 ]
 
 # ── Optional extras ───────────────────────────────────────────────────────────
