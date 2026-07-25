@@ -7,7 +7,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.3.0] — Observability + CLI — Unreleased
+## [1.4.0] — Observability + CLI — Unreleased
 
 ### Added
 - **`nexus` CLI** (`cli/main.py`) — Click-based entry point wired into `pyproject.toml`
