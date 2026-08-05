@@ -6,9 +6,16 @@
 [![PyPI](https://img.shields.io/pypi/v/nexus-a2a)](https://pypi.org/project/nexus-a2a/)
 [![Python](https://img.shields.io/pypi/pyversions/nexus-a2a)](https://pypi.org/project/nexus-a2a/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-<!-- [![CI](https://github.com/dhruvil05/nexus-a2a/actions/workflows/ci.yml/badge.svg)](https://github.com/dhruvil05/nexus-a2a/actions) -->
 
----
+
+
+## ❤️ Support
+
+<a href="https://ko-fi.com/dhruvil05" target="_blank">
+  <img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3"
+       alt="Buy Me a Coffee at Ko-fi"
+       height="42">
+</a>
 
 ## What is nexus-a2a?
 
