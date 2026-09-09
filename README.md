@@ -37,6 +37,7 @@ Agent A  ──HTTP/JSON-RPC──▶  Agent B  ──▶  Agent C
 - [Quickstart](#quickstart)
 - [Core Concepts](#core-concepts)
 - [Building Agents](#building-agents)
+- [Serving Agents](#serving-agents)
 - [Sending Tasks](#sending-tasks)
 - [Agent Registry & Discovery](#agent-registry--discovery)
 - [Orchestration](#orchestration)
@@ -64,6 +65,9 @@ pip install "nexus-a2a[redis]"
 # With PostgreSQL task store
 pip install "nexus-a2a[postgres]"
 
+# With the Google ADK adapter (heavy — ~40 transitive packages)
+pip install "nexus-a2a[adk]"
+
 # Everything
 pip install "nexus-a2a[all]"
 
@@ -72,6 +76,11 @@ pip install "nexus-a2a[dev]"
 ```
 
 Requires **Python 3.11+**.
+
+The core install is deliberately small — 20 packages, no known CVEs. LangGraph,
+CrewAI, AutoGen and Google ADK are all imported lazily, so install only the
+adapter you actually use. (`google-adk` was a required dependency before
+v1.5.0; it is now the `adk` extra.)
 
 ---
 
@@ -104,8 +113,26 @@ class SummaryAgent:
 
 ```bash
 nexus run --module mypackage.agent:SummaryAgent
-# or
-python -m mypackage.agent
+```
+
+That serves the agent over the A2A protocol:
+
+```
+Serving agent 'SummaryAgent' on http://localhost:8001
+  Agent card: http://localhost:8001/.well-known/agent-card.json
+  JSON-RPC:   POST http://localhost:8001/
+  Health:     http://localhost:8001/health
+  Skills:     summarise
+```
+
+Or start it from Python, which is what `nexus run` does under the hood:
+
+```python
+from nexus_a2a import A2AServer
+
+server = A2AServer(SummaryAgent, port=8001)
+await server.start()
+# ... or: async with A2AServer(SummaryAgent, port=8001):
 ```
 
 ### 3. Send a task from another agent
@@ -232,6 +259,113 @@ print(card.skills[0].id)   # "web_search"
 from nexus_a2a import get_card
 card = get_card(ResearchAgent)
 ```
+
+---
+
+## Serving Agents
+
+`A2AServer` is the inbound half of the protocol — it turns an `@agent` class
+into a reachable agent.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /.well-known/agent-card.json` | Discovery — the card `@agent` built |
+| `POST /` | JSON-RPC 2.0: `message/send`, `tasks/get`, `tasks/cancel` |
+| `GET /health` | Liveness probe |
+| `GET /ready` | Readiness probe (checks the task store) |
+
+```python
+from nexus_a2a import A2AServer
+
+server = A2AServer(SummaryAgent, port=8001)
+await server.start()
+...
+await server.stop()
+
+# Or as an async context manager
+async with A2AServer(SummaryAgent, port=8001):
+    await asyncio.Event().wait()
+```
+
+Host and port default to whatever the agent card's `url` says, so a single
+`url="http://localhost:8001"` on the decorator configures both sides.
+
+### What `run()` can return
+
+| Return value | Result |
+|---|---|
+| `str` | One text `Artifact` |
+| `dict` / `list` | One JSON `Artifact` |
+| `Artifact` | Used as-is |
+| `Message` | Appended to task history as the agent's reply |
+| `AdapterResult` | `.to_artifact()`, or task `FAILED` if `.error` is set |
+| `None` | Completed with no artifact |
+
+A `run()` that raises is **not** a protocol error: the task is recorded as
+`FAILED` with the exception message and returned normally, so the caller can
+inspect `task.error` and the DLQ can capture it.
+
+### Error model
+
+Transport-level rejections that happen *before* dispatch return real HTTP
+status codes — `401` auth, `403` trust, `413` too large, `429` rate limit (with
+`Retry-After`), `400` malformed. Proxies and dashboards can see them, and the
+client will not retry a rejected credential.
+
+Application-level failures *after* dispatch return JSON-RPC error objects —
+`-32601` method not found, `-32602` invalid params, `-32001` task not found —
+which reach the caller as `RemoteAgentError` with the code intact.
+
+### Enforcing security
+
+The security classes are building blocks; `SecurityMiddleware` is what makes
+`A2AServer` actually enforce them. Stages run cheapest-first: **size → rate
+limit → auth → trust → payload validation**. Every stage is optional, so an
+agent starts open and hardens incrementally.
+
+```python
+from nexus_a2a import (
+    A2AServer, SecurityMiddleware, AuthManager, AgentCredentialConfig,
+    AuthScheme, TrustBoundary, RateLimiter, PayloadValidator,
+)
+
+MY_URL = "http://summary-agent:8001"
+
+auth = AuthManager()
+auth.register_agent("http://orchestrator:8000", AgentCredentialConfig(
+    scheme=AuthScheme.API_KEY, api_key="shared-secret",
+))
+
+trust = TrustBoundary()
+trust.allow("http://orchestrator:8000", MY_URL, skills=["summarise"])
+
+server = A2AServer(SummaryAgent, security=SecurityMiddleware(
+    auth=auth,
+    trust=trust,
+    rate_limiter=RateLimiter(),
+    validator=PayloadValidator(),
+    server_url=MY_URL,      # this agent is the trust TARGET
+))
+```
+
+Callers identify themselves with `caller_url`, which auth and trust both need
+(a trust rule is `caller -> target`):
+
+```python
+async with A2AHttpClient(
+    "http://summary-agent:8001",
+    caller_url="http://orchestrator:8000",     # sends X-Nexus-Caller
+    headers={"X-API-Key": "shared-secret"},
+) as client:
+    task = await client.send_message(Message.user_text("..."), skill_id="summarise")
+```
+
+Without `caller_url` the call is anonymous, and a server with auth or trust
+enabled rejects it with `401`.
+
+> **Ops endpoints live on a separate port.** `/metrics`, `/info`, `/dlq` and
+> trace lookup are served by `AgentServer` — the standard app-port / admin-port
+> split. Run both if you want protocol and ops on one host.
 
 ---
 
@@ -420,21 +554,21 @@ from nexus_a2a import AuthScheme
 auth = AuthManager()
 
 # API Key
-auth.register("http://agent-a:8001", AgentCredentialConfig(
+auth.register_agent("http://agent-a:8001", AgentCredentialConfig(
     scheme=AuthScheme.API_KEY,
     api_key="my-secret-key",
     header_name="X-API-Key",    # default
 ))
 
 # JWT
-auth.register("http://agent-b:8002", AgentCredentialConfig(
+auth.register_agent("http://agent-b:8002", AgentCredentialConfig(
     scheme=AuthScheme.JWT,
     jwt_secret="super-secret",
 ))
 token = auth.issue_jwt("http://agent-b:8002", expires_in=3600)
 
 # No auth (dev/testing)
-auth.register("http://agent-c:8003", AgentCredentialConfig(
+auth.register_agent("http://agent-c:8003", AgentCredentialConfig(
     scheme=AuthScheme.NONE,
 ))
 
@@ -446,6 +580,21 @@ except AuthError as e:
     print("Auth failed:", e)
 ```
 
+> **Auth fails closed (since v1.5.0).** Verifying an agent that was never
+> registered raises `UnknownAgentError` rather than silently passing as
+> "no auth required". Before v1.5.0 an unregistered URL — a typo, a
+> trailing-slash variant, or an attacker-supplied string — bypassed
+> authentication entirely.
+>
+> ```python
+> auth = AuthManager()                              # unregistered -> raises
+> auth = AuthManager(allow_unregistered=True)       # old behaviour, dev only
+> ```
+>
+> This applies to inbound verification only. `build_auth_headers()` still
+> returns `{}` for unknown agents, so outbound calls to agents you hold no
+> credentials for simply carry no auth headers.
+
 ### Rate Limiting
 
 Token-bucket algorithm. In-process, zero dependencies.
@@ -454,7 +603,7 @@ Token-bucket algorithm. In-process, zero dependencies.
 from nexus_a2a import RateLimiter, RateLimitConfig, RateLimitError
 
 limiter = RateLimiter()
-limiter.configure("http://agent-a:8001", RateLimitConfig(
+limiter.set_limit("http://agent-a:8001", RateLimitConfig(
     rate=10.0,    # 10 requests per second (sustained)
     burst=20,     # allow bursts up to 20
 ))
@@ -488,6 +637,36 @@ trust.block("http://untrusted:9999", "*")
 if trust.is_allowed("http://orchestrator:8000", "http://worker-a:8001"):
     await client.send_message(msg)
 ```
+
+### Admin Endpoints
+
+`AgentServer` serves Kubernetes probes and Prometheus metrics publicly, but the
+endpoints that expose task data or re-execute work require a token.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /health` | public | Liveness probe |
+| `GET /ready` | public | Readiness probe |
+| `GET /metrics` | public | Prometheus scrape |
+| `GET /info` | **admin** | Network topology summary |
+| `GET /traces/{id}` | **admin** | Distributed trace lookup |
+| `GET /dlq` | **admin** | Dead Letter Queue listing |
+| `POST /dlq/replay` | **admin** | Re-execute failed tasks |
+
+```python
+server = AgentServer(network=network, port=8080, admin_token="...")
+# or: export NEXUS_ADMIN_TOKEN=...
+```
+
+```bash
+curl -H "X-Admin-Token: $NEXUS_ADMIN_TOKEN" http://agent:8080/dlq
+```
+
+> **Admin endpoints are disabled by default (since v1.5.0).** With no
+> `admin_token` and no `NEXUS_ADMIN_TOKEN` they return `403`. Before v1.5.0 they
+> were served unauthenticated on a `0.0.0.0` bind, so anyone who could reach the
+> port could replay every failed task in the queue and read task payloads,
+> error strings, and every registered agent URL.
 
 ### Payload Validation
 
@@ -794,13 +973,24 @@ nexus replay --failed --skill web_search
 nexus replay --failed --last 1h
 nexus replay --failed --dry-run        # preview without replaying
 
-# Start agent server
+# Serve an agent over the A2A protocol
+nexus run --module mypackage.agent:MyAgent
+nexus run --module mypackage.agent:MyAgent --host 0.0.0.0 --port 8080
+
+# Without --module: ops server only (health, metrics, admin)
 nexus run
-nexus run --host 0.0.0.0 --port 8080
 
 # JSON output for all commands
 nexus --format json status --network
 ```
+
+> Runnable as a module too, when the console script is not on PATH (a container,
+> a CI step, an uninstalled virtualenv):
+>
+> ```bash
+> python -m nexus_a2a.cli ping http://localhost:8001
+> ```
+
 
 ### Audit Logger
 
@@ -1087,6 +1277,8 @@ ruff format nexus_a2a
 | **v0.4.0** | `Orchestrator` (sequential/parallel/dag), SSE streaming, `WebhookDispatcher`, `AgentNetwork` |
 | **v1.0.0** | LangGraph/CrewAI/AutoGen/GoogleADK adapters, `RedisTaskStore`, `AuditLogger`, `MetricsCollector` |
 | **v1.1.0** | Task timeout watchdog, `InputHandler`, `DeadLetterQueue`, `CircuitBreaker`, `Tracer`, `CapabilityGuard` |
+| **v1.6.0** | `A2AServer` (inbound protocol: agent card + JSON-RPC), `SecurityMiddleware`, `caller_url` on the client, `nexus run` actually serves the agent |
+| **v1.5.0** | Security hardening: admin endpoints gated, auth fails closed, JWT audience validated, PyJWT replaces python-jose, `google-adk` moved to an extra |
 | **v1.2.0** | `GracefulShutdown`, `AgentServer` (K8s probes), mTLS, `PostgresTaskStore`, `nexus.toml`, CI/CD workflows |
 | **v1.3.0** | `nexus` CLI (ping/inspect/status/trace/replay/run), integration test suite, `CHANGELOG.md` |
 

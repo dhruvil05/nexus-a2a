@@ -7,6 +7,7 @@ __pycache__/
 
 # Virtual environment (uv creates this)
 .venv/
+test-env/
 
 # Build artifacts
 dist/
@@ -29,3 +30,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local secrets
+.env

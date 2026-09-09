@@ -22,9 +22,10 @@ import hmac
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
-from jose import JWTError, jwt
+import jwt
+from jwt import ExpiredSignatureError, InvalidTokenError
 
 from nexus_a2a.models.agent import AuthScheme
 
@@ -68,6 +69,25 @@ class ExpiredCredentialsError(AuthError):
 
     def __init__(self) -> None:
         super().__init__("Token has expired. Request a new one.")
+
+
+class UnknownAgentError(AuthError):
+    """
+    Raised when credentials are checked for an agent that was never
+    registered with the AuthManager.
+
+    Authentication fails closed: an unregistered agent is rejected rather
+    than silently treated as 'no auth required'. Pass
+    AuthManager(allow_unregistered=True) to restore the pre-1.5.0 behaviour.
+    """
+
+    def __init__(self, agent_url: str) -> None:
+        super().__init__(
+            f"No credential config registered for agent '{agent_url}'. "
+            "Register it with AuthManager.register_agent(), or construct "
+            "AuthManager(allow_unregistered=True) to allow unregistered agents."
+        )
+        self.agent_url = agent_url
 
 
 # ── Per-agent credential config ───────────────────────────────────────────────
@@ -132,9 +152,23 @@ class AuthManager:
                                subject="nexus-a2a", expires_in=3600)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, allow_unregistered: bool = False) -> None:
+        """
+        Args:
+            allow_unregistered: If False (the default), verifying an agent
+                that was never registered raises UnknownAgentError. If True,
+                unregistered agents fall back to AuthScheme.NONE — the
+                pre-1.5.0 behaviour, which fails OPEN and should only be
+                used in development.
+        """
         # agent_url → AgentCredentialConfig
         self._configs: dict[str, AgentCredentialConfig] = {}
+        self._allow_unregistered = allow_unregistered
+        if allow_unregistered:
+            logger.warning(
+                "AuthManager(allow_unregistered=True): requests from agents "
+                "that are not registered will bypass authentication."
+            )
 
     # ── Registration ──────────────────────────────────────────────────────────
 
@@ -186,6 +220,7 @@ class AuthManager:
             For NONE:    {"scheme": "none"}
 
         Raises:
+            UnknownAgentError:        Agent is not registered (fail-closed).
             MissingCredentialsError:  Expected header not present.
             InvalidCredentialsError:  Credentials present but wrong.
             ExpiredCredentialsError:  JWT has expired.
@@ -231,7 +266,10 @@ class AuthManager:
         Raises:
             ValueError: If the agent is not registered or not using JWT scheme.
         """
-        config = self._get_config(agent_url)
+        try:
+            config = self._get_config(agent_url)
+        except UnknownAgentError as exc:
+            raise ValueError(str(exc)) from exc
 
         if config.scheme != AuthScheme.JWT:
             raise ValueError(
@@ -250,9 +288,7 @@ class AuthManager:
         if config.jwt_audience:
             payload["aud"] = config.jwt_audience
 
-        return cast(
-            str, jwt.encode(payload, config.jwt_secret, algorithm=_JWT_ALGORITHM)
-        )
+        return jwt.encode(payload, config.jwt_secret, algorithm=_JWT_ALGORITHM)
 
     def build_auth_headers(
         self,
@@ -270,9 +306,15 @@ class AuthManager:
 
         Returns:
             Dict of headers to merge into the outbound request.
-            Returns {} if scheme is NONE.
+            Returns {} if scheme is NONE or the agent is not registered —
+            an outbound call to an agent we hold no credentials for simply
+            carries no auth headers. Fail-closed applies to inbound
+            verification, not to header construction.
         """
-        config = self._get_config(agent_url)
+        try:
+            config = self._get_config(agent_url)
+        except UnknownAgentError:
+            return {}
 
         match config.scheme:
             case AuthScheme.NONE:
@@ -324,32 +366,41 @@ class AuthManager:
         token = auth_header[len("Bearer ") :]
 
         try:
-            options: dict[str, Any] = {}
-            if config.jwt_audience:
-                options["audience"] = config.jwt_audience
-
+            # 'audience' is a top-level parameter — passing it inside
+            # 'options' silently skips audience validation entirely.
             claims: dict[str, Any] = jwt.decode(
                 token,
                 config.jwt_secret or "",
                 algorithms=[_JWT_ALGORITHM],
-                options=options,
+                audience=config.jwt_audience,
             )
             return claims
 
-        except jwt.ExpiredSignatureError as err:
+        except ExpiredSignatureError as err:
             raise ExpiredCredentialsError() from err
-        except JWTError as exc:
+        except InvalidTokenError as exc:
             raise InvalidCredentialsError(str(exc)) from exc
 
     def _get_config(self, agent_url: str) -> AgentCredentialConfig:
         """
         Return the credential config for the given agent URL.
-        Falls back to NONE scheme if the agent is not explicitly registered.
+
+        Fails CLOSED: an agent that was never registered is rejected, so a
+        typo'd or attacker-supplied URL cannot bypass authentication by
+        landing on a permissive default.
+
+        Raises:
+            UnknownAgentError: Agent is not registered and
+                               allow_unregistered is False.
         """
-        return self._configs.get(
-            agent_url.rstrip("/"),
-            AgentCredentialConfig(scheme=AuthScheme.NONE),
-        )
+        config = self._configs.get(agent_url.rstrip("/"))
+        if config is not None:
+            return config
+
+        if self._allow_unregistered:
+            return AgentCredentialConfig(scheme=AuthScheme.NONE)
+
+        raise UnknownAgentError(agent_url)
 
     @staticmethod
     def _validate_config(config: AgentCredentialConfig) -> None:

@@ -17,11 +17,10 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Any
 
 import click
 
-from nexus_a2a.cli.output import print_error
+from nexus_a2a.cli.context import NexusContext, pass_ctx
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 
@@ -33,36 +32,6 @@ def _configure_logging(verbose: bool) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         stream=sys.stderr,
     )
-
-
-# ── Context object shared across all sub-commands ─────────────────────────────
-
-
-class NexusContext:
-    def __init__(self, config_path: Path, verbose: bool, fmt: str) -> None:
-        self.config_path = config_path
-        self.verbose = verbose
-        self.fmt = fmt  # "table" | "json"
-
-    def load_config(self) -> dict[str, Any]:
-        """Load nexus.toml if it exists; return empty dict otherwise."""
-        if self.config_path.exists():
-            try:
-                import tomllib  # Python 3.11+
-            except ImportError:
-                try:
-                    import tomli as tomllib  # type: ignore[no-redef]
-                except ImportError:
-                    print_error(
-                        "tomllib not available. Install tomli for Python <3.11."
-                    )
-                    return {}
-            with open(self.config_path, "rb") as f:
-                return tomllib.load(f)
-        return {}
-
-
-pass_ctx = click.make_pass_decorator(NexusContext, ensure=True)
 
 
 # ── Root CLI group ────────────────────────────────────────────────────────────
@@ -128,6 +97,11 @@ def _register_commands() -> None:
 
 
 _register_commands()
+
+# NexusContext and pass_ctx moved to nexus_a2a.cli.context in v1.6.0 to break
+# the main <-> commands import cycle. Re-exported here so existing imports of
+# 'from nexus_a2a.cli.main import NexusContext, pass_ctx' keep working.
+__all__ = ["cli", "NexusContext", "pass_ctx"]
 
 
 if __name__ == "__main__":

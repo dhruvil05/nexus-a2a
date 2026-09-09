@@ -15,7 +15,20 @@ Endpoints:
     GET /metrics  — Prometheus text format (exposition format v0.0.4).
                     Scraped by Prometheus, Grafana Agent, Datadog, etc.
 
-    GET /info     — Human-readable JSON summary of network state.
+    GET /info     — Human-readable JSON summary of network state.  [ADMIN]
+
+    GET /traces/{id} — Distributed trace lookup.                   [ADMIN]
+    GET /dlq         — Dead Letter Queue listing.                  [ADMIN]
+    POST /dlq/replay — Re-execute failed tasks.                    [ADMIN]
+
+Endpoints marked [ADMIN] expose task payloads, internal agent URLs, or can
+re-execute work. They are DISABLED (403) unless an admin token is configured
+via AgentServer(admin_token=...) or the NEXUS_ADMIN_TOKEN environment
+variable. Authenticate with 'X-Admin-Token: <token>' or
+'Authorization: Bearer <token>'.
+
+/health, /ready and /metrics stay public so Kubernetes probes and Prometheus
+scrapers work without credentials.
 
 Usage:
     server = AgentServer(network=network)
@@ -38,7 +51,9 @@ Design:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -72,6 +87,11 @@ class AgentServer:
         host:       Host to bind the server to. Defaults to '0.0.0.0'.
         port:       Port to listen on. Defaults to 8080.
         log_level:  Uvicorn log level. Defaults to 'warning' (quiet).
+        admin_token: Shared secret required by the admin endpoints
+                    (/info, /traces, /dlq, /dlq/replay). Falls back to the
+                    NEXUS_ADMIN_TOKEN environment variable. When neither is
+                    set those endpoints return 403 and only /health, /ready
+                    and /metrics are served.
 
     Example::
 
@@ -92,11 +112,23 @@ class AgentServer:
         host: str = "0.0.0.0",
         port: int = 8080,
         log_level: str = "warning",
+        admin_token: str | None = None,
     ) -> None:
         self.network = network
         self.host = host
         self.port = port
         self.log_level = log_level
+
+        # Admin endpoints (/info, /traces, /dlq, /dlq/replay) expose task data
+        # and can re-execute failed work, so they are disabled unless a token
+        # is configured. Falls back to NEXUS_ADMIN_TOKEN so operators can
+        # enable them without code changes.
+        self._admin_token = admin_token or os.environ.get("NEXUS_ADMIN_TOKEN") or None
+        if self._admin_token is None:
+            logger.info(
+                "AgentServer: admin endpoints disabled (no admin_token / "
+                "NEXUS_ADMIN_TOKEN set). /health, /ready and /metrics stay public."
+            )
 
         self._started_at: float | None = None
         self._server: uvicorn.Server | None = None
@@ -187,6 +219,50 @@ class AgentServer:
     async def __aexit__(self, *_: Any) -> None:
         await self.stop()
 
+    # ── Admin authorisation ───────────────────────────────────────────────────
+
+    def _deny_admin(self, request: Request) -> Response | None:
+        """
+        Authorise a request to an admin endpoint.
+
+        Returns None if the caller is authorised, or the Response to send
+        back if they are not. Admin endpoints are refused outright when no
+        token is configured — an unauthenticated /dlq/replay lets anyone who
+        can reach the port re-execute every failed task.
+
+        Callers authenticate with either header:
+            X-Admin-Token: <token>
+            Authorization: Bearer <token>
+        """
+        if self._admin_token is None:
+            return JSONResponse(
+                {
+                    "error": "Admin endpoints are disabled.",
+                    "detail": (
+                        "Set admin_token=... on AgentServer or the "
+                        "NEXUS_ADMIN_TOKEN environment variable to enable "
+                        "/info, /traces, /dlq and /dlq/replay."
+                    ),
+                },
+                status_code=403,
+            )
+
+        provided = request.headers.get("X-Admin-Token", "")
+        if not provided:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                provided = auth_header[len("Bearer ") :]
+
+        # Constant-time comparison to prevent timing attacks
+        if not hmac.compare_digest(provided.encode(), self._admin_token.encode()):
+            logger.warning(
+                "AgentServer: rejected unauthorised admin request to %s",
+                request.url.path,
+            )
+            return JSONResponse({"error": "Forbidden"}, status_code=403)
+
+        return None
+
     # ── ASGI app builder ──────────────────────────────────────────────────────
 
     def _build_app(self) -> Starlette:
@@ -202,15 +278,27 @@ class AgentServer:
             return await self._handle_metrics(request)
 
         async def info(request: Request) -> Response:
+            denied = self._deny_admin(request)
+            if denied is not None:
+                return denied
             return await self._handle_info(request)
 
         async def trace_lookup(request: Request) -> Response:
+            denied = self._deny_admin(request)
+            if denied is not None:
+                return denied
             return await self._handle_trace(request)
 
         async def dlq_list(request: Request) -> Response:
+            denied = self._deny_admin(request)
+            if denied is not None:
+                return denied
             return await self._handle_dlq_list(request)
 
         async def dlq_replay(request: Request) -> Response:
+            denied = self._deny_admin(request)
+            if denied is not None:
+                return denied
             return await self._handle_dlq_replay(request)
 
         return Starlette(

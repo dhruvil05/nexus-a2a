@@ -36,6 +36,10 @@ from nexus_a2a.transport.tracing import Tracer, TraceStore
 logger = logging.getLogger(__name__)
 
 _AGENT_CARD_PATH = "/.well-known/agent-card.json"
+# Header announcing the calling agent's own URL. Mirrors
+# nexus_a2a.security.middleware.CALLER_HEADER — duplicated as a literal to
+# keep the transport layer independent of the security package.
+_CALLER_HEADER = "X-Nexus-Caller"
 _METHOD_SEND = "message/send"
 _METHOD_GET = "tasks/get"
 _METHOD_CANCEL = "tasks/cancel"
@@ -245,6 +249,12 @@ class A2AHttpClient:
         headers:         Extra headers sent with every request (e.g. auth).
         trace_id:        Trace ID to propagate. Auto-generated if not provided.
         trace_store:     TraceStore for recording spans. Uses default if None.
+        caller_url:      THIS agent's own base URL, announced to the remote
+                         agent in the 'X-Nexus-Caller' header. A server running
+                         SecurityMiddleware uses it to authenticate the caller
+                         and to evaluate trust rules, which are 'caller ->
+                         target'. Without it the call is anonymous, and a
+                         server with auth or trust enabled will reject it.
     """
 
     def __init__(
@@ -256,12 +266,18 @@ class A2AHttpClient:
         headers: dict[str, str] | None = None,
         trace_id: str | None = None,
         trace_store: TraceStore | None = None,
+        caller_url: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._retry = retry or RetryConfig()
         self._cb = circuit_breaker  # None = disabled
-        self._extra_headers = headers or {}
+        self._caller_url = caller_url.rstrip("/") if caller_url else None
+        self._extra_headers = dict(headers or {})
+        # Explicit headers= win over caller_url, so a caller can always
+        # override the announced identity.
+        if self._caller_url and _CALLER_HEADER not in self._extra_headers:
+            self._extra_headers[_CALLER_HEADER] = self._caller_url
         self._trace_id = trace_id or Tracer.new_trace_id()
         self._trace_store = trace_store
         self._client: httpx.AsyncClient | None = None

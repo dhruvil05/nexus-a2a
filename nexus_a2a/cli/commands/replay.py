@@ -20,7 +20,7 @@ from typing import Any
 import click
 import httpx
 
-from nexus_a2a.cli.main import NexusContext, pass_ctx
+from nexus_a2a.cli.context import NexusContext, pass_ctx
 from nexus_a2a.cli.output import (
     console,
     make_progress,
