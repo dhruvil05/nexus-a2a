@@ -15,10 +15,12 @@ from nexus_a2a.models.agent import AuthScheme
 from nexus_a2a.models.task import Message, Part, PartType
 from nexus_a2a.security.auth import (
     AgentCredentialConfig,
+    AuthError,
     AuthManager,
     ExpiredCredentialsError,
     InvalidCredentialsError,
     MissingCredentialsError,
+    UnknownAgentError,
 )
 from nexus_a2a.security.rate_limiter import (
     RateLimitConfig,
@@ -61,10 +63,27 @@ class TestAuthManagerNone:
         claims = await auth.verify(AGENT_A, {})
         assert claims["scheme"] == "none"
 
-    async def test_unregistered_agent_defaults_to_none(self):
+    async def test_unregistered_agent_is_rejected(self):
+        """Auth fails CLOSED: an unregistered agent must not pass (v1.5.0)."""
         auth = AuthManager()
+        with pytest.raises(UnknownAgentError):
+            await auth.verify("http://unknown:9999", {})
+
+    async def test_unregistered_agent_allowed_when_opted_in(self):
+        """allow_unregistered=True restores the pre-1.5.0 fail-open behaviour."""
+        auth = AuthManager(allow_unregistered=True)
         claims = await auth.verify("http://unknown:9999", {})
         assert claims["scheme"] == "none"
+
+    async def test_unknown_agent_error_is_an_auth_error(self):
+        auth = AuthManager()
+        with pytest.raises(AuthError):
+            await auth.verify("http://unknown:9999", {})
+
+    async def test_build_auth_headers_unregistered_returns_empty(self):
+        """Outbound header construction must not raise for unknown agents."""
+        auth = AuthManager()
+        assert auth.build_auth_headers("http://unknown:9999") == {}
 
 
 class TestAuthManagerApiKey:
@@ -144,14 +163,14 @@ class TestAuthManagerJWT:
     async def test_expired_token_raises(self):
         auth = self._auth()
         # Issue a token that expired 10 seconds ago
-        from jose import jwt as jose_jwt
+        import jwt as pyjwt
 
         payload = {
             "sub": "caller",
             "iat": int(time.time()) - 20,
             "exp": int(time.time()) - 10,
         }
-        token = jose_jwt.encode(payload, SECRET, algorithm="HS256")
+        token = pyjwt.encode(payload, SECRET, algorithm="HS256")
         with pytest.raises(ExpiredCredentialsError):
             await auth.verify(AGENT_A, {"Authorization": f"Bearer {token}"})
 

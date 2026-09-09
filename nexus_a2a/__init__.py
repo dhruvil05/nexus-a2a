@@ -8,8 +8,8 @@ Public API for Phase 1. Import everything you need from here:
     from nexus_a2a import Task, TaskState, Message, Artifact, Part
 """
 
-# ── Version ───────────────────────────────────────────────────────────────────
-__version__ = "1.2.0"
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 # ── Decorator — the primary developer entry point ─────────────────────────────
 from nexus_a2a.adapters.autogen import AutoGenAdapter
@@ -37,6 +37,13 @@ from nexus_a2a.config import (
     SecurityConfig,
     SkillConfig,
     StorageConfig,
+)
+
+# ── v1.6: A2AServer — the inbound protocol server ────────────────────────────
+from nexus_a2a.core.a2a_server import (
+    A2AServer,
+    A2AServerError,
+    InvalidAgentError,
 )
 
 # ── v1.2: AgentServer ────────────────────────────────────────────────────────
@@ -103,11 +110,17 @@ from nexus_a2a.security.auth import (
     ExpiredCredentialsError,
     InvalidCredentialsError,
     MissingCredentialsError,
+    UnknownAgentError,
 )
 from nexus_a2a.security.capability_guard import (
     CapabilityGuard,
     CapabilityMismatchError,
     CapabilityNotSupportedError,
+)
+from nexus_a2a.security.middleware import (
+    CallerIdentity,
+    MissingCallerError,
+    SecurityMiddleware,
 )
 
 # ── v1.2: MutualTLS ──────────────────────────────────────────────────────────
@@ -170,6 +183,16 @@ from nexus_a2a.transport.webhook import (
     WebhookDispatcher,
 )
 
+# ── Version ───────────────────────────────────────────────────────────────────
+# Derived from installed package metadata so it can never drift from
+# pyproject.toml — that drift previously broke the publish workflow's
+# version-equality gate.
+try:
+    __version__ = _pkg_version("nexus-a2a")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "1.6.0"
+
+
 # ── What gets exported when someone does: from nexus_a2a import * ─────────────
 __all__ = [
     # Decorator
@@ -214,6 +237,10 @@ __all__ = [
     "MissingCredentialsError",
     "InvalidCredentialsError",
     "ExpiredCredentialsError",
+    "UnknownAgentError",
+    "SecurityMiddleware",
+    "CallerIdentity",
+    "MissingCallerError",
     "TrustBoundary",
     "TrustError",
     "AgentNotAllowedError",
@@ -238,6 +265,10 @@ __all__ = [
     "build_client_ssl_context",
     "build_server_ssl_context",
     "verify_peer_certificate",
+    # v1.6 — A2A protocol server
+    "A2AServer",
+    "A2AServerError",
+    "InvalidAgentError",
     # Phase 4 — Orchestration + streaming
     "AgentNetwork",
     "EventBus",

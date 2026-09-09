@@ -7,6 +7,198 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.6.0] — A2AServer: the inbound protocol — Unreleased
+
+nexus-a2a can now BE an agent, not just call one. Through v1.5.0 the library
+shipped a complete client (`A2AHttpClient`) with no server behind it: nothing
+served `/.well-known/agent-card.json`, nothing handled the JSON-RPC methods,
+and `nexus run` imported your agent class and then discarded it. Two nexus-a2a
+agents could not actually talk to each other. This release closes that loop.
+
+### Added
+- **`A2AServer`** (`core/a2a_server.py`) — serves one `@agent`-decorated class
+  over the A2A protocol:
+  - `GET /.well-known/agent-card.json` — the discovery document `@agent` built.
+  - `POST /` — JSON-RPC 2.0: `message/send`, `tasks/get`, `tasks/cancel`,
+    matching `A2AHttpClient` byte for byte.
+  - `GET /health`, `GET /ready` — probes; readiness checks the task store.
+  Accepts an agent class or an instance, derives host/port from the agent
+  card's URL, and runs the task through `TaskManager` so state transitions,
+  persistence and the store backends all apply.
+- **`SecurityMiddleware`** (`security/middleware.py`) — the wiring that makes
+  the security layer actually enforce. `AuthManager`, `TrustBoundary`,
+  `RateLimiter` and `PayloadValidator` were correct, tested classes that
+  nothing in the library ever called, because there was no inbound request to
+  call them on. `A2AServer` now runs them in order on every RPC:
+  size → rate limit → auth → trust → payload validation. Every stage is
+  optional; the default is a no-op so an agent works out of the box and
+  hardens incrementally.
+- **`A2AHttpClient(caller_url=...)`** — announces the calling agent's own URL
+  in the `X-Nexus-Caller` header. Auth and trust both need to know who is
+  calling, and trust rules are `caller -> target`; without it a call is
+  anonymous and a server with auth or trust enabled will reject it.
+- `CallerIdentity`, `MissingCallerError`, `InvalidAgentError`, `A2AServerError`
+  and `PayloadValidator.max_bytes` / `.max_parts` / `.config` accessors.
+- 87 tests: `tests/test_a2a_server.py` (dispatch, error envelopes, return-value
+  handling, the full security chain) and
+  `tests/integration/test_a2a_roundtrip.py` — the first integration tests where
+  BOTH halves are nexus-a2a's own code, over real HTTP on real ports. Every
+  other integration test still talks to the hand-rolled Starlette mock in
+  `conftest.py`, which existed only because there was no server to point at.
+
+### Fixed
+- **`nexus run --module pkg:Agent` now actually serves the agent.** It imported
+  the class, passed it to `_run_server()`, and never referenced it again —
+  starting the ops server instead and advertising an agent-card URL that
+  returned 404. It now starts an `A2AServer`. With no `--module` it starts the
+  ops server only, and says so.
+- The README Quickstart works end to end. Steps 2 and 3 (`nexus run`, then
+  `client.send_message(...)`) previously could not succeed against anything
+  this package produced; both paths are now covered by tests.
+- **CLI import cycle removed.** `main.py` registers every sub-command at import
+  time and each sub-command imported `NexusContext` / `pass_ctx` back from
+  `main.py`, so the graph was `main -> commands.* -> main`. That broke both
+  `python -m nexus_a2a.cli.main` and a plain
+  `import nexus_a2a.cli.commands.ping`:
+
+      ImportError: cannot import name 'ping' from partially initialized
+      module 'nexus_a2a.cli.commands.ping'
+
+  It was also a latent runtime bug beyond the import error — under `-m`,
+  `main.py` was executed twice under two names, producing two distinct
+  `NexusContext` classes, and `click.make_pass_decorator` matches on class
+  identity, so `pass_ctx` would have failed to find the context the root group
+  stored.
+
+  The shared state moved to the new **`nexus_a2a/cli/context.py`**, which
+  imports nothing from `main`. `NexusContext` and `pass_ctx` are still
+  re-exported from `nexus_a2a.cli.main`, and are the same objects, so existing
+  imports keep working.
+
+### Added (CLI)
+- **`nexus_a2a/cli/__main__.py`** — `python -m nexus_a2a.cli` now works, for
+  environments where the `nexus` console script is not on PATH.
+- `tests/test_cli.py` — 38 tests covering all three entry points, context
+  identity, and a static guard that fails the moment a command module imports
+  from `cli.main` again, before anyone hits the ImportError.
+
+### Error model
+Transport-level rejections that happen before dispatch return real HTTP status
+codes — 401 auth, 403 trust, 413 too large, 429 rate limit (with `Retry-After`),
+400 malformed — so proxies and dashboards can see them and the client does not
+retry a rejected credential. Application-level failures after dispatch return
+JSON-RPC error objects (-32601 method not found, -32602 invalid params, -32001
+task not found), which reach the caller as `RemoteAgentError` with the code
+intact. An agent that raises is neither: the task is recorded as `FAILED` and
+returned as a normal result, so callers can inspect `task.error` and the Dead
+Letter Queue can capture it.
+
+### Notes
+- Ops endpoints (`/metrics`, `/info`, `/dlq`, traces) remain in `AgentServer`,
+  designed to run on a separate port — the standard app-port / admin-port
+  split. `A2AServer` serves the protocol plus probes.
+- `run()` may return `None`, `str`, `dict`/`list`, `Artifact`, `Message`, or an
+  `AdapterResult`; each maps onto the task result predictably. An
+  `AdapterResult` carrying `.error` fails the task.
+
+### Known limitations
+- Streaming (`message/stream`) and push notifications are advertised by
+  `AgentCapabilities` but not yet served — `CapabilityGuard` can still check
+  them on remote cards.
+- `INPUT_REQUIRED` is reachable through `TaskManager` but `A2AServer` has no
+  wire method for supplying the follow-up input yet.
+
+---
+
+## [1.5.0] — Security hardening — Unreleased
+
+Security release. Two fixes intentionally change runtime behaviour; both are
+noted under **Changed (breaking)** with the flag that restores the old default.
+
+### Security
+- **CRITICAL — Admin endpoints no longer unauthenticated.** `GET /info`,
+  `GET /traces/{id}`, `GET /dlq` and `POST /dlq/replay` were served with no
+  authentication on a server whose default bind is `0.0.0.0:8080`. Anyone who
+  could reach the port could re-execute every failed task in the Dead Letter
+  Queue (duplicate writes, repeated LLM spend, an amplification primitive) and
+  read task payloads, error strings and the full agent topology.
+  They now require a token supplied via `AgentServer(admin_token=...)` or the
+  `NEXUS_ADMIN_TOKEN` environment variable, sent as `X-Admin-Token: <token>` or
+  `Authorization: Bearer <token>`, compared with `hmac.compare_digest`.
+  With no token configured the endpoints return `403` and are effectively off.
+  `/health`, `/ready` and `/metrics` remain public so Kubernetes probes and
+  Prometheus scraping keep working unauthenticated.
+- **HIGH — `AuthManager` no longer fails open.** `_get_config()` returned
+  `AuthScheme.NONE` for any agent URL that was not registered, so a request
+  presenting an unregistered URL — a typo, a trailing-slash variant, or an
+  attacker-chosen string — bypassed authentication entirely. Unregistered
+  agents now raise the new `UnknownAgentError`.
+- **MEDIUM — JWT `aud` claim is now actually validated.** `jwt_audience` was
+  passed inside the `options` dict, where it is not a recognised key, so it was
+  silently discarded and a token with no `aud` claim passed validation. It is
+  now passed as the top-level `audience` parameter.
+- **MEDIUM — Payload size is checked before parsing.** `validate_dict()` could
+  only reject an oversized body after Pydantic had already deserialised it into
+  memory, so the documented memory-exhaustion protection did not hold. New
+  `PayloadValidator.validate_raw(body)` enforces `max_bytes` against the raw
+  bytes first. Prefer it for anything arriving off the network.
+- **MEDIUM — `RateLimiter` bucket map is bounded.** Buckets were created lazily
+  per agent URL into an uncapped dict with no eviction, so attacker-influenced
+  URLs could grow it without bound. Now an LRU `OrderedDict` capped by the new
+  `max_tracked` argument (default 10,000).
+- **MEDIUM — `TrustBoundary` matching is platform-independent.** Rules used
+  `fnmatch.fnmatch()`, which applies `os.path.normcase()` and is therefore
+  case-insensitive and slash-rewriting on Windows but case-sensitive on Linux —
+  the same ACL produced different decisions per OS. Now `fnmatch.fnmatchcase()`.
+- **Dependencies — dropped `python-jose` for `PyJWT`.** `python-jose` pulled in
+  `ecdsa`, `rsa` and `pyasn1` transitively; `ecdsa` carries PYSEC-2026-1325
+  (Minerva timing attack), which upstream has declared unfixable in pure Python.
+  Only HS256 was ever used, so none of them were needed. Removes 5 of the 9
+  advisories `pip-audit` reported against the dependency tree.
+
+### Changed (breaking)
+- `AuthManager.verify()` raises `UnknownAgentError` for unregistered agents.
+  Pass `AuthManager(allow_unregistered=True)` for the pre-1.5.0 fail-open
+  behaviour (logs a warning; development only).
+  `build_auth_headers()` is unaffected and still returns `{}` for unknown
+  agents — fail-closed applies to inbound verification, not outbound headers.
+- `AgentServer` admin endpoints return `403` unless a token is configured.
+- `google-adk` moved from a required dependency to the `adk` extra. It is
+  imported lazily — exactly like the CrewAI, LangGraph and AutoGen adapters,
+  none of which were ever required — but was pulling ~40 transitive packages
+  into every install. Use `pip install nexus-a2a[adk]` (it is also in `[all]`).
+
+### Fixed
+- `TrustBoundary` skill ACLs are deterministic. `_check_skill()` returned on the
+  first matching rule while iterating an insertion-ordered dict, so when a
+  wildcard rule and a specific rule both matched, the outcome depended on
+  registration order. All matching rules are now considered; since rules are
+  additive grants, access is permitted if any matching rule grants the skill.
+- `__version__` is derived from installed package metadata instead of being
+  hardcoded. It had drifted to `1.2.0` while `pyproject.toml` said `1.4.1`,
+  which would have failed the publish workflow's version-equality gate.
+- `nexus run` no longer advertises a `/.well-known/agent-card.json` URL that
+  the server does not serve.
+
+### Added
+- `AgentServer(admin_token=...)` and `NEXUS_ADMIN_TOKEN`.
+- `AuthManager(allow_unregistered=...)` and `UnknownAgentError` (exported).
+- `PayloadValidator.validate_raw()`.
+- `RateLimiter(max_tracked=...)`.
+- Tests covering admin-endpoint authorisation and auth fail-closed behaviour.
+
+### Known limitations (as of this release)
+- The security classes (`AuthManager`, `TrustBoundary`, `RateLimiter`,
+  `PayloadValidator`, `CapabilityGuard`) are still opt-in building blocks that
+  nothing in the library calls automatically, because there is no inbound A2A
+  server to enforce them on.
+
+  **Resolved in 1.6.0** by `A2AServer` + `SecurityMiddleware`. 1.5.0 was never
+  published, so these changes ship inside 1.6.0 and this limitation never
+  reached a release.
+
+---
+
 ## [1.4.0] — Observability + CLI — Unreleased
 
 ### Added

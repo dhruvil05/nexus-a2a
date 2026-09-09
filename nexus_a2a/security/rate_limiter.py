@@ -25,9 +25,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+# Upper bound on how many distinct agent URLs we keep buckets for.
+# Buckets are created lazily per URL, so without a cap an attacker who can
+# influence the URL could grow the dict without bound (memory exhaustion).
+_DEFAULT_MAX_TRACKED = 10_000
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -152,12 +158,25 @@ class RateLimiter:
     def __init__(
         self,
         default_config: RateLimitConfig | None = None,
+        max_tracked: int = _DEFAULT_MAX_TRACKED,
     ) -> None:
+        """
+        Args:
+            default_config: Limit applied to agents with no specific config.
+            max_tracked:    Maximum number of distinct agent URLs to hold
+                            buckets for. When exceeded, the least recently
+                            used bucket is evicted. Bounds memory when the
+                            agent URL is attacker-influenced.
+        """
+        if max_tracked <= 0:
+            raise ValueError(f"max_tracked must be > 0, got {max_tracked}")
+
         self._default = default_config or RateLimitConfig()
+        self._max_tracked = max_tracked
         # agent_url → RateLimitConfig
         self._configs: dict[str, RateLimitConfig] = {}
-        # agent_url → _TokenBucket (created lazily on first request)
-        self._buckets: dict[str, _TokenBucket] = {}
+        # agent_url → _TokenBucket (created lazily, LRU-evicted at max_tracked)
+        self._buckets: OrderedDict[str, _TokenBucket] = OrderedDict()
         self._lock = asyncio.Lock()
 
     # ── Configuration ─────────────────────────────────────────────────────────
@@ -244,8 +263,30 @@ class RateLimiter:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _get_or_create_bucket(self, url: str) -> _TokenBucket:
-        """Return existing bucket or create one from the agent's config."""
-        if url not in self._buckets:
-            config = self._configs.get(url, self._default)
-            self._buckets[url] = _TokenBucket(rate=config.rate, burst=config.burst)
-        return self._buckets[url]
+        """
+        Return existing bucket or create one from the agent's config.
+
+        Buckets are held in an LRU OrderedDict capped at max_tracked, so a
+        flood of distinct URLs evicts old entries instead of growing memory
+        without bound. Agents with an explicitly configured limit are never
+        evicted — only lazily-created default buckets are.
+        """
+        bucket = self._buckets.get(url)
+        if bucket is not None:
+            self._buckets.move_to_end(url)
+            return bucket
+
+        config = self._configs.get(url, self._default)
+        bucket = _TokenBucket(rate=config.rate, burst=config.burst)
+        self._buckets[url] = bucket
+
+        while len(self._buckets) > self._max_tracked:
+            evicted_url, _ = self._buckets.popitem(last=False)
+            logger.warning(
+                "RateLimiter: bucket cap of %d reached, evicted LRU entry for %s. "
+                "Raise max_tracked if you legitimately track this many agents.",
+                self._max_tracked,
+                evicted_url,
+            )
+
+        return bucket

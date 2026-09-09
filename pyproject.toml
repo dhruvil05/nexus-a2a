@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 # ── Package identity ──────────────────────────────────────────────────────────
 [project]
 name = "nexus-a2a"
-version = "1.4.1"
+version = "1.6.0"
 description = "A developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease."
 readme = "README.md"
 license = { text = "MIT" }
@@ -30,17 +30,24 @@ dependencies = [
   "httpx>=0.27",
   "starlette>=0.40",
   "uvicorn>=0.30",
-  "python-jose>=3.3",
+  # PyJWT replaces python-jose (1.5.0): jose pulled in ecdsa, rsa and pyasn1
+  # purely as transitive deps. ecdsa carries an unfixable timing-attack
+  # advisory (PYSEC-2026-1325) and we only ever sign with HS256.
+  "PyJWT>=2.10",
   "click>=8.1",
   "rich>=13.0",
-  "google-adk>=2.4.0",
+  # Transitive via httpx/anyio — floor pinned to clear PYSEC-2026-215.
+  "idna>=3.15",
 ]
 
 # ── Optional extras ───────────────────────────────────────────────────────────
 [project.optional-dependencies]
 redis    = ["redis>=5.0"]
 postgres = ["asyncpg>=0.29"]
-all      = ["redis>=5.0", "asyncpg>=0.29"]
+# google-adk is a ~40-package tree and, like every other adapter, is imported
+# lazily. Install it only if you use GoogleADKAdapter.
+adk      = ["google-adk>=2.4.0"]
+all      = ["redis>=5.0", "asyncpg>=0.29", "google-adk>=2.4.0"]
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",

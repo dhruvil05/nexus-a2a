@@ -134,6 +134,23 @@ class PayloadValidator:
     def __init__(self, config: ValidatorConfig | None = None) -> None:
         self._config = config or ValidatorConfig()
 
+    # ── Config accessors ──────────────────────────────────────────────────────
+
+    @property
+    def config(self) -> ValidatorConfig:
+        """The active validation limits."""
+        return self._config
+
+    @property
+    def max_bytes(self) -> int:
+        """Maximum allowed serialised payload size, in bytes."""
+        return self._config.max_bytes
+
+    @property
+    def max_parts(self) -> int:
+        """Maximum number of Parts a single Message may contain."""
+        return self._config.max_parts
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def validate(self, message: Message) -> Message:
@@ -168,6 +185,47 @@ class PayloadValidator:
             self._serialised_size(message),
         )
         return message
+
+    def validate_raw(self, raw_bytes: bytes | str) -> Message:
+        """
+        Validate a raw, undecoded request body.
+
+        Prefer this over validate_dict() for anything arriving off the
+        network: the size limit is enforced BEFORE the payload is parsed,
+        so an oversized body is rejected without ever being deserialised
+        into Python objects. validate_dict() can only check the size after
+        parsing has already allocated the memory.
+
+        Args:
+            raw_bytes: The raw request body, as bytes or str.
+
+        Returns:
+            A validated, sanitised Message.
+
+        Raises:
+            PayloadTooLargeError: Body exceeds max_bytes.
+            InvalidPartError:     Body is not valid JSON, or does not
+                                  conform to the Message schema.
+            + all errors from validate().
+        """
+        data = raw_bytes.encode("utf-8") if isinstance(raw_bytes, str) else raw_bytes
+
+        size = len(data)
+        if size > self._config.max_bytes:
+            raise PayloadTooLargeError(size, self._config.max_bytes)
+
+        try:
+            parsed = json.loads(data)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise InvalidPartError(index=-1, reason=f"Body is not valid JSON: {exc}") from exc
+
+        if not isinstance(parsed, dict):
+            raise InvalidPartError(
+                index=-1,
+                reason=f"Body must be a JSON object, got {type(parsed).__name__}.",
+            )
+
+        return self.validate_dict(parsed)
 
     def validate_dict(self, raw: dict[str, Any]) -> Message:
         """

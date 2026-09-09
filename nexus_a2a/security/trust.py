@@ -280,12 +280,12 @@ class TrustBoundary:
         """
         for rule_caller, targets in self._allow_rules.items():
             # Match caller against wildcard patterns
-            if fnmatch.fnmatch(caller, rule_caller) or caller == rule_caller:
+            if fnmatch.fnmatchcase(caller, rule_caller) or caller == rule_caller:
                 if "*" in targets or target in targets:
                     return True
                 # Check fnmatch patterns in target set
                 for t in targets:
-                    if fnmatch.fnmatch(target, t):
+                    if fnmatch.fnmatchcase(target, t):
                         return True
         return False
 
@@ -298,21 +298,37 @@ class TrustBoundary:
     ) -> None:
         """
         Check skill-level ACL.
-        If no ACL exists for this caller→target pair, all skills are allowed.
+
+        If no ACL rule matches this caller→target pair, all skills are allowed
+        (the pair was already authorised by the allow-list in check()).
+
+        When SEVERAL rules match — e.g. a wildcard rule and a specific one —
+        every matching rule is considered, not just the first. Rules are
+        additive grants, so the caller is permitted if ANY matching rule
+        grants the skill. Returning on the first match made the outcome
+        depend on dict insertion order.
         """
+        matched_any = False
+
         for rule_caller, target_acl in self._skill_acl.items():
-            if fnmatch.fnmatch(caller, rule_caller) or caller == rule_caller:
-                for rule_target, allowed_skills in target_acl.items():
-                    target_matches = (
-                        rule_target == "*"
-                        or rule_target == target
-                        or fnmatch.fnmatch(target, rule_target)
-                    )
-                    if target_matches:
-                        # None means all skills allowed
-                        if (
-                            allowed_skills is not None
-                            and skill_id not in allowed_skills
-                        ):
-                            raise SkillNotAllowedError(caller_url, skill_id)
-                        return
+            if not (
+                fnmatch.fnmatchcase(caller, rule_caller) or caller == rule_caller
+            ):
+                continue
+
+            for rule_target, allowed_skills in target_acl.items():
+                target_matches = (
+                    rule_target == "*"
+                    or rule_target == target
+                    or fnmatch.fnmatchcase(target, rule_target)
+                )
+                if not target_matches:
+                    continue
+
+                matched_any = True
+                # None means this rule grants all skills.
+                if allowed_skills is None or skill_id in allowed_skills:
+                    return
+
+        if matched_any:
+            raise SkillNotAllowedError(caller_url, skill_id)

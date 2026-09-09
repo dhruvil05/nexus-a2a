@@ -71,15 +71,30 @@ def make_mock_network(
     return network
 
 
-def make_test_client(network: MagicMock | None = None) -> TestClient:
-    """Build a Starlette TestClient for AgentServer without starting uvicorn."""
+ADMIN_TOKEN = "test-admin-token"
+
+
+def make_test_client(
+    network: MagicMock | None = None,
+    admin_token: str | None = ADMIN_TOKEN,
+) -> TestClient:
+    """
+    Build a Starlette TestClient for AgentServer without starting uvicorn.
+
+    Admin endpoints (/info, /traces, /dlq, /dlq/replay) require a token as of
+    v1.5.0, so tests get one by default and send it via ADMIN_HEADERS. Pass
+    admin_token=None to exercise the disabled-by-default path.
+    """
     net = network or make_mock_network()
-    server = AgentServer(network=net, port=9999)
+    server = AgentServer(network=net, port=9999, admin_token=admin_token)
     # Inject a fake start time so uptime is nonzero
     import time
 
     server._started_at = time.monotonic() - 10.0
     return TestClient(server._app)
+
+
+ADMIN_HEADERS = {"X-Admin-Token": ADMIN_TOKEN}
 
 
 # ── _format_labels() ──────────────────────────────────────────────────────────
@@ -320,36 +335,36 @@ class TestMetricsEndpoint:
 class TestInfoEndpoint:
     def test_returns_200(self):
         client = make_test_client()
-        assert client.get("/info").status_code == 200
+        assert client.get("/info", headers=ADMIN_HEADERS).status_code == 200
 
     def test_response_is_json(self):
         client = make_test_client()
-        resp = client.get("/info")
+        resp = client.get("/info", headers=ADMIN_HEADERS)
         data = resp.json()
         assert isinstance(data, dict)
 
     def test_has_version(self):
         client = make_test_client()
-        data = client.get("/info").json()
+        data = client.get("/info", headers=ADMIN_HEADERS).json()
         assert "version" in data
         assert isinstance(data["version"], str)
 
     def test_has_uptime(self):
         client = make_test_client()
-        data = client.get("/info").json()
+        data = client.get("/info", headers=ADMIN_HEADERS).json()
         assert "uptime_seconds" in data
         assert data["uptime_seconds"] >= 9.0
 
     def test_has_network_summary(self):
         client = make_test_client()
-        data = client.get("/info").json()
+        data = client.get("/info", headers=ADMIN_HEADERS).json()
         assert "network" in data
         assert isinstance(data["network"], dict)
 
     def test_network_summary_content(self):
         net = make_mock_network(agents=2, healthy_agents=1)
         client = make_test_client(net)
-        data = client.get("/info").json()
+        data = client.get("/info", headers=ADMIN_HEADERS).json()
         summary = data["network"]
         assert summary["total_agents"] == 2
         assert summary["healthy_agents"] == 1
@@ -404,3 +419,76 @@ class TestAgentServerLifecycle:
         server = AgentServer(network=net, port=19880)
         # Should not raise
         await server.stop()
+
+
+# ── Admin endpoint authorisation (v1.5.0) ─────────────────────────────────────
+
+
+class TestAdminEndpointsDisabledByDefault:
+    """
+    Without a token, /info, /traces, /dlq and /dlq/replay must be refused.
+    An unauthenticated POST /dlq/replay would let any caller that can reach
+    the port re-execute every failed task.
+    """
+
+    def _client(self, monkeypatch) -> TestClient:
+        monkeypatch.delenv("NEXUS_ADMIN_TOKEN", raising=False)
+        return make_test_client(admin_token=None)
+
+    def test_info_forbidden(self, monkeypatch):
+        assert self._client(monkeypatch).get("/info").status_code == 403
+
+    def test_dlq_list_forbidden(self, monkeypatch):
+        assert self._client(monkeypatch).get("/dlq").status_code == 403
+
+    def test_dlq_replay_forbidden(self, monkeypatch):
+        resp = self._client(monkeypatch).post("/dlq/replay", json={})
+        assert resp.status_code == 403
+
+    def test_trace_forbidden(self, monkeypatch):
+        assert self._client(monkeypatch).get("/traces/abc").status_code == 403
+
+    def test_replay_is_not_executed_when_forbidden(self, monkeypatch):
+        """The 403 must short-circuit before any task is replayed."""
+        net = make_mock_network()
+        net.dead_letter_queue.replay_all = AsyncMock(return_value=[])
+        monkeypatch.delenv("NEXUS_ADMIN_TOKEN", raising=False)
+        client = make_test_client(net, admin_token=None)
+        client.post("/dlq/replay", json={})
+        net.dead_letter_queue.replay_all.assert_not_awaited()
+
+    def test_probes_stay_public(self, monkeypatch):
+        """Kubernetes probes and Prometheus must not need credentials."""
+        client = self._client(monkeypatch)
+        assert client.get("/health").status_code == 200
+        assert client.get("/metrics").status_code == 200
+
+
+class TestAdminEndpointsWithToken:
+    def test_correct_token_allows_info(self):
+        client = make_test_client()
+        assert client.get("/info", headers=ADMIN_HEADERS).status_code == 200
+
+    def test_bearer_scheme_also_accepted(self):
+        client = make_test_client()
+        resp = client.get("/info", headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
+        assert resp.status_code == 200
+
+    def test_wrong_token_forbidden(self):
+        client = make_test_client()
+        resp = client.get("/info", headers={"X-Admin-Token": "wrong"})
+        assert resp.status_code == 403
+
+    def test_missing_token_forbidden(self):
+        client = make_test_client()
+        assert client.get("/info").status_code == 403
+
+    def test_empty_token_forbidden(self):
+        client = make_test_client()
+        assert client.get("/info", headers={"X-Admin-Token": ""}).status_code == 403
+
+    def test_token_read_from_environment(self, monkeypatch):
+        monkeypatch.setenv("NEXUS_ADMIN_TOKEN", "from-env")
+        client = make_test_client(admin_token=None)
+        assert client.get("/info", headers={"X-Admin-Token": "from-env"}).status_code == 200
+        assert client.get("/info", headers={"X-Admin-Token": "nope"}).status_code == 403
