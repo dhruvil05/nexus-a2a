@@ -22,11 +22,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
+import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -51,6 +54,95 @@ class WebhookDeliveryError(Exception):
         self.url = url
         self.attempts = attempts
         self.last_error = last_error
+
+
+class WebhookUrlError(ValueError):
+    """Raised when a webhook URL is not acceptable as a delivery target."""
+
+    def __init__(self, url: str, reason: str) -> None:
+        super().__init__(f"Rejected webhook URL '{url}': {reason}")
+        self.url = url
+        self.reason = reason
+
+
+# ── Signing ───────────────────────────────────────────────────────────────────
+
+
+def _canonical_body(payload: dict[str, Any]) -> bytes:
+    """
+    Serialise a payload to the exact bytes that will be sent AND signed.
+
+    Compact separators and sorted keys make the encoding reproducible, so a
+    receiver that re-serialises the parsed JSON gets the same bytes back.
+    """
+    return json.dumps(
+        payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+    ).encode("utf-8")
+
+
+def sign_body(body: bytes, secret: str) -> str:
+    """Return the 'sha256=<hex>' signature for exactly these bytes."""
+    return (
+        "sha256="
+        + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    )
+
+
+# ── URL validation ────────────────────────────────────────────────────────────
+
+
+def validate_webhook_url(url: str, allow_private: bool = False) -> None:
+    """
+    Reject a webhook URL that is unsafe to POST to.
+
+    A webhook URL arrives from whoever called the agent, and the server then
+    makes a request to it — that is a server-side request forgery primitive.
+    Without this check a caller could point an agent at cloud metadata
+    (169.254.169.254), at localhost admin ports, or at hosts inside the
+    server's private network, and use the agent as a proxy.
+
+    Args:
+        url:           The candidate webhook URL.
+        allow_private: Permit loopback and private ranges. Needed for local
+                       development and tests; leave False in production.
+
+    Raises:
+        WebhookUrlError: Scheme is not http/https, the host is missing, or the
+                         host resolves to a blocked address.
+    """
+    parsed = urlparse(url)
+
+    if parsed.scheme not in ("http", "https"):
+        raise WebhookUrlError(url, "only http and https URLs are accepted")
+    if not parsed.hostname:
+        raise WebhookUrlError(url, "no host in URL")
+
+    if allow_private:
+        return
+
+    host = parsed.hostname
+    try:
+        addresses = [
+            ipaddress.ip_address(info[4][0])
+            for info in socket.getaddrinfo(host, None)
+        ]
+    except (socket.gaierror, ValueError) as exc:
+        raise WebhookUrlError(url, f"host does not resolve: {exc}") from exc
+
+    for addr in addresses:
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        ):
+            raise WebhookUrlError(
+                url,
+                f"resolves to non-public address {addr}. Pass "
+                "allow_private_urls=True only for local development.",
+            )
 
 
 # ── Delivery record ───────────────────────────────────────────────────────────
@@ -96,12 +188,17 @@ class WebhookConfig:
         timeout:        Per-attempt HTTP timeout in seconds.
         signing_secret: If set, every payload is signed with HMAC-SHA256 and
                         the signature is placed in X-Nexus-Signature-256.
+        allow_private_urls: Permit delivery to loopback and private addresses.
+                        Callers supply the webhook URL, so leaving this False
+                        stops an agent being used as an SSRF proxy into its own
+                        network. Set True for local development and tests.
     """
 
     max_retries: int = 3
     base_delay: float = 1.0  # seconds; doubles each retry
     timeout: float = 10.0
     signing_secret: str | None = None
+    allow_private_urls: bool = False
 
 
 # ── WebhookDispatcher ─────────────────────────────────────────────────────────
@@ -175,8 +272,13 @@ class WebhookDispatcher:
                 delay = self._config.base_delay * (2 ** (attempt - 1))
 
                 try:
-                    headers = self._build_headers(payload)
-                    response = await client.post(url, json=payload, headers=headers)
+                    # Serialise ONCE and post those exact bytes. Signing a
+                    # separately-serialised copy and letting httpx re-encode
+                    # via json= produced different bytes (httpx uses compact
+                    # separators), so every signature failed verification.
+                    body = _canonical_body(payload)
+                    headers = self._build_headers(body)
+                    response = await client.post(url, content=body, headers=headers)
                     record.status_code = response.status_code
 
                     if response.is_success:
@@ -275,16 +377,7 @@ class WebhookDispatcher:
         if isinstance(payload, str):
             payload = payload.encode("utf-8")
 
-        expected = (
-            "sha256="
-            + hmac.new(
-                secret.encode("utf-8"),
-                payload,
-                hashlib.sha256,
-            ).hexdigest()
-        )
-
-        return hmac.compare_digest(expected, signature)
+        return hmac.compare_digest(sign_body(payload, secret), signature)
 
     # ── Delivery log ──────────────────────────────────────────────────────────
 
@@ -312,21 +405,19 @@ class WebhookDispatcher:
             "task": task.model_dump(mode="json"),
         }
 
-    def _build_headers(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Build request headers, including HMAC signature if configured."""
+    def _build_headers(self, body: bytes) -> dict[str, str]:
+        """
+        Build request headers, including the HMAC signature if configured.
+
+        Takes the exact bytes that will be sent — signing anything else means
+        the receiver's verify_signature() call cannot succeed.
+        """
         headers: dict[str, str] = {
             "Content-Type": "application/json",
             "User-Agent": "nexus-a2a-webhook/0.4.0",
         }
         if self._config.signing_secret:
-            body = json.dumps(payload).encode("utf-8")
-            signature = (
-                "sha256="
-                + hmac.new(
-                    self._config.signing_secret.encode("utf-8"),
-                    body,
-                    hashlib.sha256,
-                ).hexdigest()
+            headers[_SIGNATURE_HEADER] = sign_body(
+                body, self._config.signing_secret
             )
-            headers[_SIGNATURE_HEADER] = signature
         return headers

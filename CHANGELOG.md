@@ -7,6 +7,186 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.7.0] — Streaming, multi-turn and push notifications — Unreleased
+
+`AgentCapabilities.streaming` has existed since 1.0 and `SSEStreamer` /
+`SSEFormatter` since Phase 4, but nothing ever served a stream — the classes
+were constructed nowhere in the package, their only usage being their own
+docstrings. An agent could declare `streaming=True` and no client could act on
+it. This release serves it.
+
+### Added
+- **`message/stream`** — JSON-RPC method that sends a message and returns a
+  `text/event-stream` instead of a JSON envelope. Event sequence:
+  `task_created` (so the caller gets the task id immediately), one
+  `artifact_chunk` per chunk the agent yields, then `task_status` and `done`.
+- **`GET /stream?taskId=...`** — the endpoint the existing `SSEStreamer`
+  already targeted. Reports a task's state and artifacts, then closes.
+- **`A2AHttpClient.stream_message()`** — async iterator of `StreamEvent`,
+  stopping at the first terminal event. Works against any A2A agent, streaming
+  or not. Retries and the circuit breaker deliberately do NOT apply: a
+  half-consumed stream cannot be safely replayed once the caller has seen part
+  of the output.
+- `iter_sse_events()` and `parse_sse_data()` in `transport/sse.py` — one wire
+  parser shared by `SSEStreamer` and `stream_message()`, so both read the
+  format identically.
+- `tests/test_streaming.py` (53 tests) and 7 real-HTTP streaming tests in
+  `tests/integration/test_a2a_roundtrip.py`.
+
+### Agent contract
+An agent streams by writing `run()` as an async generator, or by adding a
+`stream()` method that is one — the contract `CapabilityGuard` already checked
+for. `stream()` wins when both are present.
+
+    @agent(name="Writer", description="...", streaming=True, url=...)
+    class Writer:
+        async def run(self, task):
+            for word in ["hello", " ", "world"]:
+                yield word
+
+### Fixed
+- **A streaming agent could not be constructed at all.** Both
+  `@agent`'s `_has_async_run()` and `A2AServer._resolve_agent()` gated on
+  `inspect.iscoroutinefunction()`, which returns **False** for an async
+  generator. Any agent written the way `CapabilityGuard` documents was
+  rejected — `TypeError` at decoration, `InvalidAgentError` at serve time.
+  Both now also accept `inspect.isasyncgenfunction()`.
+- **`message/send` broke on a streaming agent.** It did
+  `await self._agent_instance.run(task)`; awaiting an async generator raises
+  `TypeError`. It now drains the generator and folds the chunks into a single
+  result, so a streaming agent serves both methods.
+
+### Cross-compatibility
+Neither side has to know how the other is written:
+- a **non-streaming** agent called over `message/stream` runs to completion and
+  its output is emitted as one `artifact_chunk`;
+- a **streaming** agent called over `message/send` has its chunks folded into
+  one artifact (strings concatenate; mixed chunks become a list).
+
+### Added — task continuation (multi-turn / INPUT_REQUIRED)
+- **`NeedsInput`** — returned from `run()` to pause a task and ask the caller
+  for more. The task parks at `INPUT_REQUIRED` with the prompt appended to its
+  history instead of completing:
+
+      class Planner:
+          async def run(self, task):
+              if len(task.history) == 1:
+                  return NeedsInput("What is your budget?")
+              return f"Plan for {task.history[-1].text()}"
+
+- **`taskId` on `message/send` and `message/stream`** — continues a task that
+  is awaiting input instead of creating one. `A2AHttpClient.send_message()` and
+  `stream_message()` take a matching `task_id=` argument.
+- **`multi_turn` on `@agent`** — the flag could not be set at all before; the
+  decorator only passed `streaming` and `push_notifications` to
+  `AgentCapabilities`, so every card carried the model default.
+- **`A2AServer.input_handler`** — an agent suspended inside
+  `InputHandler.wait_for_input()` is resumed by the same wire call, which fires
+  its event rather than re-invoking `run()`. `submit_reply()`'s docstring had
+  promised a `POST /tasks/{id}/reply` endpoint that never existed.
+- `tests/test_task_continuation.py` (36 tests) plus 5 real-HTTP multi-turn
+  tests.
+
+### Fixed — multi_turn was a false claim
+`AgentCapabilities.multi_turn` defaults to **`True`**, so every card ever
+published by this package claimed it, while `message/send` always created a new
+task and `COMPLETED` is terminal in the state machine — there was no way to add
+a turn to anything. It is now honoured, and an agent that sets
+`multi_turn=False` has its continuations refused, so the flag means something
+in both directions.
+
+A streaming agent that yielded `NeedsInput` also failed to pause over
+`message/send`: the chunk was folded into the result list and the task
+completed. Draining now stops at `NeedsInput`, matching the SSE path. (Caught
+by the cross-method parametrized test, not by hand.)
+
+### Notes — continuation
+- Continuation is stateless: the conversation lives in the task store, not in a
+  parked coroutine, so it survives a restart and works from a different client
+  or connection. That is why `NeedsInput` is preferred over
+  `InputHandler.wait_for_input()` for anything served over HTTP — the latter
+  holds the original request open for its timeout.
+- Continuing a task that is not awaiting input returns `-32002` naming the
+  actual state; an unknown id returns `-32001`.
+- Over SSE, a pause emits the prompt as a `message` event before
+  `task_status: input_required` and `done`.
+
+### Notes
+- Every security refusal happens **before** the stream opens — once SSE starts,
+  the status line is already sent and an HTTP status can no longer be
+  signalled. Failures after that point arrive as a terminal `error` event and
+  the task is marked `FAILED`.
+- Responses set `X-Accel-Buffering: no` so nginx does not buffer a stream into
+  one lump.
+- `GET /stream` reports state rather than following a run in progress: because
+  `message/send` executes the agent inline, a task is already terminal by the
+  time it can be looked up. Use `message/stream` to watch work as it happens.
+
+### Added — push notifications
+- **Webhook registration** — a caller that will not wait registers a callback,
+  either with the message that creates the task (`pushNotification` in the
+  params) or later with the new `tasks/pushNotificationConfig/set`.
+  `tasks/pushNotificationConfig/get` reads it back.
+- **`PushNotificationConfig`** (`url`, optional `token`), exported from the
+  package root, plus `A2AHttpClient.set_push_config()` / `get_push_config()`
+  and a `push_notification=` argument on `send_message()` / `stream_message()`.
+- **`A2AServer(push_config=WebhookConfig(...))`** — delivery, retry and signing
+  settings. The agent POSTs `task_completed`, `task_failed`, `task_cancelled`
+  and `task_input_required`.
+- `WebhookConfig.allow_private_urls`, `validate_webhook_url()`,
+  `WebhookUrlError`, `sign_body()`, and `A2AServer.drain_notifications()`.
+- `tests/test_push_notifications.py` (47 tests) and
+  `tests/integration/test_push_webhooks.py` (8 tests against a real receiving
+  endpoint on another port).
+
+### Fixed — HMAC signatures never validated
+`WebhookDispatcher` signed `json.dumps(payload)` and then handed the payload to
+httpx as `json=`, which re-encodes with compact separators. The bytes signed
+were not the bytes sent, so `verify_signature()` returned False for every
+genuine delivery:
+
+    signed:  b'{"event": "task_completed", "task_id": "abc"}'
+    sent:    b'{"event":"task_completed","task_id":"abc"}'
+
+The payload is now serialised once, canonically (compact separators, sorted
+keys), and those exact bytes are both signed and posted. Signing had never
+worked in any released version.
+
+### Security — webhook URLs are an SSRF vector
+A webhook URL arrives from whoever called the agent, and the server then makes
+a request to it. Without validation a caller could point an agent at cloud
+metadata (169.254.169.254), at localhost admin ports, or at hosts inside the
+server's private network, and use the agent as a proxy.
+
+Registration now resolves the host and refuses private, loopback, link-local,
+reserved, multicast and unspecified addresses, and any scheme other than http
+or https. Set `WebhookConfig(allow_private_urls=True)` for local development —
+tests do. An agent declaring `push_notifications=False` refuses registration
+outright (`-32003`), and a rejected URL returns `-32004`.
+
+Registration failure aborts the whole call rather than running a task whose
+updates the caller believes they will receive.
+
+### Notes — push delivery
+- Delivery is detached: a slow or dead receiver must not stall the RPC
+  response, and retry with backoff can take seconds. Failures are logged, never
+  raised — a broken webhook is not the task's problem. `drain_notifications()`
+  awaits in-flight deliveries, mainly for tests.
+- The registered target is dropped once a task reaches a terminal state, so the
+  map does not grow one entry per task forever.
+- A config read back never echoes the token, only whether one is set, so
+  reading cannot recover a secret someone else chose.
+- Targets are held in memory, like the DLQ — they do not survive a restart.
+
+### Known limitations
+- Push targets and the DLQ are in-memory; both are candidates for the
+  persistence work in 1.8.0.
+
+Every capability flag a card can raise — `streaming`, `push_notifications`,
+`multi_turn` — is now honoured by the server.
+
+---
+
 ## [1.6.0] — A2AServer: the inbound protocol — Unreleased
 
 nexus-a2a can now BE an agent, not just call one. Through v1.5.0 the library

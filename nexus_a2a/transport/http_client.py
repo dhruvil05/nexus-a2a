@@ -24,13 +24,15 @@ import logging
 import random
 import time
 import uuid
+from collections.abc import AsyncIterator
 from enum import Enum
 from typing import Any
 
 import httpx
 
 from nexus_a2a.models.agent import AgentCard
-from nexus_a2a.models.task import Message, Task
+from nexus_a2a.models.task import Message, PushNotificationConfig, Task
+from nexus_a2a.transport.sse import StreamEvent, iter_sse_events
 from nexus_a2a.transport.tracing import Tracer, TraceStore
 
 logger = logging.getLogger(__name__)
@@ -41,8 +43,35 @@ _AGENT_CARD_PATH = "/.well-known/agent-card.json"
 # keep the transport layer independent of the security package.
 _CALLER_HEADER = "X-Nexus-Caller"
 _METHOD_SEND = "message/send"
+_METHOD_STREAM = "message/stream"
 _METHOD_GET = "tasks/get"
 _METHOD_CANCEL = "tasks/cancel"
+_METHOD_PUSH_SET = "tasks/pushNotificationConfig/set"
+_METHOD_PUSH_GET = "tasks/pushNotificationConfig/get"
+
+
+def _build_send_params(
+    message: Message,
+    skill_id: str | None,
+    context_id: str | None,
+    task_id: str | None = None,
+    push_notification: PushNotificationConfig | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the params object shared by message/send and message/stream."""
+    params: dict[str, Any] = {"message": message.model_dump(mode="json")}
+    if skill_id:
+        params["skillId"] = skill_id
+    if context_id:
+        params["contextId"] = context_id
+    if task_id:
+        params["taskId"] = task_id
+    if push_notification is not None:
+        params["pushNotification"] = (
+            push_notification.model_dump(mode="json")
+            if isinstance(push_notification, PushNotificationConfig)
+            else push_notification
+        )
+    return params
 
 # Default HTTP status codes that should trigger a retry
 DEFAULT_RETRY_ON = {500, 502, 503, 504}
@@ -336,22 +365,32 @@ class A2AHttpClient:
         message: Message,
         skill_id: str | None = None,
         context_id: str | None = None,
+        task_id: str | None = None,
+        push_notification: PushNotificationConfig | dict[str, Any] | None = None,
     ) -> Task:
         """
         Send a message to the remote agent and return the Task.
 
+        Args:
+            message:    The message to send.
+            skill_id:   Which skill to invoke.
+            context_id: Groups related tasks into one conversation.
+            task_id:    Continue an existing task that is awaiting input,
+                        instead of starting a new one. This is how a multi-turn
+                        conversation proceeds: the agent returns a task in
+                        INPUT_REQUIRED with its question as the last message,
+                        and you answer against the same id.
+
         Raises:
             AgentUnreachableError: Server unreachable after retries.
-            RemoteAgentError:      Agent returned JSON-RPC error.
+            RemoteAgentError:      Agent returned JSON-RPC error — including
+                                   when task_id names a task that is not
+                                   awaiting input.
             CircuitOpenError:      Circuit breaker is open.
         """
-        params: dict[str, Any] = {
-            "message": message.model_dump(mode="json"),
-        }
-        if skill_id:
-            params["skillId"] = skill_id
-        if context_id:
-            params["contextId"] = context_id
+        params = _build_send_params(
+            message, skill_id, context_id, task_id, push_notification
+        )
 
         async with Tracer.span(
             self._trace_id,
@@ -375,6 +414,110 @@ class A2AHttpClient:
         """Request the remote agent cancel a running task."""
         result = await self._rpc(_METHOD_CANCEL, {"taskId": task_id})
         return Task.model_validate(result)
+
+    async def set_push_config(
+        self,
+        task_id: str,
+        config: PushNotificationConfig | dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Register or replace where the agent POSTs this task's updates.
+
+        Use when the webhook was not supplied with the original message, or to
+        point an in-flight task somewhere else.
+
+        Raises:
+            RemoteAgentError: The agent does not support push notifications, or
+                              rejected the URL (private address, bad scheme).
+        """
+        payload = (
+            config.model_dump(mode="json")
+            if isinstance(config, PushNotificationConfig)
+            else config
+        )
+        return await self._rpc(
+            _METHOD_PUSH_SET,
+            {"taskId": task_id, "pushNotificationConfig": payload},
+        )
+
+    async def get_push_config(self, task_id: str) -> dict[str, Any]:
+        """
+        Read back the push target registered for a task.
+
+        The token is never echoed back — the response reports only whether one
+        is set, so reading a config cannot recover a secret someone else chose.
+        """
+        return await self._rpc(_METHOD_PUSH_GET, {"taskId": task_id})
+
+    async def stream_message(
+        self,
+        message: Message,
+        skill_id: str | None = None,
+        context_id: str | None = None,
+        task_id: str | None = None,
+        push_notification: PushNotificationConfig | dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Send a message and yield StreamEvents as the agent produces them.
+
+        The streaming counterpart to send_message(). Instead of blocking until
+        the task finishes, this yields:
+
+            task_created     the Task, so you have its id immediately
+            artifact_chunk   once per chunk the agent yields
+            task_status      the terminal state
+            done             stream closed normally
+
+        Iteration stops after the first terminal event (done or error).
+
+        Usage:
+            async with A2AHttpClient("http://agent:8001") as client:
+                async for event in client.stream_message(Message.user_text("hi")):
+                    if event.type == StreamEventType.ARTIFACT_CHUNK:
+                        print(event.data["content"], end="", flush=True)
+
+        A remote agent that does not stream is still served here — its whole
+        output arrives as one artifact_chunk — so this works against any A2A
+        agent, not only streaming ones.
+
+        Retries and the circuit breaker do NOT apply: a half-consumed stream
+        cannot be safely replayed, since the caller has already seen part of
+        the output.
+
+        Raises:
+            AgentUnreachableError: Connection failed, or the server rejected
+                                   the request before the stream opened.
+        """
+        client = self._require_client()
+        payload = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": _METHOD_STREAM,
+            "params": _build_send_params(
+                message, skill_id, context_id, task_id, push_notification
+            ),
+        }
+
+        try:
+            async with client.stream(
+                "POST",
+                "/",
+                json=payload,
+                headers={"Accept": "text/event-stream"},
+            ) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    raise AgentUnreachableError(
+                        self._base_url,
+                        f"HTTP {response.status_code} opening stream: "
+                        f"{response.text[:200]}",
+                    )
+                async for event in iter_sse_events(response):
+                    yield event
+                    if event.is_terminal:
+                        return
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise AgentUnreachableError(self._base_url, str(exc)) from exc
 
     # ── Core retry + circuit breaker logic ───────────────────────────────────
 

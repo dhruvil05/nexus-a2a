@@ -83,6 +83,63 @@ class StreamEvent:
             return None
 
 
+# ── Shared: SSE wire parsing ──────────────────────────────────────────────────
+
+
+def parse_sse_data(raw: str) -> StreamEvent | None:
+    """
+    Parse one SSE 'data:' payload into a StreamEvent.
+
+    Returns None for malformed JSON or an unrecognised event type, so a
+    single bad line cannot kill an otherwise healthy stream.
+    """
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("SSE: could not parse JSON from line: %r", raw)
+        return None
+
+    if not isinstance(payload, dict):
+        logger.warning("SSE: event payload is not an object: %r", raw)
+        return None
+
+    try:
+        event_type = StreamEventType(payload.get("type", ""))
+    except ValueError:
+        logger.warning("SSE: unknown event type: %r", payload.get("type"))
+        return None
+
+    return StreamEvent(type=event_type, data=payload, raw=raw)
+
+
+async def iter_sse_events(response: httpx.Response) -> AsyncIterator[StreamEvent]:
+    """
+    Yield StreamEvents from a streaming httpx response.
+
+    Shared by SSEStreamer (which GETs a task's stream) and
+    A2AHttpClient.stream_message() (which POSTs 'message/stream'), so both
+    read the wire format the same way.
+
+    SSE format:
+        data: {"type": "task_status", "state": "working"}
+        (blank line separates events)
+        : heartbeat        <- comment line, keep-alive
+    """
+    async for line in response.aiter_lines():
+        line = line.strip()
+        if not line:
+            continue  # blank line = event separator
+
+        if line.startswith("data:"):
+            event = parse_sse_data(line[len("data:") :].strip())
+            if event:
+                yield event
+
+        elif line.startswith(":"):
+            # SSE comment line — used as a heartbeat by some servers
+            yield StreamEvent(type=StreamEventType.HEARTBEAT, raw=line)
+
+
 # ── Client-side: SSEStreamer ──────────────────────────────────────────────────
 
 
@@ -155,48 +212,14 @@ class SSEStreamer:
         self,
         response: httpx.Response,
     ) -> AsyncIterator[StreamEvent]:
-        """
-        Parse raw SSE lines from the HTTP response body.
-
-        SSE format:
-            data: {"type": "task_status", "state": "working"}
-            (blank line separates events)
-        """
-        async for line in response.aiter_lines():
-            line = line.strip()
-            if not line:
-                continue  # blank line = event separator, skip
-
-            if line.startswith("data:"):
-                raw_data = line[len("data:") :].strip()
-                event = self._parse_event(raw_data)
-                if event:
-                    yield event
-
-            elif line.startswith(":"):
-                # SSE comment line — used as heartbeat by some servers
-                yield StreamEvent(type=StreamEventType.HEARTBEAT, raw=line)
+        """Parse raw SSE lines from the HTTP response body."""
+        async for event in iter_sse_events(response):
+            yield event
 
     @staticmethod
     def _parse_event(raw: str) -> StreamEvent | None:
         """Parse a JSON SSE data payload into a StreamEvent."""
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("SSE: could not parse JSON from line: %r", raw)
-            return None
-
-        try:
-            event_type = StreamEventType(payload.get("type", ""))
-        except ValueError:
-            logger.warning("SSE: unknown event type: %r", payload.get("type"))
-            return None
-
-        return StreamEvent(
-            type=event_type,
-            data=payload,
-            raw=raw,
-        )
+        return parse_sse_data(raw)
 
 
 # ── Server-side: SSEFormatter ─────────────────────────────────────────────────

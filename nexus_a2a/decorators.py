@@ -50,9 +50,17 @@ def _build_skill(raw: dict[str, Any] | AgentSkill) -> AgentSkill:
 
 
 def _has_async_run(cls: type) -> bool:
-    """Return True if the class has an async method named 'run'."""
+    """
+    Return True if the class has an async method named 'run'.
+
+    An async generator counts: a streaming agent writes run() with `yield`,
+    and inspect.iscoroutinefunction() is False for those, so checking it alone
+    would reject every streaming agent at decoration time.
+    """
     method = getattr(cls, "run", None)
-    return method is not None and inspect.iscoroutinefunction(method)
+    if method is None:
+        return False
+    return inspect.iscoroutinefunction(method) or inspect.isasyncgenfunction(method)
 
 
 # ── Public decorator ──────────────────────────────────────────────────────────
@@ -72,6 +80,7 @@ def agent(
     skills: list[dict[str, Any] | AgentSkill] | None = None,
     streaming: bool = False,
     push_notifications: bool = False,
+    multi_turn: bool = True,
     auth_scheme: AuthScheme = AuthScheme.NONE,
 ) -> Callable[[C], C]: ...  # called as @agent(...) with arguments
 
@@ -86,6 +95,7 @@ def agent(
     skills: list[dict[str, Any] | AgentSkill] | None = None,
     streaming: bool = False,
     push_notifications: bool = False,
+    multi_turn: bool = True,
     auth_scheme: AuthScheme = AuthScheme.NONE,
 ) -> C | Callable[[C], C]:
     """
@@ -154,6 +164,7 @@ def agent(
             capabilities=AgentCapabilities(
                 streaming=streaming,
                 push_notifications=push_notifications,
+                multi_turn=multi_turn,
             ),
             authentication=AgentAuthentication(scheme=auth_scheme),
         )

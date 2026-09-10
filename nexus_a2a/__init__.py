@@ -95,8 +95,10 @@ from nexus_a2a.models.task import (
     Artifact,
     Message,
     MessageRole,
+    NeedsInput,
     Part,
     PartType,
+    PushNotificationConfig,
     Task,
     TaskState,
 )
@@ -181,6 +183,8 @@ from nexus_a2a.transport.webhook import (
     WebhookConfig,
     WebhookDeliveryError,
     WebhookDispatcher,
+    WebhookUrlError,
+    validate_webhook_url,
 )
 
 # ── Version ───────────────────────────────────────────────────────────────────
@@ -190,7 +194,7 @@ from nexus_a2a.transport.webhook import (
 try:
     __version__ = _pkg_version("nexus-a2a")
 except PackageNotFoundError:  # running from a source tree without an install
-    __version__ = "1.6.0"
+    __version__ = "1.7.0"
 
 
 # ── What gets exported when someone does: from nexus_a2a import * ─────────────
@@ -284,6 +288,8 @@ __all__ = [
     "StreamEvent",
     "StreamEventType",
     "WebhookDispatcher",
+    "WebhookUrlError",
+    "validate_webhook_url",
     "WebhookConfig",
     "WebhookDeliveryError",
     "DeliveryRecord",
@@ -324,6 +330,8 @@ __all__ = [
     # Task models
     "Task",
     "TaskState",
+    "NeedsInput",
+    "PushNotificationConfig",
     "Message",
     "MessageRole",
     "Part",
