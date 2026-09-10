@@ -290,3 +290,242 @@ class TestSecurityOverTheWire:
             assert card.name == "EchoAgent"
         finally:
             await server.stop()
+
+
+# ── Streaming over real HTTP ──────────────────────────────────────────────────
+
+
+def build_writer_agent(url: str) -> type:
+    @agent(
+        name="WriterAgent",
+        description="Streams words one at a time.",
+        streaming=True,
+        skills=[{"id": "write", "name": "Write", "description": "Write text."}],
+        url=url,
+    )
+    class WriterAgent:
+        async def run(self, task):
+            for word in ["Hello", ", ", "streaming", " ", "world", "!"]:
+                yield word
+
+    return WriterAgent
+
+
+WRITER_WORDS = ["Hello", ", ", "streaming", " ", "world", "!"]
+
+
+class TestStreamingOverTheWire:
+    """
+    SSE behaves differently through a real socket than through TestClient —
+    chunked transfer, connection reuse, real flushing.
+    """
+
+    async def test_chunks_arrive_individually(self):
+        from nexus_a2a.transport.sse import StreamEventType
+
+        server, url = await serve(build_writer_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                chunks = [
+                    ev.data["content"]
+                    async for ev in client.stream_message(
+                        Message.user_text("go"), skill_id="write"
+                    )
+                    if ev.type == StreamEventType.ARTIFACT_CHUNK
+                ]
+            assert chunks == WRITER_WORDS
+        finally:
+            await server.stop()
+
+    async def test_stream_terminates_with_done(self):
+        from nexus_a2a.transport.sse import StreamEventType
+
+        server, url = await serve(build_writer_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                events = [
+                    ev.type
+                    async for ev in client.stream_message(Message.user_text("go"))
+                ]
+            assert events[0] == StreamEventType.TASK_CREATED
+            assert events[-1] == StreamEventType.DONE
+        finally:
+            await server.stop()
+
+    async def test_streamed_task_is_retrievable_afterwards(self):
+        from nexus_a2a.transport.sse import StreamEventType
+
+        server, url = await serve(build_writer_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                task_id = None
+                async for ev in client.stream_message(Message.user_text("go")):
+                    if ev.type == StreamEventType.TASK_CREATED:
+                        task_id = ev.data["id"]
+                assert task_id is not None
+                task = await client.get_task(task_id)
+            assert task.state == TaskState.COMPLETED
+            assert task.artifacts[0].parts[0].content == "".join(WRITER_WORDS)
+        finally:
+            await server.stop()
+
+    async def test_streaming_agent_still_works_over_send(self):
+        server, url = await serve(build_writer_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                task = await client.send_message(Message.user_text("go"))
+            assert task.state == TaskState.COMPLETED
+            assert task.artifacts[0].parts[0].content == "".join(WRITER_WORDS)
+        finally:
+            await server.stop()
+
+    async def test_non_streaming_agent_served_over_stream(self):
+        from nexus_a2a.transport.sse import StreamEventType
+
+        server, url = await serve(build_echo_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                chunks = [
+                    ev.data["content"]
+                    async for ev in client.stream_message(Message.user_text("hi"))
+                    if ev.type == StreamEventType.ARTIFACT_CHUNK
+                ]
+            assert chunks == ["echo: hi"]
+        finally:
+            await server.stop()
+
+    async def test_sse_streamer_observes_a_finished_task(self):
+        """The pre-existing SSEStreamer client must work against the server."""
+        from nexus_a2a.transport.sse import SSEStreamer, StreamEventType
+
+        server, url = await serve(build_writer_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                task = await client.send_message(Message.user_text("observe"))
+            events = [
+                ev.type async for ev in SSEStreamer(url).stream(task_id=task.id)
+            ]
+            assert events[0] == StreamEventType.TASK_CREATED
+            assert events[-1] == StreamEventType.DONE
+        finally:
+            await server.stop()
+
+    async def test_stream_refused_when_caller_is_unauthorised(self):
+        from nexus_a2a.transport.http_client import AgentUnreachableError
+
+        port = get_free_port()
+        url = f"http://127.0.0.1:{port}"
+        auth = AuthManager()
+        auth.register_agent(
+            CALLER_URL,
+            AgentCredentialConfig(scheme=AuthScheme.API_KEY, api_key="secret-key"),
+        )
+        server = A2AServer(
+            build_writer_agent(url),
+            host="127.0.0.1",
+            port=port,
+            security=SecurityMiddleware(auth=auth, server_url=url),
+        )
+        await server.start()
+        try:
+            async with A2AHttpClient(url) as client:
+                with pytest.raises(AgentUnreachableError):
+                    async for _ in client.stream_message(Message.user_text("x")):
+                        pass
+        finally:
+            await server.stop()
+
+
+# ── Multi-turn / INPUT_REQUIRED over real HTTP ────────────────────────────────
+
+
+def build_planner_agent(url: str) -> type:
+    from nexus_a2a.models.task import NeedsInput
+
+    @agent(
+        name="PlannerAgent",
+        description="Asks for a budget, then answers.",
+        skills=[{"id": "plan", "name": "Plan", "description": "Make a plan."}],
+        url=url,
+    )
+    class PlannerAgent:
+        async def run(self, task):
+            turns = sum(1 for m in task.history if m.role == "user")
+            if turns == 1:
+                return NeedsInput("What is your budget?")
+            return f"Plan for {task.history[-1].text()}"
+
+    return PlannerAgent
+
+
+class TestMultiTurnOverTheWire:
+    async def test_full_conversation(self):
+        server, url = await serve(build_planner_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                first = await client.send_message(
+                    Message.user_text("plan a trip"), skill_id="plan"
+                )
+                assert first.state == TaskState.INPUT_REQUIRED
+                assert first.history[-1].text() == "What is your budget?"
+
+                second = await client.send_message(
+                    Message.user_text("$500"), task_id=first.id
+                )
+            assert second.id == first.id
+            assert second.state == TaskState.COMPLETED
+            assert second.artifacts[0].parts[0].content == "Plan for $500"
+        finally:
+            await server.stop()
+
+    async def test_paused_task_survives_a_separate_client(self):
+        """State lives in the store, not in a parked coroutine."""
+        server, url = await serve(build_planner_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                first = await client.send_message(Message.user_text("plan"))
+            # A brand-new client and connection continues the same task.
+            async with A2AHttpClient(url) as other:
+                resumed = await other.send_message(
+                    Message.user_text("$900"), task_id=first.id
+                )
+            assert resumed.state == TaskState.COMPLETED
+            assert "900" in resumed.artifacts[0].parts[0].content
+        finally:
+            await server.stop()
+
+    async def test_continuing_a_completed_task_is_refused(self):
+        server, url = await serve(build_planner_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                first = await client.send_message(Message.user_text("plan"))
+                done = await client.send_message(
+                    Message.user_text("$500"), task_id=first.id
+                )
+                assert done.state == TaskState.COMPLETED
+                with pytest.raises(RemoteAgentError):
+                    await client.send_message(
+                        Message.user_text("more"), task_id=done.id
+                    )
+        finally:
+            await server.stop()
+
+    async def test_paused_task_is_visible_via_tasks_get(self):
+        server, url = await serve(build_planner_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                first = await client.send_message(Message.user_text("plan"))
+                fetched = await client.get_task(first.id)
+            assert fetched.state == TaskState.INPUT_REQUIRED
+        finally:
+            await server.stop()
+
+    async def test_paused_task_can_be_cancelled(self):
+        server, url = await serve(build_planner_agent)
+        try:
+            async with A2AHttpClient(url) as client:
+                first = await client.send_message(Message.user_text("plan"))
+                cancelled = await client.cancel_task(first.id)
+            assert cancelled.state == TaskState.CANCELLED
+        finally:
+            await server.stop()

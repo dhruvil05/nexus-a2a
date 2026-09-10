@@ -14,6 +14,7 @@ Lifecycle:
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
@@ -167,6 +168,65 @@ class Artifact(BaseModel):
     description: str | None = None
     parts: list[Part] = Field(min_length=1)
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+# ── Control signal ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class NeedsInput:
+    """
+    Returned from an agent's run() to pause a task and ask the caller for more.
+
+    The task moves to INPUT_REQUIRED instead of COMPLETED, and the prompt is
+    appended to its history. The caller answers by sending another message
+    against the SAME task id, which resumes run() with the full history:
+
+        class Planner:
+            async def run(self, task: Task):
+                if len(task.history) == 1:
+                    return NeedsInput("What is your budget?")
+                budget = task.history[-1].text()
+                return f"Plan for {budget}"
+
+    This is a control signal, not wire data — it never leaves the process. The
+    client sees a Task in INPUT_REQUIRED whose last message is the prompt.
+
+    Prefer this over InputHandler.wait_for_input() for anything served over
+    HTTP: it holds no connection open and survives a restart, because the whole
+    conversation lives in the task store rather than in a parked coroutine.
+    """
+
+    prompt: Message | str
+
+    def as_message(self) -> Message:
+        """Return the prompt as an agent Message, wrapping a bare string."""
+        if isinstance(self.prompt, Message):
+            return self.prompt
+        return Message.agent_text(str(self.prompt))
+
+
+class PushNotificationConfig(BaseModel):
+    """
+    Where an agent should POST updates for a task, and how the receiver can
+    tell the delivery is genuine.
+
+    Registered per task, either with the message that creates it or later via
+    tasks/pushNotificationConfig/set. Useful when the caller will not sit and
+    wait — a long task, a mobile client, a serverless function that cannot
+    hold a connection open, or a task that pauses at INPUT_REQUIRED and needs
+    to tell somebody.
+
+    Fields:
+        url:   Endpoint the agent POSTs to. Must be http or https, and must not
+               resolve to a private or loopback address unless the server was
+               configured to allow it.
+        token: Opaque value echoed back in every delivery, so the receiver can
+               tie a callback to the request that asked for it. Never logged.
+    """
+
+    url: str = Field(min_length=1)
+    token: str | None = None
 
 
 # ── Primary model ─────────────────────────────────────────────────────────────

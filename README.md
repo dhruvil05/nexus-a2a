@@ -270,7 +270,8 @@ into a reachable agent.
 | Endpoint | Purpose |
 |---|---|
 | `GET /.well-known/agent-card.json` | Discovery — the card `@agent` built |
-| `POST /` | JSON-RPC 2.0: `message/send`, `tasks/get`, `tasks/cancel` |
+| `POST /` | JSON-RPC 2.0: `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, `tasks/pushNotificationConfig/set` and `/get` (send/stream take an optional `taskId` to continue a paused task) |
+| `GET /stream?taskId=` | Observe a task as Server-Sent Events |
 | `GET /health` | Liveness probe |
 | `GET /ready` | Readiness probe (checks the task store) |
 
@@ -304,6 +305,56 @@ Host and port default to whatever the agent card's `url` says, so a single
 A `run()` that raises is **not** a protocol error: the task is recorded as
 `FAILED` with the exception message and returned normally, so the caller can
 inspect `task.error` and the DLQ can capture it.
+
+### Multi-turn conversations
+
+An agent asks a follow-up by returning `NeedsInput` instead of a result. The
+task parks at `INPUT_REQUIRED` with the question as its last message, and the
+caller answers against the **same task id**:
+
+```python
+from nexus_a2a import agent, NeedsInput, Task
+
+@agent(name="Planner", description="Plans a trip.", url="http://localhost:8001")
+class Planner:
+    async def run(self, task: Task):
+        turns = sum(1 for m in task.history if m.role == "user")
+        if turns == 1:
+            return NeedsInput("What is your budget?")
+        return f"Plan for {task.history[-1].text()}"
+```
+
+```python
+async with A2AHttpClient("http://localhost:8001") as client:
+    task = await client.send_message(Message.user_text("plan a trip"))
+    print(task.state)               # TaskState.INPUT_REQUIRED
+    print(task.history[-1].text())  # "What is your budget?"
+
+    task = await client.send_message(Message.user_text("$500"), task_id=task.id)
+    print(task.state)               # TaskState.COMPLETED
+    print(task.artifacts[0].parts[0].content)   # "Plan for $500"
+```
+
+`run()` is re-invoked with the **full history** each turn, so the agent reads
+earlier answers straight off `task.history`. There is no limit on turns.
+
+**This is stateless.** The conversation lives in the task store, not in a parked
+coroutine — it survives a restart, and a different client or connection can
+continue it. Streaming works the same way: pass `task_id=` to `stream_message()`,
+and a pause arrives as a `message` event followed by
+`task_status: input_required`.
+
+| Situation | Result |
+|---|---|
+| `taskId` omitted | New task |
+| Task is `INPUT_REQUIRED` | Resumes, history preserved |
+| Task already finished | `-32002` naming the actual state |
+| Unknown `taskId` | `-32001` |
+| Agent declares `multi_turn=False` | `-32002`, continuations refused |
+
+> `InputHandler.wait_for_input()` remains for in-process suspension, and the
+> same wire call resumes it. Prefer `NeedsInput` over HTTP — `wait_for_input()`
+> holds the original request open for its whole timeout.
 
 ### Error model
 
@@ -856,26 +907,124 @@ await shutdown.shutdown()
 
 ### SSE Streaming
 
+An agent streams by writing `run()` as an async generator — every `yield`
+becomes one chunk on the wire:
+
 ```python
-from nexus_a2a import SSEStreamer, SSEFormatter
+from nexus_a2a import agent, A2AServer, Task
 
-# Server side — send events
-formatter = SSEFormatter()
+@agent(
+    name="Writer",
+    description="Writes text a word at a time.",
+    streaming=True,
+    skills=[{"id": "write", "name": "Write", "description": "Write text."}],
+    url="http://localhost:8001",
+)
+class Writer:
+    async def run(self, task: Task):
+        for word in ["Hello", ", ", "world", "!"]:
+            yield word
 
-# Emit task status
-data = formatter.task_status(task_id="abc", state="working")
-data = formatter.artifact_chunk(task_id="abc", chunk="partial text...")
-data = formatter.done(task_id="abc")
-
-# Client side — consume events
-async with A2AHttpClient("http://localhost:8001") as client:
-    async for event in SSEStreamer(client).stream(message):
-        print(event.type, event.data)
+await A2AServer(Writer, port=8001).start()
 ```
 
-### Webhooks
+Consume it with `stream_message()`:
 
-HMAC-SHA256 signed delivery with exponential backoff retries.
+```python
+from nexus_a2a import A2AHttpClient, Message
+from nexus_a2a import StreamEventType
+
+async with A2AHttpClient("http://localhost:8001") as client:
+    async for event in client.stream_message(Message.user_text("go")):
+        if event.type == StreamEventType.ARTIFACT_CHUNK:
+            print(event.data["content"], end="", flush=True)
+```
+
+**Event sequence:** `task_created` → `artifact_chunk` (one per yield) →
+`task_status` → `done`. Iteration stops at the first terminal event.
+`task_created` carries the task id, so you can poll or cancel while it runs.
+
+If you prefer a separate method, add `stream()` instead — it wins over `run()`
+when both exist. A class attribute `STREAMING = True` declares that a framework
+adapter handles streaming internally.
+
+**The two calling styles are interchangeable.** Neither side needs to know how
+the other is written:
+
+| | `message/send` | `message/stream` |
+|---|---|---|
+| **Streaming agent** | chunks folded into one artifact | one chunk per yield |
+| **Non-streaming agent** | normal result | whole output as one chunk |
+
+**Observing a task:** `GET /stream?taskId=...` reports a task's state and
+artifacts, then closes — this is what `SSEStreamer` targets. It does not follow
+a run in progress, because `message/send` executes the agent inline and the
+task is already terminal by the time it can be looked up. Use `message/stream`
+to watch work as it happens.
+
+> Security refusals happen **before** the stream opens — once SSE starts the
+> status line is already sent and an HTTP status can no longer be signalled. A
+> failure after that point arrives as a terminal `error` event and the task is
+> marked `FAILED`.
+
+### Push notifications (webhooks)
+
+For callers that will not sit and wait — a long task, a mobile client, a
+serverless function, or a task that pauses at `INPUT_REQUIRED` and needs to tell
+somebody. The agent POSTs `task_completed`, `task_failed`, `task_cancelled` and
+`task_input_required` to a URL you register.
+
+```python
+from nexus_a2a import A2AServer, WebhookConfig
+
+server = A2AServer(
+    MyAgent,
+    push_config=WebhookConfig(signing_secret="shared-secret"),
+)
+```
+
+Register the callback with the message, or later:
+
+```python
+async with A2AHttpClient("http://localhost:8001") as client:
+    task = await client.send_message(
+        Message.user_text("go"),
+        push_notification={"url": "https://me.example.com/hook", "token": "abc"},
+    )
+
+    # ...or against an existing task
+    await client.set_push_config(task.id, {"url": "https://me.example.com/hook"})
+```
+
+Verify the signature on your side:
+
+```python
+from nexus_a2a import WebhookDispatcher
+
+async def hook(request):
+    body = await request.body()
+    ok = WebhookDispatcher.verify_signature(
+        body, request.headers["X-Nexus-Signature-256"], "shared-secret"
+    )
+```
+
+> **Webhook URLs are an SSRF vector.** The URL comes from whoever called the
+> agent, and the server then makes a request to it. URLs resolving to private,
+> loopback, link-local or reserved addresses are refused, as is any scheme other
+> than http/https. Pass `WebhookConfig(allow_private_urls=True)` **only** for
+> local development.
+
+| Situation | Result |
+|---|---|
+| Agent declares `push_notifications=False` | `-32003` |
+| URL is private / bad scheme | `-32004` |
+| Config missing `url` | `-32602` |
+
+Delivery is detached, so a slow or dead receiver never stalls the response or
+fails the task. The registered target is dropped once the task is terminal.
+Targets live in memory and do not survive a restart.
+
+#### Dispatching manually
 
 ```python
 from nexus_a2a import WebhookDispatcher
@@ -1277,6 +1426,7 @@ ruff format nexus_a2a
 | **v0.4.0** | `Orchestrator` (sequential/parallel/dag), SSE streaming, `WebhookDispatcher`, `AgentNetwork` |
 | **v1.0.0** | LangGraph/CrewAI/AutoGen/GoogleADK adapters, `RedisTaskStore`, `AuditLogger`, `MetricsCollector` |
 | **v1.1.0** | Task timeout watchdog, `InputHandler`, `DeadLetterQueue`, `CircuitBreaker`, `Tracer`, `CapabilityGuard` |
+| **v1.7.0** | Streaming, multi-turn (`NeedsInput`) and push notifications. Every capability a card advertises is now served; HMAC webhook signing fixed (it had never validated) and webhook URLs are SSRF-checked |
 | **v1.6.0** | `A2AServer` (inbound protocol: agent card + JSON-RPC), `SecurityMiddleware`, `caller_url` on the client, `nexus run` actually serves the agent |
 | **v1.5.0** | Security hardening: admin endpoints gated, auth fails closed, JWT audience validated, PyJWT replaces python-jose, `google-adk` moved to an extra |
 | **v1.2.0** | `GracefulShutdown`, `AgentServer` (K8s probes), mTLS, `PostgresTaskStore`, `nexus.toml`, CI/CD workflows |
