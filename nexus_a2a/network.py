@@ -28,6 +28,7 @@ from nexus_a2a.core.orchestrator import DAGNode, Orchestrator, OrchestratorResul
 from nexus_a2a.core.registry import AgentRegistry
 from nexus_a2a.core.task_manager import TaskManager
 from nexus_a2a.models.task import Message, Task
+from nexus_a2a.storage.dlq_store import AbstractDLQStore
 from nexus_a2a.transport.http_client import (
     A2AHttpClient,
     CircuitBreaker,
@@ -277,6 +278,7 @@ class AgentNetwork:
         timeout_sec: float | None = None,
         retry: RetryConfig | None = None,
         circuit_breaker: CircuitBreaker | None = None,
+        dlq_store: AbstractDLQStore | None = None,
     ) -> None:
         self.registry = AgentRegistry()
         self.task_manager = task_manager or TaskManager(
@@ -291,6 +293,7 @@ class AgentNetwork:
         self.dead_letter_queue = DeadLetterQueue(
             runner=self._run_agent,
             max_retries=3,
+            store=dlq_store,
         )
         self.input_handler = InputHandler(self.task_manager)
 

@@ -342,16 +342,17 @@ class TestDelivery:
         assert server.push.sent[0][0] == HOOK
 
     async def test_target_is_released_once_terminal(self):
-        """Otherwise the map grows one entry per task, forever."""
+        """Otherwise the store grows one entry per task, forever."""
         server = build_server()
         resp = await asgi_send(server, push_notification={"url": HOOK})
         assert resp.json()["result"]["state"] == "completed"
-        assert server._push_targets == {}
+        assert await server._push_targets.count() == 0
 
     async def test_target_is_kept_while_paused(self):
         server = build_server(AskerAgent)
         resp = await asgi_send(server, push_notification={"url": HOOK})
-        assert resp.json()["result"]["id"] in server._push_targets
+        task_id = resp.json()["result"]["id"]
+        assert await server._push_targets.get(task_id) is not None
 
 
 class TestDeliveryFailuresAreContained:

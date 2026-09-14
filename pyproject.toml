@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 # ── Package identity ──────────────────────────────────────────────────────────
 [project]
 name = "nexus-a2a"
-version = "1.7.0"
+version = "1.8.0"
 description = "A developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease."
 readme = "README.md"
 license = { text = "MIT" }
@@ -47,7 +47,11 @@ postgres = ["asyncpg>=0.29"]
 # google-adk is a ~40-package tree and, like every other adapter, is imported
 # lazily. Install it only if you use GoogleADKAdapter.
 adk      = ["google-adk>=2.4.0"]
-all      = ["redis>=5.0", "asyncpg>=0.29", "google-adk>=2.4.0"]
+# Asymmetric JWT (RS256/ES256) and JWKS need cryptography. HS256 does not,
+# so this stays optional and the core install keeps its small tree.
+jwks     = ["PyJWT[crypto]>=2.10", "cryptography>=44.0"]
+all      = ["redis>=5.0", "asyncpg>=0.29", "google-adk>=2.4.0",
+            "PyJWT[crypto]>=2.10", "cryptography>=44.0"]
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
@@ -60,6 +64,10 @@ dev = [
   "respx>=0.21",
   "asyncpg>=0.29",
   "redis>=5.0",
+  # Lua-capable fake so RedisRateLimiter's script is covered without a server
+  "fakeredis[lua]>=2.30",
+  "PyJWT[crypto]>=2.10",
+  "cryptography>=44.0",
 ]
 
 # ── Project links ─────────────────────────────────────────────────────────────

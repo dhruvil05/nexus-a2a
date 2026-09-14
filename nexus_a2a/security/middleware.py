@@ -36,7 +36,10 @@ from typing import Any
 
 from nexus_a2a.models.task import Message
 from nexus_a2a.security.auth import AuthError, AuthManager
-from nexus_a2a.security.rate_limiter import RateLimiter, RateLimitError
+from nexus_a2a.security.rate_limiter import (
+    AbstractRateLimiter,
+    RateLimitError,
+)
 from nexus_a2a.security.trust import TrustBoundary, TrustError
 from nexus_a2a.security.validator import (
     PayloadTooLargeError,
@@ -117,7 +120,10 @@ class SecurityMiddleware:
     Args:
         auth:           Verifies caller credentials. None = no authentication.
         trust:          Enforces caller to this-agent ACLs. None = no ACL check.
-        rate_limiter:   Per-caller token bucket. None = unlimited.
+        rate_limiter:   Per-caller token bucket. None = unlimited. Use
+                        RedisRateLimiter when limits must hold across
+                        replicas — the in-process one multiplies the
+                        effective limit by the number of processes.
         validator:      Payload size/shape checks. None = no validation.
         server_url:     This agent's own URL — the TRUST TARGET. Required when
                         trust is set, since a trust rule is caller to target.
@@ -133,7 +139,7 @@ class SecurityMiddleware:
         self,
         auth: AuthManager | None = None,
         trust: TrustBoundary | None = None,
-        rate_limiter: RateLimiter | None = None,
+        rate_limiter: AbstractRateLimiter | None = None,
         validator: PayloadValidator | None = None,
         server_url: str | None = None,
         caller_header: str = CALLER_HEADER,

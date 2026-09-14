@@ -16,8 +16,10 @@ Why token bucket?
   - Constant-time O(1) per check.
 
 Limitation:
-  - In-process only. For distributed rate limiting across multiple
-    processes, use RedisRateLimiter (Phase 5).
+  - RateLimiter is in-process only, so N replicas allow N times the configured
+    rate. For limits that hold across processes use RedisRateLimiter
+    (nexus_a2a.security.redis_rate_limiter), which shares one bucket per agent
+    in Redis and consumes tokens atomically.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -126,10 +129,61 @@ class RateLimitConfig:
             raise ValueError(f"burst must be > 0, got {self.burst}")
 
 
+# ── Shared interface ──────────────────────────────────────────────────────────
+
+
+class AbstractRateLimiter(ABC):
+    """
+    The surface SecurityMiddleware depends on, so an in-process limiter and a
+    distributed one are interchangeable.
+
+    Implemented by RateLimiter (per-process) and RedisRateLimiter (shared
+    across replicas).
+    """
+
+    @abstractmethod
+    async def check(self, agent_url: str) -> None:
+        """Consume one token. Raises RateLimitError if the bucket is empty."""
+
+    @abstractmethod
+    def set_limit(self, agent_url: str, config: RateLimitConfig) -> None:
+        """Apply a custom limit to one agent."""
+
+    @abstractmethod
+    def remove_limit(self, agent_url: str) -> None:
+        """Drop a custom limit; the agent falls back to the default."""
+
+    @abstractmethod
+    def get_config(self, agent_url: str) -> RateLimitConfig:
+        """Return the effective config for an agent."""
+
+    @abstractmethod
+    async def available_tokens(self, agent_url: str) -> float:
+        """Current token count for an agent, after refill."""
+
+    async def is_allowed(self, agent_url: str) -> bool:
+        """Non-raising check(). True when the request is within the limit."""
+        try:
+            await self.check(agent_url)
+            return True
+        except RateLimitError:
+            return False
+
+    @property
+    def is_distributed(self) -> bool:
+        """
+        True when limits hold across processes.
+
+        A per-process limiter silently multiplies the effective limit by the
+        number of replicas, so this is worth asserting in production checks.
+        """
+        return False
+
+
 # ── RateLimiter ───────────────────────────────────────────────────────────────
 
 
-class RateLimiter:
+class RateLimiter(AbstractRateLimiter):
     """
     Per-agent token bucket rate limiter.
 

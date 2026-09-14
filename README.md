@@ -65,6 +65,9 @@ pip install "nexus-a2a[redis]"
 # With PostgreSQL task store
 pip install "nexus-a2a[postgres]"
 
+# Asymmetric JWT (RS256/ES256) and JWKS
+pip install "nexus-a2a[jwks]"
+
 # With the Google ADK adapter (heavy — ~40 transitive packages)
 pip install "nexus-a2a[adk]"
 
@@ -646,6 +649,56 @@ except AuthError as e:
 > returns `{}` for unknown agents, so outbound calls to agents you hold no
 > credentials for simply carry no auth headers.
 
+### Asymmetric JWT and JWKS
+
+With HS256 the verifier holds the same secret as the signer — so any agent that
+can **check** a peer's token can also **mint** one. In a network of more than
+two parties, every verifier is a forger. A key pair splits those roles.
+
+```bash
+pip install "nexus-a2a[jwks]"
+```
+
+The signer keeps the private key:
+
+```python
+auth.register_agent("http://summary-agent:8002", AgentCredentialConfig(
+    scheme=AuthScheme.JWT,
+    jwt_private_key=PRIVATE_PEM,      # signs
+    jwt_public_key=PUBLIC_PEM,        # verifies peers
+    jwt_algorithm="RS256",            # or ES256, PS256, ...
+    jwt_issuer="summary-agent",
+))
+```
+
+Verifiers hold only the public half — or fetch it from the issuer's key set, so
+rotation is a publish rather than a coordinated secret swap:
+
+```python
+auth.register_agent("http://summary-agent:8002", AgentCredentialConfig(
+    scheme=AuthScheme.JWT,
+    jwks_url="https://summary-agent.example.com/.well-known/jwks.json",
+    jwt_algorithm="RS256",
+    jwt_issuer="summary-agent",
+))
+```
+
+> **Algorithm confusion is structurally prevented.** An RSA public key is
+> public, so a verifier that accepted HS256 *alongside* RS256 would accept a
+> token signed with that public key as an HMAC secret — the classic JWT
+> forgery. Acceptable algorithms come from the **configured key**, never from
+> the token's `alg` header, and the symmetric and asymmetric families never
+> overlap. Setting more than one of `jwt_secret` / `jwt_public_key` /
+> `jwks_url` is rejected at registration.
+
+| Configured | Accepts |
+|---|---|
+| `jwt_secret` | HS256 only |
+| `jwt_public_key` / `jwks_url` | the one configured asymmetric algorithm |
+
+HS256 keeps working unchanged, and needs no crypto library — `cryptography`
+lives in the `jwks` extra so the core install stays at 20 packages.
+
 ### Rate Limiting
 
 Token-bucket algorithm. In-process, zero dependencies.
@@ -664,6 +717,25 @@ try:
 except RateLimitError as e:
     print(f"Slow down! Retry in {e.retry_after:.2f}s")
 ```
+
+> **`RateLimiter` is per-process.** Three replicas configured for 10 req/s
+> allow 30 — the limit scales with your deployment, silently. Use
+> `RedisRateLimiter` when the limit has to actually hold:
+
+```python
+from nexus_a2a import RedisRateLimiter, SecurityMiddleware
+
+limiter = RedisRateLimiter(url="redis://localhost:6379")
+await limiter.connect()
+
+security = SecurityMiddleware(rate_limiter=limiter)   # drop-in
+assert limiter.is_distributed          # RateLimiter().is_distributed is False
+```
+
+One bucket per agent lives in Redis, and refill-and-consume runs as a Lua
+script so it is atomic — a read-modify-write from Python would let two replicas
+both spend the same last token. The script reads the clock from Redis, so a
+skewed replica cannot rewind a bucket. Requires Redis 7+.
 
 ### Trust Boundaries
 
@@ -792,6 +864,64 @@ from nexus_a2a import PostgresTaskStore
 store = PostgresTaskStore(dsn="postgresql://user:pass@localhost/nexus")
 await store.connect()   # creates tables if not present
 ```
+
+### Durable Dead Letter Queue
+
+The DLQ holds failed tasks so they can be replayed. By default it lives in
+memory, which means a crash or redeploy loses them — and a DLQ entry exists
+precisely because that work did *not* complete.
+
+```python
+from nexus_a2a import AgentNetwork, RedisDLQStore
+
+store = RedisDLQStore(url="redis://localhost:6379")
+await store.connect()
+
+network = AgentNetwork(dlq_store=store)
+await network.dead_letter_queue.load()      # rehydrate after a restart
+```
+
+```python
+dlq = network.dead_letter_queue
+dlq.is_durable                   # True
+await dlq.load()                 # entries captured before the restart
+await dlq.replay_all()           # and they are replayable again
+await dlq.purge_replayed()       # removes from the store too
+```
+
+### Durable push targets
+
+A webhook is registered by a caller who will *not* wait around — so losing it
+on restart defeats the purpose.
+
+```python
+from nexus_a2a import A2AServer, RedisPushStore, WebhookConfig
+
+store = RedisPushStore(url="redis://localhost:6379")
+await store.connect()
+
+server = A2AServer(
+    MyAgent,
+    push_store=store,
+    push_config=WebhookConfig(signing_secret="shared-secret"),
+)
+```
+
+Targets are released once a task reaches a terminal state, and carry a TTL for
+tasks that never finish.
+
+> A push config holds the caller's `token` — the secret their receiver checks
+> callbacks against. Persisting it puts that secret at rest in the store, so
+> point `RedisPushStore` at a Redis you would be willing to keep credentials
+> in: authenticated, and TLS if it is not on loopback.
+
+---
+
+> `clear_replayed()` is synchronous so it cannot reach an async store — it only
+> clears the local view, and entries return on the next `load()`. Use
+> `purge_replayed()` when a store is configured.
+
+---
 
 ### Task Manager
 
@@ -1426,6 +1556,7 @@ ruff format nexus_a2a
 | **v0.4.0** | `Orchestrator` (sequential/parallel/dag), SSE streaming, `WebhookDispatcher`, `AgentNetwork` |
 | **v1.0.0** | LangGraph/CrewAI/AutoGen/GoogleADK adapters, `RedisTaskStore`, `AuditLogger`, `MetricsCollector` |
 | **v1.1.0** | Task timeout watchdog, `InputHandler`, `DeadLetterQueue`, `CircuitBreaker`, `Tracer`, `CapabilityGuard` |
+| **v1.8.0** | Production scale: durable DLQ and push targets, distributed rate limiting (atomic via Lua), asymmetric JWT + JWKS with algorithm-confusion prevention |
 | **v1.7.0** | Streaming, multi-turn (`NeedsInput`) and push notifications. Every capability a card advertises is now served; HMAC webhook signing fixed (it had never validated) and webhook URLs are SSRF-checked |
 | **v1.6.0** | `A2AServer` (inbound protocol: agent card + JSON-RPC), `SecurityMiddleware`, `caller_url` on the client, `nexus run` actually serves the agent |
 | **v1.5.0** | Security hardening: admin endpoints gated, auth fails closed, JWT audience validated, PyJWT replaces python-jose, `google-adk` moved to an extra |
