@@ -31,8 +31,23 @@ from nexus_a2a.models.agent import AuthScheme
 
 logger = logging.getLogger(__name__)
 
-# JWT algorithm used for signing and verification
+# JWT algorithm used when nothing else is configured.
 _JWT_ALGORITHM = "HS256"
+
+# Which algorithms each kind of key material may be used with.
+#
+# This split is the whole defence against algorithm confusion. An RSA public
+# key is, by definition, public — so if a verifier configured for RS256 also
+# accepted HS256, an attacker could take that public key, use it as an HMAC
+# secret, sign their own token, and be believed. The allowed algorithms are
+# therefore derived from the CONFIGURED key, never from the token's own `alg`
+# header, and the two families never overlap.
+_SYMMETRIC_ALGORITHMS = ("HS256", "HS384", "HS512")
+_ASYMMETRIC_ALGORITHMS = (
+    "RS256", "RS384", "RS512",
+    "PS256", "PS384", "PS512",
+    "ES256", "ES384", "ES512",
+)
 
 # Default header name for API key auth
 _DEFAULT_API_KEY_HEADER = "X-API-Key"
@@ -101,17 +116,50 @@ class AgentCredentialConfig:
     Fields:
         scheme:          Which auth scheme this agent requires.
         api_key:         The expected API key (for API_KEY scheme).
-        jwt_secret:      The secret used to verify JWTs (for JWT scheme).
-        jwt_audience:    Optional audience claim to validate in JWTs.
-        header_name:     Header to read the API key from.
-                         Defaults to 'X-API-Key'.
+        jwt_secret:      Shared secret for symmetric JWTs (HS*). Whoever holds
+                         it can both verify AND forge, so prefer a key pair for
+                         anything beyond two mutually-trusting agents.
+        jwt_public_key:  PEM public key used to VERIFY asymmetric JWTs.
+        jwt_private_key: PEM private key used to SIGN outbound JWTs.
+        jwks_url:        URL publishing the signer's public keys. Verification
+                         resolves the key by the token's `kid`, so rotation is
+                         a publish rather than a coordinated secret swap.
+        jwt_algorithm:   Algorithm for asymmetric keys. Default: RS256.
+                         Ignored when jwt_secret is used (always HS256).
+        jwt_audience:    Optional 'aud' claim to require.
+        jwt_issuer:      Optional 'iss' claim to require.
+        header_name:     Header to read the API key from. Default 'X-API-Key'.
+
+    Exactly one source of verification material may be set: jwt_secret,
+    jwt_public_key, or jwks_url. Configuring a secret alongside a public key
+    would mean accepting both families, which is the algorithm-confusion hole.
     """
 
     scheme: AuthScheme = AuthScheme.NONE
     api_key: str | None = None
     jwt_secret: str | None = None
+    jwt_public_key: str | None = None
+    jwt_private_key: str | None = None
+    jwks_url: str | None = None
+    jwt_algorithm: str = "RS256"
     jwt_audience: str | None = None
+    jwt_issuer: str | None = None
     header_name: str = field(default=_DEFAULT_API_KEY_HEADER)
+
+    @property
+    def is_asymmetric(self) -> bool:
+        """True when verification uses a public key rather than a secret."""
+        return bool(self.jwt_public_key or self.jwks_url)
+
+    def allowed_algorithms(self) -> list[str]:
+        """
+        Algorithms acceptable for THIS config, from its key material alone.
+
+        Never widen this with anything read out of a token.
+        """
+        if self.is_asymmetric:
+            return [self.jwt_algorithm]
+        return [_JWT_ALGORITHM]
 
 
 # ── AuthManager ───────────────────────────────────────────────────────────────
@@ -163,6 +211,9 @@ class AuthManager:
         """
         # agent_url → AgentCredentialConfig
         self._configs: dict[str, AgentCredentialConfig] = {}
+        # jwks_url -> JWKSClient, so key sets are fetched and cached once per
+        # URL rather than per request.
+        self._jwks_clients: dict[str, Any] = {}
         self._allow_unregistered = allow_unregistered
         if allow_unregistered:
             logger.warning(
@@ -275,8 +326,15 @@ class AuthManager:
             raise ValueError(
                 f"Agent at '{agent_url}' uses scheme '{config.scheme.value}', not 'jwt'."
             )
-        if not config.jwt_secret:
-            raise ValueError(f"Agent at '{agent_url}' has no jwt_secret configured.")
+        signing_key = config.jwt_private_key or config.jwt_secret
+        if not signing_key:
+            raise ValueError(
+                f"Agent at '{agent_url}' has no signing key: set jwt_private_key "
+                "(asymmetric) or jwt_secret (symmetric)."
+            )
+        algorithm = (
+            config.jwt_algorithm if config.jwt_private_key else _JWT_ALGORITHM
+        )
 
         now = int(time.time())
         payload: dict[str, Any] = {
@@ -287,8 +345,10 @@ class AuthManager:
         }
         if config.jwt_audience:
             payload["aud"] = config.jwt_audience
+        if config.jwt_issuer:
+            payload["iss"] = config.jwt_issuer
 
-        return jwt.encode(payload, config.jwt_secret, algorithm=_JWT_ALGORITHM)
+        return jwt.encode(payload, signing_key, algorithm=algorithm)
 
     def build_auth_headers(
         self,
@@ -365,14 +425,21 @@ class AuthManager:
 
         token = auth_header[len("Bearer ") :]
 
+        key = await self._verification_key(token, config)
+
         try:
             # 'audience' is a top-level parameter — passing it inside
             # 'options' silently skips audience validation entirely.
+            #
+            # 'algorithms' comes from the CONFIG, never the token. Accepting
+            # whatever `alg` a token declares is how an attacker signs with a
+            # public key as an HMAC secret and gets believed.
             claims: dict[str, Any] = jwt.decode(
                 token,
-                config.jwt_secret or "",
-                algorithms=[_JWT_ALGORITHM],
+                key,
+                algorithms=config.allowed_algorithms(),
                 audience=config.jwt_audience,
+                issuer=config.jwt_issuer,
             )
             return claims
 
@@ -380,6 +447,41 @@ class AuthManager:
             raise ExpiredCredentialsError() from err
         except InvalidTokenError as exc:
             raise InvalidCredentialsError(str(exc)) from exc
+
+    async def _verification_key(
+        self,
+        token: str,
+        config: AgentCredentialConfig,
+    ) -> Any:
+        """
+        Resolve the key this token must be verified against.
+
+        JWKS resolves by the token's `kid`, which only selects WHICH public key
+        to try — it can never widen the set of acceptable algorithms.
+        """
+        if config.jwks_url:
+            from nexus_a2a.security.jwks import JWKSError
+
+            client = self._jwks_client(config.jwks_url)
+            try:
+                return (await client.key_for_token(token)).key
+            except JWKSError as exc:
+                raise InvalidCredentialsError(str(exc)) from exc
+
+        if config.jwt_public_key:
+            return config.jwt_public_key
+
+        return config.jwt_secret or ""
+
+    def _jwks_client(self, url: str) -> Any:
+        """Return the cached JWKS client for a URL, creating it on first use."""
+        client = self._jwks_clients.get(url)
+        if client is None:
+            from nexus_a2a.security.jwks import JWKSClient
+
+            client = JWKSClient(url)
+            self._jwks_clients[url] = client
+        return client
 
     def _get_config(self, agent_url: str) -> AgentCredentialConfig:
         """
@@ -409,7 +511,37 @@ class AuthManager:
             raise ValueError(
                 "API_KEY scheme requires 'api_key' to be set in AgentCredentialConfig."
             )
-        if config.scheme == AuthScheme.JWT and not config.jwt_secret:
+        if config.scheme != AuthScheme.JWT:
+            return
+
+        sources = [
+            name
+            for name, value in (
+                ("jwt_secret", config.jwt_secret),
+                ("jwt_public_key", config.jwt_public_key),
+                ("jwks_url", config.jwks_url),
+            )
+            if value
+        ]
+
+        if not sources:
             raise ValueError(
-                "JWT scheme requires 'jwt_secret' to be set in AgentCredentialConfig."
+                "JWT scheme requires one of 'jwt_secret' (symmetric), "
+                "'jwt_public_key' or 'jwks_url' (asymmetric) in "
+                "AgentCredentialConfig."
+            )
+
+        if len(sources) > 1:
+            # Accepting both families at once is the algorithm-confusion hole:
+            # a public key doubles as an HMAC secret an attacker already knows.
+            raise ValueError(
+                f"AgentCredentialConfig sets {' and '.join(sources)}. Choose "
+                "exactly one verification source — accepting both a shared "
+                "secret and a public key allows algorithm-confusion forgery."
+            )
+
+        if config.is_asymmetric and config.jwt_algorithm not in _ASYMMETRIC_ALGORITHMS:
+            raise ValueError(
+                f"jwt_algorithm={config.jwt_algorithm!r} is not an asymmetric "
+                f"algorithm. Choose one of: {', '.join(_ASYMMETRIC_ALGORITHMS)}."
             )

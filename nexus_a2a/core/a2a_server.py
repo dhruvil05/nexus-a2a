@@ -122,6 +122,7 @@ from nexus_a2a.models.task import (
     TaskState,
 )
 from nexus_a2a.security.middleware import SecurityMiddleware, http_status_for
+from nexus_a2a.storage.push_store import AbstractPushStore, InMemoryPushStore
 from nexus_a2a.transport.sse import SSEFormatter, StreamEventType
 from nexus_a2a.transport.webhook import (
     WebhookConfig,
@@ -299,6 +300,7 @@ class A2AServer:
         log_level: str = "warning",
         input_handler: InputHandler | None = None,
         push_config: WebhookConfig | None = None,
+        push_store: AbstractPushStore | None = None,
     ) -> None:
         self._agent_instance, self._card = self._resolve_agent(agent)
 
@@ -312,8 +314,9 @@ class A2AServer:
         self.input_handler = input_handler or InputHandler(self.tasks)
         self.push = WebhookDispatcher(push_config or WebhookConfig())
         self._push_config = push_config or WebhookConfig()
-        # task_id -> where to POST its updates. In-memory, like the DLQ.
-        self._push_targets: dict[str, PushNotificationConfig] = {}
+        # Where each task's updates get POSTed. In-memory by default; pass a
+        # RedisPushStore so a webhook registered before a restart is honoured.
+        self._push_targets: AbstractPushStore = push_store or InMemoryPushStore()
         # Deliveries run detached; keep references so they are not GC'd
         # mid-flight, and so tests can await them.
         self._push_tasks: set[asyncio.Task[None]] = set()
@@ -566,7 +569,7 @@ class A2AServer:
 
     # ── Push notifications ────────────────────────────────────────────────────
 
-    def _register_push(
+    async def _register_push(
         self,
         task_id: str,
         raw: Any,
@@ -600,11 +603,11 @@ class A2AServer:
             logger.warning("Refused webhook registration: %s", exc)
             return ERR_PUSH_INVALID_URL, str(exc)
 
-        self._push_targets[task_id] = config
+        await self._push_targets.save(task_id, config)
         logger.info("Push target registered for task %s", task_id)
         return None
 
-    def _notify(self, task: Task, event: str) -> None:
+    async def _notify(self, task: Task, event: str) -> None:
         """
         Fire a push notification for a task, if one is registered.
 
@@ -613,7 +616,12 @@ class A2AServer:
         raised — a broken webhook is not the task's problem. Await
         drain_notifications() when you need delivery to have settled.
         """
-        config = self._push_targets.get(task.id)
+        try:
+            config = await self._push_targets.get(task.id)
+        except Exception:
+            # A store outage must not fail the task it was reporting on.
+            logger.exception("Could not read push target for task %s", task.id)
+            return
         if config is None:
             return
 
@@ -630,9 +638,13 @@ class A2AServer:
         self._push_tasks.add(job)
         job.add_done_callback(self._push_tasks.discard)
 
-        # A terminal task will get no further updates.
+        # A terminal task will get no further updates, so release the target
+        # rather than letting the store grow one entry per task forever.
         if task.state in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
-            self._push_targets.pop(task.id, None)
+            try:
+                await self._push_targets.delete(task.id)
+            except Exception:
+                logger.exception("Could not release push target for %s", task.id)
 
     async def drain_notifications(self, timeout: float = 30.0) -> None:
         """Wait for in-flight push deliveries to finish. Mainly for tests."""
@@ -657,7 +669,7 @@ class A2AServer:
                 rpc_id, ERR_INVALID_PARAMS, "Missing 'pushNotificationConfig' param."
             )
 
-        failure = self._register_push(task_id, raw)
+        failure = await self._register_push(task_id, raw)
         if failure is not None:
             return _rpc_error(rpc_id, failure[0], failure[1])
 
@@ -665,7 +677,9 @@ class A2AServer:
             rpc_id,
             {
                 "taskId": task_id,
-                "pushNotificationConfig": _push_dict(self._push_targets[task_id]),
+                "pushNotificationConfig": _push_dict(
+                    await self._push_targets.get(task_id)
+                ),
             },
         )
 
@@ -675,7 +689,7 @@ class A2AServer:
         if not isinstance(task_id, str):
             return _rpc_error(rpc_id, ERR_INVALID_PARAMS, "Missing 'taskId' param.")
 
-        config = self._push_targets.get(task_id)
+        config = await self._push_targets.get(task_id)
         if config is None:
             return _rpc_result(rpc_id, {"taskId": task_id,
                                         "pushNotificationConfig": None})
@@ -718,7 +732,7 @@ class A2AServer:
                 "pushNotificationConfig"
             )
             if raw_push is not None:
-                failure = self._register_push(task.id, raw_push)
+                failure = await self._register_push(task.id, raw_push)
                 if failure is not None:
                     # Refuse the whole call rather than silently running a task
                     # whose updates the caller believes they will receive.
@@ -816,7 +830,7 @@ class A2AServer:
             logger.exception("Agent '%s' raised while running task %s",
                              self._card.name, task.id)
             failed = await self.tasks.fail(task.id, f"{type(exc).__name__}: {exc}")
-            self._notify(failed, "task_failed")
+            await self._notify(failed, "task_failed")
             return _rpc_result(rpc_id, _task_dict(failed))
 
         return _rpc_result(rpc_id, _task_dict(await self._finish(task, output)))
@@ -910,7 +924,7 @@ class A2AServer:
             )
             reason = f"{type(exc).__name__}: {exc}"
             try:
-                self._notify(await self.tasks.fail(task.id, reason), "task_failed")
+                await self._notify(await self.tasks.fail(task.id, reason), "task_failed")
             except Exception:  # pragma: no cover - store already unhappy
                 logger.exception("Could not mark task %s failed", task.id)
             yield SSEFormatter.error(reason)
@@ -1002,7 +1016,7 @@ class A2AServer:
             # Already terminal — report the real state rather than inventing
             # a cancelled task the caller would then act on.
             return _rpc_error(rpc_id, ERR_INVALID_REQUEST, str(exc))
-        self._notify(task, "task_cancelled")
+        await self._notify(task, "task_cancelled")
         return _rpc_result(rpc_id, _task_dict(task))
 
     # ── Result handling ───────────────────────────────────────────────────────
@@ -1025,14 +1039,14 @@ class A2AServer:
         # caller can answer against the same id.
         if isinstance(output, NeedsInput):
             paused = await self.tasks.request_input(task.id, output.as_message())
-            self._notify(paused, "task_input_required")
+            await self._notify(paused, "task_input_required")
             return paused
 
         artifact, reply, error = _interpret_output(output)
 
         if error is not None:
             failed = await self.tasks.fail(task.id, error)
-            self._notify(failed, "task_failed")
+            await self._notify(failed, "task_failed")
             return failed
 
         completed = await self.tasks.complete(
@@ -1040,7 +1054,7 @@ class A2AServer:
             artifact=artifact,
             reply_message=reply,
         )
-        self._notify(completed, "task_completed")
+        await self._notify(completed, "task_completed")
         return completed
 
     # ── Security refusals ─────────────────────────────────────────────────────
@@ -1084,14 +1098,16 @@ def _task_dict(task: Task) -> dict[str, Any]:
     return task.model_dump(mode="json")
 
 
-def _push_dict(config: PushNotificationConfig) -> dict[str, Any]:
+def _push_dict(config: PushNotificationConfig | None) -> dict[str, Any] | None:
     """
-    Serialise a push config for a response.
+    Serialise a push config for a response, or None when none is registered.
 
     The token is a shared secret the caller supplied; it is reported as present
     or absent but never echoed back, so reading a config cannot be used to
     recover one set by someone else.
     """
+    if config is None:
+        return None
     return {"url": config.url, "hasToken": config.token is not None}
 
 

@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nexus_a2a.models.task import Message, Task
+from nexus_a2a.storage.dlq_store import AbstractDLQStore
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,12 @@ class DLQEntry:
         return self.task.history[0] if self.task.history else None
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        Summary for display — /dlq responses, CLI tables, logs.
+
+        Deliberately omits the Task itself; use to_storage_dict() when the
+        entry needs to be rebuilt later.
+        """
         return {
             "task_id": self.task_id,
             "error": self.error,
@@ -102,6 +109,38 @@ class DLQEntry:
             "last_retry_at": self.last_retry_at,
             "replayed": self.replayed,
         }
+
+    def to_storage_dict(self) -> dict[str, Any]:
+        """
+        Full, round-trippable representation including the failed Task.
+
+        A DLQ entry is only useful if it can be replayed, and replaying needs
+        the original task — so persistence stores this, not to_dict().
+        """
+        return {
+            "task": self.task.model_dump(mode="json"),
+            "error": self.error,
+            "failed_at": self.failed_at,
+            "agent_url": self.agent_url,
+            "skill_id": self.skill_id,
+            "retry_count": self.retry_count,
+            "last_retry_at": self.last_retry_at,
+            "replayed": self.replayed,
+        }
+
+    @classmethod
+    def from_storage_dict(cls, data: dict[str, Any]) -> DLQEntry:
+        """Rebuild an entry produced by to_storage_dict()."""
+        return cls(
+            task=Task.model_validate(data["task"]),
+            error=data["error"],
+            failed_at=data.get("failed_at", time.time()),
+            agent_url=data.get("agent_url"),
+            skill_id=data.get("skill_id"),
+            retry_count=data.get("retry_count", 0),
+            last_retry_at=data.get("last_retry_at"),
+            replayed=data.get("replayed", False),
+        )
 
 
 # ── Replay result ─────────────────────────────────────────────────────────────
@@ -164,15 +203,80 @@ class DeadLetterQueue:
         max_retries: int = 3,
         retry_delay: float = 2.0,
         max_queue_size: int = 500,
+        store: AbstractDLQStore | None = None,
     ) -> None:
         self._runner = runner
         self._max_retries = max_retries
         self._retry_delay = retry_delay
         self._max_size = max_queue_size
-        # task_id → DLQEntry
+        # task_id → DLQEntry. This is the LOCAL VIEW: every read accessor is
+        # synchronous (AgentServer's /dlq and /metrics, the CLI, and callers
+        # written against them all rely on that), so it cannot await a store.
+        # Writes go through to the store as well; load() rehydrates this view.
         self._entries: dict[str, DLQEntry] = {}
+        self._store = store
         self._hooks: list[FailureHook] = []
         self._lock = asyncio.Lock()
+
+    # ── Durability ────────────────────────────────────────────────────────────
+
+    @property
+    def store(self) -> AbstractDLQStore | None:
+        """The backing store, or None when entries live only in memory."""
+        return self._store
+
+    @property
+    def is_durable(self) -> bool:
+        """True when captured entries survive this process exiting."""
+        return self._store is not None
+
+    async def load(self) -> int:
+        """
+        Rehydrate the local view from the store.
+
+        Call once at startup so failures captured before a restart are
+        replayable again. Without a store this is a no-op.
+
+        Returns:
+            How many entries were loaded.
+        """
+        if self._store is None:
+            return 0
+
+        entries = await self._store.list_all()
+        async with self._lock:
+            self._entries = {e.task_id: e for e in entries}
+        logger.info("DeadLetterQueue: loaded %d entries from store", len(entries))
+        return len(entries)
+
+    # refresh() is load() by another name — kept so the intent reads correctly
+    # at a call site that is re-syncing rather than starting up.
+    refresh = load
+
+    async def _persist(self, entry: DLQEntry) -> None:
+        """Write an entry through to the store, if one is configured."""
+        if self._store is None:
+            return
+        try:
+            await self._store.save(entry)
+        except Exception:
+            # Durability is best-effort: a store outage must not swallow the
+            # failure entirely, since the local view still has it.
+            logger.exception(
+                "DeadLetterQueue: could not persist entry for task %s",
+                entry.task_id,
+            )
+
+    async def _forget(self, task_id: str) -> None:
+        """Remove an entry from the store, if one is configured."""
+        if self._store is None:
+            return
+        try:
+            await self._store.delete(task_id)
+        except Exception:
+            logger.exception(
+                "DeadLetterQueue: could not delete stored entry %s", task_id
+            )
 
     def set_runner(self, runner: ReplayRunner) -> None:
         """Set (or replace) the replay runner after construction."""
@@ -233,12 +337,17 @@ class DeadLetterQueue:
             skill_id=skill_id,
         )
 
+        evicted: str | None = None
         async with self._lock:
             # Drop oldest if at capacity
             if len(self._entries) >= self._max_size:
-                oldest = next(iter(self._entries))
-                del self._entries[oldest]
+                evicted = next(iter(self._entries))
+                del self._entries[evicted]
             self._entries[task.id] = entry
+
+        if evicted is not None:
+            await self._forget(evicted)
+        await self._persist(entry)
 
         logger.warning(
             "DLQ captured task %s (error=%r skill=%s)",
@@ -368,10 +477,38 @@ class DeadLetterQueue:
         return sum(1 for e in self._entries.values() if not e.replayed)
 
     def clear_replayed(self) -> int:
-        """Remove successfully replayed entries. Returns count removed."""
+        """
+        Remove successfully replayed entries from the local view.
+
+        Synchronous, so it cannot reach an async store: with a store
+        configured the entries come back on the next load(). Use
+        purge_replayed() when durability is on.
+
+        Returns:
+            How many entries were removed from the local view.
+        """
         to_remove = [tid for tid, e in self._entries.items() if e.replayed]
         for tid in to_remove:
             del self._entries[tid]
+        return len(to_remove)
+
+    async def purge_replayed(self) -> int:
+        """
+        Remove successfully replayed entries from the local view AND the store.
+
+        The durable counterpart to clear_replayed(). Safe to call with no store
+        configured, where it behaves identically.
+
+        Returns:
+            How many entries were removed.
+        """
+        async with self._lock:
+            to_remove = [tid for tid, e in self._entries.items() if e.replayed]
+            for tid in to_remove:
+                del self._entries[tid]
+
+        for tid in to_remove:
+            await self._forget(tid)
         return len(to_remove)
 
     def summary(self) -> dict[str, Any]:
@@ -425,6 +562,7 @@ class DeadLetterQueue:
         try:
             new_task = await self._runner(url, msg)
             entry.replayed = True
+            await self._persist(entry)
             logger.info("DLQ replay succeeded for task %s", entry.task_id)
             return ReplayResult(
                 task_id=entry.task_id,
@@ -433,6 +571,7 @@ class DeadLetterQueue:
             )
         except Exception as exc:
             error = str(exc)
+            await self._persist(entry)
             logger.warning("DLQ replay failed for task %s: %s", entry.task_id, error)
             if entry.retry_count >= self._max_retries:
                 logger.error(

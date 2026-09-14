@@ -202,28 +202,28 @@ class TestCircuitBreaker:
         assert cb.state == CircuitState.CLOSED  # need one more failure to open
 
     def test_half_open_after_recovery_timeout(self):
-        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.05)
         cb.on_failure()
         assert cb.state == CircuitState.OPEN
-        time.sleep(0.02)
+        time.sleep(0.15)
         assert cb.state == CircuitState.HALF_OPEN
 
     def test_half_open_success_closes(self):
         cb = CircuitBreaker(
             failure_threshold=1,
-            recovery_timeout=0.01,
+            recovery_timeout=0.05,
             success_threshold=1,
         )
         cb.on_failure()
-        time.sleep(0.02)
+        time.sleep(0.15)
         assert cb.state == CircuitState.HALF_OPEN
         cb.on_success()
         assert cb.state == CircuitState.CLOSED
 
     def test_half_open_failure_reopens(self):
-        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.05)
         cb.on_failure()
-        time.sleep(0.02)
+        time.sleep(0.15)
         assert cb.state == CircuitState.HALF_OPEN
         cb.on_failure()
         assert cb.state == CircuitState.OPEN

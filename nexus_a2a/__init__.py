@@ -119,6 +119,12 @@ from nexus_a2a.security.capability_guard import (
     CapabilityMismatchError,
     CapabilityNotSupportedError,
 )
+from nexus_a2a.security.jwks import (
+    JWKSClient,
+    JWKSError,
+    JWKSFetchError,
+    JWKSKeyNotFoundError,
+)
 from nexus_a2a.security.middleware import (
     CallerIdentity,
     MissingCallerError,
@@ -136,7 +142,13 @@ from nexus_a2a.security.mtls import (
     build_server_ssl_context,
     verify_peer_certificate,
 )
-from nexus_a2a.security.rate_limiter import RateLimitConfig, RateLimiter, RateLimitError
+from nexus_a2a.security.rate_limiter import (
+    AbstractRateLimiter,
+    RateLimitConfig,
+    RateLimiter,
+    RateLimitError,
+)
+from nexus_a2a.security.redis_rate_limiter import RedisRateLimiter
 from nexus_a2a.security.trust import (
     AgentNotAllowedError,
     SkillNotAllowedError,
@@ -152,10 +164,20 @@ from nexus_a2a.security.validator import (
     ValidatorConfig,
 )
 from nexus_a2a.storage.audit_logger import AuditEntry, AuditEvent, AuditLogger
+from nexus_a2a.storage.dlq_store import (
+    AbstractDLQStore,
+    InMemoryDLQStore,
+    RedisDLQStore,
+)
 from nexus_a2a.storage.metrics import MetricsCollector, MetricsSnapshot
 
 # ── v1.2: PostgresTaskStore ──────────────────────────────────────────────────
 from nexus_a2a.storage.postgres_store import PostgresTaskStore
+from nexus_a2a.storage.push_store import (
+    AbstractPushStore,
+    InMemoryPushStore,
+    RedisPushStore,
+)
 from nexus_a2a.storage.redis_store import RedisTaskStore
 from nexus_a2a.storage.task_store import AbstractTaskStore, InMemoryTaskStore
 from nexus_a2a.transport.http_client import (
@@ -194,7 +216,7 @@ from nexus_a2a.transport.webhook import (
 try:
     __version__ = _pkg_version("nexus-a2a")
 except PackageNotFoundError:  # running from a source tree without an install
-    __version__ = "1.7.0"
+    __version__ = "1.8.0"
 
 
 # ── What gets exported when someone does: from nexus_a2a import * ─────────────
@@ -218,6 +240,12 @@ __all__ = [
     "TaskAlreadyDoneError",
     "TaskTimeoutError",
     "InMemoryTaskStore",
+    "AbstractDLQStore",
+    "InMemoryDLQStore",
+    "RedisDLQStore",
+    "AbstractPushStore",
+    "InMemoryPushStore",
+    "RedisPushStore",
     "AbstractTaskStore",
     "A2AHttpClient",
     "AgentUnreachableError",
@@ -242,6 +270,10 @@ __all__ = [
     "InvalidCredentialsError",
     "ExpiredCredentialsError",
     "UnknownAgentError",
+    "JWKSClient",
+    "JWKSError",
+    "JWKSFetchError",
+    "JWKSKeyNotFoundError",
     "SecurityMiddleware",
     "CallerIdentity",
     "MissingCallerError",
@@ -253,6 +285,8 @@ __all__ = [
     "CapabilityMismatchError",
     "CapabilityNotSupportedError",
     "RateLimiter",
+    "AbstractRateLimiter",
+    "RedisRateLimiter",
     "RateLimitConfig",
     "RateLimitError",
     "PayloadValidator",

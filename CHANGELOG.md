@@ -7,6 +7,157 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.8.0] — Production scale — Unreleased
+
+1.7.0 finished the protocol. This release is about what happens when you run
+more than one copy of it, and what survives a restart.
+
+### Added — durable Dead Letter Queue
+- **`AbstractDLQStore`, `InMemoryDLQStore`, `RedisDLQStore`** — the DLQ can now
+  persist. `DeadLetterQueue(store=...)` writes entries through; `load()`
+  rehydrates them at startup.
+- `DLQEntry.to_storage_dict()` / `from_storage_dict()` — a full round trip
+  including the failed Task. `to_dict()` stays the display summary and
+  deliberately omits it.
+- `DeadLetterQueue.is_durable`, `.store`, `.refresh()`, `.purge_replayed()`.
+- `AgentNetwork(dlq_store=...)`.
+- `tests/test_dlq_persistence.py` (38 tests).
+
+**Why it mattered:** the DLQ lived in a process-local dict, so a crash or a
+redeploy lost every failed task in it — the one piece of state you least want
+to lose, because an entry exists precisely because work did NOT complete and
+replaying it is the only way that work ever happens.
+
+The local view is kept as a write-through cache because every read accessor is
+synchronous (`count()`, `pending_entries()`, `summary()`) and AgentServer's
+`/dlq` and `/metrics`, the CLI, and anything written against them depend on
+that. Eviction removes from the store too, so `load()` cannot resurrect entries
+the queue already dropped.
+
+`clear_replayed()` is synchronous and therefore cannot reach an async store;
+`purge_replayed()` is its durable counterpart. Both are documented as such.
+
+### Added — distributed rate limiting
+- **`RedisRateLimiter`** — one token bucket per agent in Redis, so a limit
+  holds across replicas. A drop-in for `RateLimiter` anywhere one is accepted,
+  including `SecurityMiddleware`.
+- **`AbstractRateLimiter`** — the shared interface both implement, so the two
+  are interchangeable. `SecurityMiddleware` now types against it.
+- `is_distributed` on both, so a production check can assert it.
+- `RedisRateLimiter(client=...)` to share an existing pool.
+- `tests/test_redis_rate_limiter.py` (31 tests).
+
+**Why it mattered:** `RateLimiter` keeps buckets in a process-local dict, so
+three replicas configured for 10 req/s actually allowed 30. The limit scaled
+with the deployment, silently, which is the opposite of what a limit is for.
+
+Refill-and-consume runs as a **Lua script** so it is atomic: doing that
+read-modify-write from Python races, and two replicas both seeing one token
+left would both proceed. The script reads the clock from Redis (`TIME`) rather
+than the caller, so a skewed replica cannot rewind a bucket and mint itself
+tokens. Bucket keys carry a TTL covering a full refill, so idle agents expire
+instead of accumulating and none is ever recreated full early.
+
+Requires Redis 7+ (the script calls `TIME`).
+
+### Fixed
+- `rate_limiter.py` pointed readers at "RedisRateLimiter (Phase 5)", a class
+  that had never been written. It now exists, and the note points at it.
+- Three circuit-breaker tests used a 10ms recovery timeout with a 20ms sleep —
+  a 10ms margin that scheduler jitter clears on a loaded machine. One failed
+  intermittently in full-suite runs while passing in isolation. Widened to a
+  100ms margin.
+
+### Testing
+`fakeredis[lua]` is a dev dependency, so the Lua script is executed in the test
+suite rather than skipped for want of a server. Two limiter instances sharing
+one client stand in for two replicas — which is exactly what they are to Redis.
+A concurrency test asserts that 20 simultaneous consumers against a 5-token
+bucket get exactly 5 successes.
+
+### Added — asymmetric JWT and JWKS
+- **`AgentCredentialConfig.jwt_public_key` / `jwt_private_key` / `jwks_url` /
+  `jwt_algorithm` / `jwt_issuer`** — RS256/384/512, PS256/384/512 and
+  ES256/384/512 alongside the existing HS256.
+- **`JWKSClient`** (`security/jwks.py`) — fetches an issuer's published key
+  set, caches it, and resolves a token's signing key by `kid`. Rotation
+  becomes a publish instead of a coordinated secret swap.
+- `iss` is now issued and validated when `jwt_issuer` is set.
+- `tests/test_jwks_auth.py` (41 tests).
+- New `jwks` extra: `pip install nexus-a2a[jwks]`. HS256 needs no crypto
+  library, so `cryptography` stays OUT of the core tree, which remains 20
+  packages with no known vulnerabilities.
+
+**Why it mattered:** with HS256 the verifier holds the same secret as the
+signer, so any agent that can CHECK a peer's token can also MINT one. In a
+network of more than two parties every verifier is also a forger. A key pair
+splits those roles.
+
+### Security — algorithm confusion is structurally prevented
+An RSA public key is public by definition. A verifier that accepted HS256
+alongside RS256 would therefore accept a token signed with that public key used
+as an HMAC secret — the classic JWT forgery.
+
+The acceptable algorithms are now derived from the CONFIGURED key material and
+never from the token's `alg` header, and the symmetric and asymmetric families
+never overlap. `AgentCredentialConfig` rejects, at registration time, any
+config that sets more than one of `jwt_secret` / `jwt_public_key` / `jwks_url`,
+and refuses a symmetric `jwt_algorithm` on an asymmetric key.
+
+With JWKS, `kid` selects only WHICH public key to try; it cannot widen the
+algorithm set.
+
+The test for this hand-rolls the forged token, because PyJWT refuses to encode
+or decode a PEM as an HMAC secret — an attacker writes the bytes directly, so
+asking PyJWT would have proved nothing. `alg: none` and the mirror case (an
+HS256 verifier handed an RS256 token) are covered too.
+
+### Notes — JWKS
+- Key sets are cached for `cache_ttl` (default 300s). An unknown `kid` triggers
+  one refresh so rotation is picked up early, but refreshes are rate-limited:
+  otherwise a stream of tokens bearing junk kids would turn the agent into a
+  traffic amplifier aimed at the issuer's JWKS endpoint.
+- A single unusable key in a document is skipped with a warning rather than
+  failing the whole set, so one bad entry cannot lock out every other key.
+- A JWKS outage surfaces as an authentication failure, not a crash.
+
+### Added — durable push targets
+- **`AbstractPushStore`, `InMemoryPushStore`, `RedisPushStore`** —
+  `A2AServer(push_store=...)` persists where each task's updates get POSTed.
+- `tests/test_push_persistence.py` (23 tests).
+
+**Why it mattered:** registering a webhook is what a caller does precisely
+because they will NOT sit and wait. The target lived in a dict on the
+A2AServer instance, so the caller got nothing if the agent restarted mid-task,
+and nothing if the follow-up landed on a different replica — both the normal
+case in production.
+
+`_register_push()` and `_notify()` became async, which every call site already
+was. Unlike the DLQ there were no synchronous public accessors to preserve, so
+this is a plain store rather than a write-through cache.
+
+A push config carries the caller's `token`, the shared secret their receiver
+checks callbacks against. Persisting it means it is at rest in the backing
+store, so point `RedisPushStore` at a Redis you would keep credentials in.
+Targets are released when a task reaches a terminal state, and carry a TTL to
+reap tasks that never finish.
+
+A store outage is contained: reading or releasing a target may fail without
+failing the task it was reporting on.
+
+### 1.8.0 is feature-complete
+Nothing important in the library lives only in one process's memory any more,
+and no security control silently weakens as replicas are added:
+
+| | 1.7.0 | 1.8.0 |
+|---|---|---|
+| Dead Letter Queue | lost on restart | `RedisDLQStore` |
+| Push targets | lost on restart | `RedisPushStore` |
+| Rate limits | per process (N replicas = N x limit) | shared, atomic |
+| JWT | HS256 — every verifier can forge | RS/PS/ES + JWKS |
+
+---
+
 ## [1.7.0] — Streaming, multi-turn and push notifications — Unreleased
 
 `AgentCapabilities.streaming` has existed since 1.0 and `SSEStreamer` /
