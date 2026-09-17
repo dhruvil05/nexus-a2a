@@ -181,6 +181,23 @@ class TraceStore:
         """Return the Trace for the given trace_id, or None."""
         return self._traces.get(trace_id)
 
+    def find_by_task_id(self, task_id: str) -> Trace | None:
+        """
+        Return the trace containing a span that produced `task_id`.
+
+        A2AHttpClient records each task id in its span metadata, so a trace can
+        be found from the task a user actually has in hand.
+        """
+        for trace in reversed(list(self._traces.values())):
+            for span in trace.spans:
+                if span.metadata.get("task_id") == task_id:
+                    return trace
+        return None
+
+    def resolve(self, identifier: str) -> Trace | None:
+        """Look up by trace id first, then by task id."""
+        return self.get(identifier) or self.find_by_task_id(identifier)
+
     def list_ids(self) -> list[str]:
         """Return all stored trace IDs."""
         return list(self._traces.keys())

@@ -141,6 +141,8 @@ class RedisDLQStore(AbstractDLQStore):
         db:         Redis database number.
         password:   Redis password, if required.
         key_prefix: Prefix for all keys. Default: "nexus_a2a:dlq:".
+        client:     An existing redis.asyncio client to reuse. It belongs to
+                    its owner and is not closed by disconnect().
 
     Requires: pip install nexus-a2a[redis]
     """
@@ -152,13 +154,15 @@ class RedisDLQStore(AbstractDLQStore):
         db: int = 0,
         password: str | None = None,
         key_prefix: str = _KEY_PREFIX,
+        client: Any = None,
     ) -> None:
         self._url = url
         self._ttl = ttl
         self._db = db
         self._password = password
         self._prefix = key_prefix
-        self._redis: Any = None
+        self._injected_client = client
+        self._redis: Any = client
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -169,6 +173,11 @@ class RedisDLQStore(AbstractDLQStore):
         Raises:
             ImportError: redis is not installed (pip install nexus-a2a[redis]).
         """
+        if self._injected_client is not None:
+            self._redis = self._injected_client
+            await self._redis.ping()
+            return
+
         try:
             import redis.asyncio as aioredis
         except ImportError as exc:  # pragma: no cover - depends on extras
@@ -187,10 +196,10 @@ class RedisDLQStore(AbstractDLQStore):
         logger.info("RedisDLQStore connected: %s (db=%d)", self._url, self._db)
 
     async def disconnect(self) -> None:
-        """Close the Redis connection pool."""
-        if self._redis is not None:
+        """Close the Redis connection pool. An injected client is left open."""
+        if self._redis is not None and self._injected_client is None:
             await self._redis.aclose()
-            self._redis = None
+        self._redis = None
 
     async def __aenter__(self) -> RedisDLQStore:
         await self.connect()

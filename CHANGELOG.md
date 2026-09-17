@@ -7,7 +7,192 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.8.0] — Production scale — Unreleased
+## [1.9.0] — Configuration, tooling, and the road to 2.0 — Unreleased
+
+This is the last minor release before 2.0. It makes `nexus.toml` do what it was
+always documented to do, adds conformance and local-development tooling, and
+fixes a set of bugs that shipped in earlier releases, several of them
+security-relevant. No public signature changes. See **MIGRATING.md** for the
+behaviour that did change and how to prepare for 2.0.
+
+### Fixed — security
+
+- **The `nexus.toml` auth secret was never checked.**
+  `NexusConfig.build_auth_manager()` registered the secret under the literal
+  URL `"*"`, which `AuthManager` looked up by exact match and so never matched a
+  caller. Through 1.4 every caller was therefore let in **without a check**.
+  From 1.5.0, when auth began failing closed, every caller was refused. The
+  secret now applies to every caller that isn't registered individually, and
+  `register_agent("*", ...)` works as documented.
+- **Agent cards misrepresented their auth.** An agent secured through
+  `SecurityMiddleware` published `"scheme": "none"` from the decorator default,
+  so discovering clients were told no credentials were needed. The served card
+  now advertises the scheme actually enforced, and the header name for API keys.
+  It never includes the secret.
+- **Prometheus label values were not escaped.** An `agent_url` containing a
+  quote or newline corrupted `/metrics`, and a crafted one could inject whole
+  metric lines. Values are now escaped per the exposition format.
+- **Unknown `nexus.toml` keys were silently ignored,** so a typo such as
+  `auth_schem` left an agent open without any sign. They now raise a
+  `ConfigWarning` with a "did you mean" suggestion.
+
+### Fixed — resource use
+
+- **The default task store grew forever.** `InMemoryTaskStore` had no retention.
+  The watchdog only moves timed-out tasks to `FAILED` and never deletes them,
+  and `A2AServer` never deleted anything either, so a default server kept every
+  task it handled, with full history, until it exited. Finished tasks are now
+  evicted after `retention_sec` (default one hour, matching `RedisTaskStore`),
+  and the oldest finished tasks go first beyond `max_tasks` (default 10,000).
+  Running and paused tasks are **never** evicted.
+- **A Redis or Postgres backend from `nexus.toml` was never connected.**
+  `AgentNetwork.from_config()` built the store without calling `connect()`,
+  so every operation raised "not connected". `nexus run` and the new
+  `AgentRuntime` now connect stores before serving.
+
+### Fixed — CLI
+
+Each of these was invisible to the test suite, because the integration mock
+emits unprefixed metric names and has no admin gating.
+
+- **`nexus trace --agent` and `nexus replay` always got 403.** The admin
+  endpoints have required a token since 1.5.0, and neither command sent one.
+  Both now take `--admin-token`, `NEXUS_ADMIN_TOKEN` or `[ops].admin_token`,
+  and turn a 403 into an actionable message.
+- **`nexus trace <task_id>` never found anything.** Traces are keyed by trace id.
+  A task id now resolves to the trace that produced it, locally and through
+  `GET /traces/{id}`.
+- **`nexus status` always showed 0 DLQ pending.** It read
+  `nexus_dlq_pending`, but real servers emit `nexus_a2a_dlq_pending`. It now
+  reads the real names, and shows `—` rather than `0` for values a server
+  doesn't report.
+- **`nexus inspect` always showed auth scheme `none`.** It read
+  `authentication.schemes`, but the card field is `scheme`.
+- **Any command could crash on a Windows console.** The status icons aren't in
+  cp1252, so printing one — even inside a warning — raised
+  `UnicodeEncodeError`. Output now replaces unencodable characters, and the icons
+  fall back to ASCII where the console can't show them.
+
+### Fixed — other
+
+- **The watchdog could fail a task while `run()` was still going,** and the
+  late result then raised on an illegal transition out of `FAILED`. The late
+  result is now discarded with a warning, and the timeout stands.
+- **`mypy --strict` passes with no errors** for the first time. The two
+  long-standing errors in the Google ADK adapter are fixed.
+- The README documented `nexus.toml` keys that nothing reads —
+  `[security] mtls_*` and `[reliability] dlq_*` — and `mtls.py` documented a
+  `MutualTLSConfig.from_config()` that doesn't exist. Both corrected. mTLS is
+  configured through `NEXUS_MTLS_*` and `MutualTLSConfig.from_env()`.
+
+### Added — `nexus.toml` drives the server
+
+`nexus run` now applies every section of the file. Before 1.9.0 it read none of
+them, so the CLI could only start an open, in-memory server.
+
+- **`NexusConfig.build_runtime(agent)`** returns an **`AgentRuntime`**. That's
+  the agent server, an optional ops server, the stores it needs connected and
+  the task watchdog, all under one lifecycle. Startup runs resources, then the
+  watchdog, then the agent, then ops, and shutdown runs in reverse. A failed
+  start tears down whatever did start.
+- **`NexusConfig.build_security(server_url)`** builds the `SecurityMiddleware`
+  that `[security]` describes.
+- New keys:
+  - `[security]`: `rate_limit`, `rate_burst`, `max_payload_bytes`,
+    `allow_insecure`
+  - `[storage]`: `task_retention_sec`, `max_tasks`
+  - `[push]` (new section): `signing_secret`, `allow_private_urls`,
+    `max_retries`
+  - `[ops]` (new section): `port`, `host`, `url`, `admin_token`. A non-zero
+    `port` starts an `AgentServer` alongside the agent, sharing its task
+    manager.
+- New environment overrides: `NEXUS_RATE_LIMIT`, `NEXUS_PUSH_SECRET`,
+  `NEXUS_ADMIN_TOKEN`, `NEXUS_OPS_PORT`, `NEXUS_OPS_URL`.
+- **`trust_mode = "warn"`** is now implemented. Violations are logged and
+  allowed, so you can see what `strict` would block before you enforce it.
+  `strict` admits only the callers listed in `[network].agents`.
+- With the Redis backend, the rate limiter, push targets and the DLQ are Redis
+  too, so every replica enforces one shared limit and sees one queue.
+- The agent class supplies `[agent].name` and `[agent].url` when the file omits
+  them, so a `nexus.toml` holding only `[security]` is enough.
+
+### Added — tooling
+
+- **`nexus verify <url>`** checks any A2A agent, not only a nexus-a2a one,
+  against the protocol and against its own card. It covers:
+  - **card:** reachable, valid, self-consistent
+  - **protocol:** JSON-RPC error codes
+  - **task:** send, get and cancel round-trip
+  - **stream:** checked when the card claims streaming
+  - **push:** checked when the card claims push notifications, including an
+    SSRF probe with a cloud-metadata webhook
+  - **auth:** the scheme the card advertises is the one actually enforced
+
+  Each check is PASS, WARN, FAIL or SKIP. The command exits 1 on any FAIL, or
+  on any WARN with `--strict`, which suits CI. `--read-only` skips anything that
+  makes the agent do work. When the agent requires credentials you didn't
+  supply, the checks that need them are skipped rather than failed. The
+  library entry point is `nexus_a2a.verify.verify_agent()`.
+- **`nexus dev`** runs several agents in one process, from `--agent` flags,
+  `[[dev.agents]]`, or both. Each agent binds loopback, and its card advertises
+  its dev address whatever its own `url=` says. Dev agents are added to
+  `[network].agents`, so `strict` trust lets them call each other, and their
+  webhooks may target loopback. `--verify` checks each agent once it's up.
+
+### Added — server
+
+- **`GET /stream` follows a running task live.** A follower gets chunks and
+  status as they happen, with keep-alive comments between them, until the run
+  ends. A follower that joins mid-run is first sent everything already
+  emitted, from a bounded backlog. A follower that falls more than 256 events
+  behind is disconnected rather than buffered without limit. This works within
+  one process only. Finished and paused tasks are still reported and closed.
+- **`GET /metrics` on `A2AServer`** reports `nexus_a2a_tasks_active`,
+  `nexus_a2a_tasks{state}`, `nexus_a2a_stream_watchers` and uptime — counts
+  only, never task content. `AgentServer` also gained `nexus_a2a_tasks_active`.
+- **`AuthManager(default=...)`**, `set_default()`, `has_default` and
+  `advertised_config()`. A shared default credential still fails closed on a
+  wrong secret. Callers checked against it need no `X-Nexus-Caller` header,
+  because a self-asserted identity adds nothing to a shared-secret check.
+  Per-caller credentials and trust rules still require one.
+- `RedisDLQStore(client=...)`, matching the other Redis stores.
+- `TraceStore.find_by_task_id()` and `resolve()`.
+- `InMemoryTaskStore(retention_sec=, max_tasks=, clock=)` and `evict_expired()`.
+- Exports: `AgentRuntime`, `ConfigWarning`.
+
+### Deprecated — preparing for 2.0
+
+Each of these becomes an error in 2.0. The full guide is in **MIGRATING.md**.
+
+- `FutureWarning` when an `A2AServer` with no security binds a non-loopback
+  address. Silence it deliberately with `allow_insecure=True` or
+  `[security] allow_insecure = true`.
+- `FutureWarning` for an HS256 `jwt_secret` shorter than 32 bytes, per
+  RFC 7518 §3.2.
+- `DeprecationWarning` for `AuthManager(allow_unregistered=True)`. Use
+  `default=AgentCredentialConfig(scheme=AuthScheme.NONE)` instead.
+- `ConfigWarning` for unknown `nexus.toml` keys.
+
+Three changes previously planned for 2.0 have been dropped: security on by
+default, `caller_url` required, and durable stores by default. MIGRATING.md
+explains why.
+
+### Changed
+
+- Classifier `Development Status :: 3 - Alpha` → `4 - Beta`.
+- `httpx2` added to the `dev` extra. `starlette.testclient` warns without it
+  and is moving to require it. It's needed at test time only; the core install
+  is unchanged at 20 packages with no known vulnerabilities.
+
+### Tests
+
+1,276 tests (up from 1,030). Total coverage is 90%, up from 82%. The CLI
+modules, previously 17–44% covered, are now 61–100%; what remains uncovered is
+mostly the serve-forever loops, exercised by subprocess checks instead.
+
+---
+
+## [1.8.0] — Production scale — 2026-09-14
 
 1.7.0 finished the protocol. This release is about what happens when you run
 more than one copy of it, and what survives a restart.
@@ -158,7 +343,7 @@ and no security control silently weakens as replicas are added:
 
 ---
 
-## [1.7.0] — Streaming, multi-turn and push notifications — Unreleased
+## [1.7.0] — Streaming, multi-turn and push notifications — 2026-09-10
 
 `AgentCapabilities.streaming` has existed since 1.0 and `SSEStreamer` /
 `SSEFormatter` since Phase 4, but nothing ever served a stream — the classes
@@ -338,7 +523,7 @@ Every capability flag a card can raise — `streaming`, `push_notifications`,
 
 ---
 
-## [1.6.0] — A2AServer: the inbound protocol — Unreleased
+## [1.6.0] — A2AServer: the inbound protocol — 2026-09-09
 
 nexus-a2a can now BE an agent, not just call one. Through v1.5.0 the library
 shipped a complete client (`A2AHttpClient`) with no server behind it: nothing
@@ -441,7 +626,7 @@ Letter Queue can capture it.
 
 ---
 
-## [1.5.0] — Security hardening — Unreleased
+## [1.5.0] — Security hardening — not released separately (shipped in 1.6.0)
 
 Security release. Two fixes intentionally change runtime behaviour; both are
 noted under **Changed (breaking)** with the flag that restores the old default.
@@ -530,7 +715,7 @@ noted under **Changed (breaking)** with the flag that restores the old default.
 
 ---
 
-## [1.4.0] — Observability + CLI — Unreleased
+## [1.4.0] — Observability + CLI — 2026-07-25
 
 ### Added
 - **`nexus` CLI** (`cli/main.py`) — Click-based entry point wired into `pyproject.toml`

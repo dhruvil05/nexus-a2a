@@ -20,7 +20,7 @@ Public API:
     build_client_ssl_context(config)   → ssl.SSLContext for httpx outbound calls
     build_server_ssl_context(config)   → ssl.SSLContext for uvicorn inbound calls
     verify_peer_certificate(config, cert_der)  → CertInfo — inspect a peer cert
-    MutualTLSConfig.from_config(nexus_config)  → build from NexusConfig
+    MutualTLSConfig.from_env()                 → build from NEXUS_MTLS_* vars
 
 Usage (outbound — httpx client):
 
@@ -38,14 +38,13 @@ Usage (inbound — uvicorn server):
     ssl_ctx = build_server_ssl_context(config)
     uvicorn.run(app, ssl=ssl_ctx, host="0.0.0.0", port=8443)
 
-Usage (via NexusConfig / nexus.toml):
+Usage (from the environment — there are no nexus.toml keys for mTLS):
 
-    [security]
-    mtls_cert_file = "/certs/agent.crt"
-    mtls_key_file  = "/certs/agent.key"
-    mtls_ca_file   = "/certs/ca.crt"
+    export NEXUS_MTLS_CERT_FILE=/certs/agent.crt
+    export NEXUS_MTLS_KEY_FILE=/certs/agent.key
+    export NEXUS_MTLS_CA_FILE=/certs/ca.crt
 
-    config = MutualTLSConfig.from_env()  # reads NEXUS_MTLS_* env vars
+    config = MutualTLSConfig.from_env()
 
 Design:
     - Pure stdlib ssl module — no extra dependencies.

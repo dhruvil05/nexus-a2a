@@ -47,6 +47,8 @@ from nexus_a2a.security.jwks import (  # noqa: E402
 )
 
 AGENT = "http://signer:8001"
+# 32+ bytes, as RFC 7518 §3.2 requires for HS256.
+LONG_SECRET = "a-32-byte-or-longer-test-secret-value!"
 
 
 # ── Key material (generated once — RSA keygen is slow) ────────────────────────
@@ -327,7 +329,7 @@ class TestAlgorithmConfusion:
         token = signer_for().issue_jwt(AGENT, subject="me")
         manager = AuthManager()
         manager.register_agent(
-            AGENT, AgentCredentialConfig(scheme=AuthScheme.JWT, jwt_secret="shhh")
+            AGENT, AgentCredentialConfig(scheme=AuthScheme.JWT, jwt_secret=LONG_SECRET)
         )
         with pytest.raises(InvalidCredentialsError):
             await manager.verify(AGENT, bearer(token))
@@ -340,7 +342,7 @@ class TestSymmetricStillWorks:
     async def test_round_trip(self):
         manager = AuthManager()
         manager.register_agent(
-            AGENT, AgentCredentialConfig(scheme=AuthScheme.JWT, jwt_secret="shhh")
+            AGENT, AgentCredentialConfig(scheme=AuthScheme.JWT, jwt_secret=LONG_SECRET)
         )
         token = manager.issue_jwt(AGENT, subject="legacy")
         assert (await manager.verify(AGENT, bearer(token)))["sub"] == "legacy"
@@ -348,7 +350,7 @@ class TestSymmetricStillWorks:
     def test_still_signs_with_hs256(self):
         manager = AuthManager()
         manager.register_agent(
-            AGENT, AgentCredentialConfig(scheme=AuthScheme.JWT, jwt_secret="shhh")
+            AGENT, AgentCredentialConfig(scheme=AuthScheme.JWT, jwt_secret=LONG_SECRET)
         )
         token = manager.issue_jwt(AGENT, subject="legacy")
         assert jwt.get_unverified_header(token)["alg"] == "HS256"

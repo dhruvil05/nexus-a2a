@@ -21,16 +21,51 @@ import httpx
 from nexus_a2a.cli.context import NexusContext, pass_ctx
 from nexus_a2a.cli.output import print_error, print_warning, render_status
 
+# Checked in order; the first one present wins.
+QUEUE_DEPTH_METRICS = ("nexus_a2a_tasks_active",)
+DLQ_PENDING_METRICS = ("nexus_a2a_dlq_pending",)
+
+
+def parse_prometheus(text: str) -> dict[str, float]:
+    """
+    Parse unlabelled Prometheus exposition lines into {name: value}.
+
+    Comment lines and labelled series are skipped; the probe only needs
+    simple gauges.
+    """
+    values: dict[str, float] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2 or "{" in parts[0]:
+            continue
+        try:
+            values[parts[0]] = float(parts[1])
+        except ValueError:
+            continue
+    return values
+
+
+def _first_int(metrics: dict[str, float], names: tuple[str, ...]) -> int | None:
+    for name in names:
+        if name in metrics:
+            return int(metrics[name])
+    return None
+
 
 async def _probe_agent(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
     """Probe a single agent for health, queue depth, and DLQ state."""
     url = url.rstrip("/")
+    # None means "this server does not report it", which is rendered as a
+    # dash rather than a misleading 0.
     entry: dict[str, Any] = {
         "url": url,
         "name": url,
         "healthy": False,
-        "queue_depth": 0,
-        "dlq_pending": 0,
+        "queue_depth": None,
+        "dlq_pending": None,
         "last_seen": "—",
     }
 
@@ -46,15 +81,16 @@ async def _probe_agent(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
         health_resp = await client.get(f"{url}/health", timeout=5.0)
         entry["healthy"] = health_resp.status_code == 200
 
-        # /metrics for queue depth (Prometheus text — parse task_queue_depth line)
+        # /metrics — optional. Before 1.9.0 this looked for
+        # "nexus_task_queue_depth" and "nexus_dlq_pending", names only the test
+        # mock ever emitted; real servers prefix with "nexus_a2a_", so both
+        # columns always read 0.
         try:
             metrics_resp = await client.get(f"{url}/metrics", timeout=5.0)
             if metrics_resp.status_code == 200:
-                for line in metrics_resp.text.splitlines():
-                    if line.startswith("nexus_task_queue_depth"):
-                        entry["queue_depth"] = int(float(line.split()[-1]))
-                    if line.startswith("nexus_dlq_pending"):
-                        entry["dlq_pending"] = int(float(line.split()[-1]))
+                metrics = parse_prometheus(metrics_resp.text)
+                entry["queue_depth"] = _first_int(metrics, QUEUE_DEPTH_METRICS)
+                entry["dlq_pending"] = _first_int(metrics, DLQ_PENDING_METRICS)
         except Exception:
             pass  # metrics endpoint is optional
 
@@ -79,7 +115,7 @@ def _build_summary(agents: list[dict[str, Any]]) -> dict[str, Any]:
         "total": len(agents),
         "healthy": healthy,
         "unhealthy": len(agents) - healthy,
-        "total_dlq": sum(a.get("dlq_pending", 0) for a in agents),
+        "total_dlq": sum(a.get("dlq_pending") or 0 for a in agents),
     }
 
 

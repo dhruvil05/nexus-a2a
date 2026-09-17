@@ -50,6 +50,7 @@ Agent A  ──HTTP/JSON-RPC──▶  Agent B  ──▶  Agent C
 - [Configuration (nexus.toml)](#configuration-nexustoml)
 - [Error Handling Reference](#error-handling-reference)
 - [Testing](#testing)
+- [Preparing for 2.0](#preparing-for-20)
 
 ---
 
@@ -274,7 +275,8 @@ into a reachable agent.
 |---|---|
 | `GET /.well-known/agent-card.json` | Discovery — the card `@agent` built |
 | `POST /` | JSON-RPC 2.0: `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, `tasks/pushNotificationConfig/set` and `/get` (send/stream take an optional `taskId` to continue a paused task) |
-| `GET /stream?taskId=` | Observe a task as Server-Sent Events |
+| `GET /stream?taskId=` | Observe a task as Server-Sent Events — follows it live while it runs |
+| `GET /metrics` | Prometheus task counts (public, no task content) |
 | `GET /health` | Liveness probe |
 | `GET /ready` | Readiness probe (checks the task store) |
 
@@ -841,8 +843,16 @@ async with httpx.AsyncClient(verify=ssl_ctx) as http:
 ```python
 from nexus_a2a import InMemoryTaskStore
 
-store = InMemoryTaskStore()
+store = InMemoryTaskStore()                       # 1 h retention, 10,000 cap
+store = InMemoryTaskStore(retention_sec=600, max_tasks=1_000)
+store = InMemoryTaskStore(retention_sec=None, max_tasks=None)   # never forget
 ```
+
+Finished tasks — completed, failed or cancelled — are evicted `retention_sec`
+after they finish, and the oldest go first once the store exceeds
+`max_tasks`. **Running and paused tasks are never evicted.** Before 1.9.0 this
+store kept every task forever, so a long-running server's memory grew with
+every request.
 
 ### Redis
 
@@ -1086,11 +1096,13 @@ the other is written:
 | **Streaming agent** | chunks folded into one artifact | one chunk per yield |
 | **Non-streaming agent** | normal result | whole output as one chunk |
 
-**Observing a task:** `GET /stream?taskId=...` reports a task's state and
-artifacts, then closes — this is what `SSEStreamer` targets. It does not follow
-a run in progress, because `message/send` executes the agent inline and the
-task is already terminal by the time it can be looked up. Use `message/stream`
-to watch work as it happens.
+**Observing a task:** `GET /stream?taskId=...` is what `SSEStreamer` targets.
+While the task is **running** — served by someone else's `message/send` or
+`message/stream` — it is followed live, with keep-alive comments between
+events. A follower that joins mid-run first receives everything already
+emitted. A finished or paused task is reported and the stream closes. Following
+works within one process; a follower on another replica sees only the final
+state.
 
 > Security refusals happen **before** the stream opens — once SSE starts the
 > status line is already sent and an HTTP status can no longer be signalled. A
@@ -1242,11 +1254,11 @@ nexus inspect http://localhost:8001
 # Network status table (all agents, queue depth, DLQ count)
 nexus status --network
 
-# Trace a task — call tree with per-hop latency
+# Trace a task (by task id or trace id) — call tree with per-hop latency
 nexus trace abc-123-task-id
-nexus trace abc-123-task-id --agent http://localhost:8001
+nexus trace abc-123-task-id --agent http://localhost:8080 --admin-token $TOKEN
 
-# Replay DLQ entries
+# Replay DLQ entries (admin token from --admin-token, NEXUS_ADMIN_TOKEN or [ops])
 nexus replay --failed
 nexus replay --failed --skill web_search
 nexus replay --failed --last 1h
@@ -1259,6 +1271,15 @@ nexus run --module mypackage.agent:MyAgent --host 0.0.0.0 --port 8080
 # Without --module: ops server only (health, metrics, admin)
 nexus run
 
+# Check any A2A agent against the protocol and its own card
+nexus verify http://localhost:8001
+nexus verify http://localhost:8001 --api-key $KEY --strict   # CI-friendly
+nexus verify https://agent.example.com --read-only            # never runs the agent
+
+# Run several agents locally in one process
+nexus dev --agent agents.research:Research --agent agents.summary:Summary
+nexus dev --verify
+
 # JSON output for all commands
 nexus --format json status --network
 ```
@@ -1270,6 +1291,50 @@ nexus --format json status --network
 > python -m nexus_a2a.cli ping http://localhost:8001
 > ```
 
+
+### `nexus verify` — conformance checks
+
+Checks any A2A agent, not only nexus-a2a ones, and exits non-zero on failure:
+
+| Group | Checks |
+|---|---|
+| card | reachable, valid JSON, schema, URL matches where it was served, unique skills, `/health` |
+| auth | **the scheme the card advertises is the one enforced**, and supplied credentials work |
+| protocol | JSON-RPC error codes for unknown methods, malformed JSON, missing params, unknown tasks |
+| task | `message/send`, `tasks/get` and cancelling a finished task |
+| stream | `message/stream` really streams, when the card claims it |
+| push | push-config methods exist, and **a cloud-metadata webhook URL is refused** |
+
+The auth group matters most. A card that says `api_key` on an agent that
+answers anyone means the agent is open. A card that says `none` on an agent
+that returns 401 breaks every client that trusted it.
+
+The task group sends one probe message, so the agent does real work;
+`--read-only` skips it. If the agent needs credentials you didn't pass, the
+checks that need them are **skipped**, not failed. From Python:
+
+```python
+from nexus_a2a.verify import verify_agent
+
+report = await verify_agent("http://localhost:8001", api_key="...")
+assert report.passed, report.to_dict()
+```
+
+### `nexus dev` — several agents at once
+
+```toml
+[[dev.agents]]
+module = "agents.research:Research"
+port   = 8001
+
+[[dev.agents]]
+module = "agents.summary:Summary"      # port assigned automatically
+```
+
+Each agent binds `127.0.0.1`, and its card advertises that address. Dev agents
+are added to `[network].agents`, so `trust_mode = "strict"` lets them call one
+another, and their webhooks may target loopback. The rest of `nexus.toml` —
+auth, storage and so on — applies to all of them.
 
 ### Audit Logger
 
@@ -1341,10 +1406,13 @@ print(tracer.format_tree(trace))
 
 ## Configuration (nexus.toml)
 
-Zero-config wiring from a single TOML file.
+One file configures the agent `nexus run` serves: auth, trust, rate limits,
+storage, webhooks and an ops server. Every key below is read; anything else
+triggers a `ConfigWarning` with a "did you mean" suggestion, so a typo can't
+silently leave an agent unsecured.
 
 ```toml
-[agent]
+[agent]                          # optional with --module: the class supplies these
 name        = "ResearchAgent"
 description = "Searches the web and summarises results."
 version     = "1.0.0"
@@ -1356,53 +1424,87 @@ name        = "Web Search"
 description = "Searches the web for a given query."
 tags        = ["search", "web"]
 
-[storage]
-backend = "redis"               # memory | redis | postgres
-url     = "redis://localhost:6379"
-
 [security]
-auth_scheme     = "api_key"     # none | api_key | jwt
-auth_secret     = "my-secret"
-mtls_cert_file  = "/certs/agent.crt"
-mtls_key_file   = "/certs/agent.key"
-mtls_ca_file    = "/certs/ca.crt"
+auth_scheme       = "api_key"    # none | api_key | jwt
+auth_secret       = "change-me"  # one shared credential for every caller
+trust_mode        = "strict"     # off | warn | strict ([network].agents only)
+rate_limit        = 10           # requests/sec per caller; 0 = off
+rate_burst        = 20
+max_payload_bytes = 1048576      # 0 = off
+allow_insecure    = false        # see "Preparing for 2.0"
+
+[storage]
+backend            = "redis"     # memory | redis | postgres
+url                = "redis://localhost:6379"
+ttl_sec            = 3600        # Redis key TTL
+task_retention_sec = 3600        # memory backend: keep finished tasks this long (0 = forever)
+max_tasks          = 10000       # memory backend: cap, finished tasks evicted first (0 = no cap)
+
+[push]
+signing_secret     = "webhook-hmac-secret"
+allow_private_urls = false       # true only for local development
+max_retries        = 3
+
+[ops]
+port        = 8080               # start the health/metrics/admin server; 0 = off
+host        = ""                 # default: same host as the agent
+url         = "http://localhost:8080"   # where `nexus trace` / `nexus replay` go
+admin_token = "ops-secret"
 
 [reliability]
-task_timeout_sec = 120.0
-dlq_max_size     = 500
-dlq_max_retries  = 3
+task_timeout_sec          = 120.0
+max_retries               = 3
+retry_on                  = [500, 502, 503, 504]
+circuit_breaker_threshold = 5
+circuit_recovery_sec      = 30.0
 
 [observability]
-log_level  = "INFO"
-tracing    = true
+log_level = "INFO"
+tracing   = true
+metrics   = true
 
 [network]
-agents = [
-    "http://agent-a:8001",
-    "http://agent-b:8002",
-]
+agents = ["http://agent-a:8001", "http://agent-b:8002"]
 ```
 
-Load programmatically:
+Serve it:
+
+```bash
+nexus run --module mypackage.agent:ResearchAgent
+```
+
+Or build the same thing in Python:
 
 ```python
-from nexus_a2a import AgentNetwork
+from nexus_a2a import NexusConfig
 
-network = AgentNetwork.from_config("nexus.toml")
+runtime = NexusConfig.from_file("nexus.toml").build_runtime(ResearchAgent)
+async with runtime:          # connects stores, starts agent + ops server
+    await runtime.wait()
 ```
 
-**Environment variable overrides** (container-friendly):
+With `backend = "redis"`, the rate limiter, push targets and DLQ use Redis too,
+so every replica enforces one limit and sees one queue.
+
+**Environment variable overrides** — these always win over the file:
 
 | Variable | Overrides |
 |---|---|
-| `NEXUS_AGENT_NAME` | `[agent].name` |
-| `NEXUS_AGENT_URL` | `[agent].url` |
-| `NEXUS_AUTH_SCHEME` | `[security].auth_scheme` |
-| `NEXUS_AUTH_SECRET` | `[security].auth_secret` |
-| `NEXUS_STORAGE_BACKEND` | `[storage].backend` |
-| `NEXUS_STORAGE_URL` | `[storage].url` |
+| `NEXUS_AGENT_NAME` / `NEXUS_AGENT_URL` | `[agent].name` / `.url` |
+| `NEXUS_AUTH_SCHEME` / `NEXUS_AUTH_SECRET` | `[security].auth_scheme` / `.auth_secret` |
+| `NEXUS_RATE_LIMIT` | `[security].rate_limit` |
+| `NEXUS_STORAGE_BACKEND` / `NEXUS_STORAGE_URL` | `[storage].backend` / `.url` |
+| `NEXUS_PUSH_SECRET` | `[push].signing_secret` |
+| `NEXUS_ADMIN_TOKEN` | `[ops].admin_token` |
+| `NEXUS_OPS_PORT` / `NEXUS_OPS_URL` | `[ops].port` / `.url` |
 | `NEXUS_TASK_TIMEOUT` | `[reliability].task_timeout_sec` |
 | `NEXUS_LOG_LEVEL` | `[observability].log_level` |
+
+> **mTLS is configured from the environment, not the file:**
+> `NEXUS_MTLS_CERT_FILE`, `NEXUS_MTLS_KEY_FILE`, `NEXUS_MTLS_CA_FILE`, then
+> `MutualTLSConfig.from_env()`. Earlier versions of this README showed
+> `mtls_*` keys under `[security]`, and `dlq_*` keys under `[reliability]`,
+> but nothing ever read them.
 
 ---
 
@@ -1546,6 +1648,20 @@ ruff format nexus_a2a
 
 ---
 
+## Preparing for 2.0
+
+2.0 turns four 1.9 warnings into errors:
+
+- an unsecured agent on a non-loopback address;
+- `AuthManager(allow_unregistered=True)`;
+- HS256 secrets shorter than 32 bytes;
+- unknown `nexus.toml` keys.
+
+**[MIGRATING.md](MIGRATING.md)** explains each one, including how to make your
+test suite fail on them now.
+
+---
+
 ## What's in each version
 
 | Version | What it added |
@@ -1556,6 +1672,7 @@ ruff format nexus_a2a
 | **v0.4.0** | `Orchestrator` (sequential/parallel/dag), SSE streaming, `WebhookDispatcher`, `AgentNetwork` |
 | **v1.0.0** | LangGraph/CrewAI/AutoGen/GoogleADK adapters, `RedisTaskStore`, `AuditLogger`, `MetricsCollector` |
 | **v1.1.0** | Task timeout watchdog, `InputHandler`, `DeadLetterQueue`, `CircuitBreaker`, `Tracer`, `CapabilityGuard` |
+| **v1.9.0** | `nexus.toml` drives `nexus run` (`AgentRuntime`), `nexus verify`, `nexus dev`, live `GET /stream`, `/metrics` on agents, bounded task store; fixes the never-checked config secret, cards hiding their auth, and four CLI commands broken against real servers |
 | **v1.8.0** | Production scale: durable DLQ and push targets, distributed rate limiting (atomic via Lua), asymmetric JWT + JWKS with algorithm-confusion prevention |
 | **v1.7.0** | Streaming, multi-turn (`NeedsInput`) and push notifications. Every capability a card advertises is now served; HMAC webhook signing fixed (it had never validated) and webhook URLs are SSRF-checked |
 | **v1.6.0** | `A2AServer` (inbound protocol: agent card + JSON-RPC), `SecurityMiddleware`, `caller_url` on the client, `nexus run` actually serves the agent |

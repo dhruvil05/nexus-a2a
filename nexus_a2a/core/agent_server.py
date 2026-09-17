@@ -494,6 +494,14 @@ class AgentServer:
             gauge("nexus_a2a_registry_agents_total", 0)
             gauge("nexus_a2a_registry_healthy_total", 0)
 
+        # Active tasks — what `nexus status` reports as queue depth.
+        try:
+            tasks = await self.network.task_manager._store.list_all()
+            active = sum(1 for t in tasks if not t.state.is_terminal)
+            gauge("nexus_a2a_tasks_active", active)
+        except Exception:
+            gauge("nexus_a2a_tasks_active", 0)
+
         # Uptime
         gauge("nexus_a2a_uptime_seconds", round(self.uptime_seconds or 0.0, 2))
 
@@ -560,7 +568,8 @@ class AgentServer:
         trace_id = request.path_params["trace_id"]
         from nexus_a2a.transport.tracing import default_store
 
-        trace = default_store.get(trace_id)
+        # Accept a task id as well: that is what callers actually hold.
+        trace = default_store.resolve(trace_id)
         if trace is None:
             return JSONResponse(
                 {"error": f"trace '{trace_id}' not found"}, status_code=404
@@ -666,9 +675,19 @@ class AgentServer:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def _escape_label_value(value: str) -> str:
+    """
+    Escape a label value per the Prometheus text format.
+
+    Unescaped, a value containing a quote or newline — an agent URL, say —
+    breaks the exposition, and a crafted one can inject whole metric lines.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _format_labels(labels: dict[str, str] | None) -> str:
     """Format a label dict into Prometheus label syntax: {key="val",...}"""
     if not labels:
         return ""
-    parts = [f'{k}="{v}"' for k, v in labels.items()]
+    parts = [f'{k}="{_escape_label_value(str(v))}"' for k, v in labels.items()]
     return "{" + ",".join(parts) + "}"

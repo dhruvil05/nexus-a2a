@@ -21,6 +21,7 @@ from __future__ import annotations
 import hmac
 import logging
 import time
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -51,6 +52,12 @@ _ASYMMETRIC_ALGORITHMS = (
 
 # Default header name for API key auth
 _DEFAULT_API_KEY_HEADER = "X-API-Key"
+
+# register_agent() URL meaning "every caller not registered individually".
+WILDCARD = "*"
+
+# RFC 7518 §3.2: an HMAC key must be at least the size of the hash output.
+_MIN_HMAC_KEY_BYTES = 32
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -92,15 +99,15 @@ class UnknownAgentError(AuthError):
     registered with the AuthManager.
 
     Authentication fails closed: an unregistered agent is rejected rather
-    than silently treated as 'no auth required'. Pass
-    AuthManager(allow_unregistered=True) to restore the pre-1.5.0 behaviour.
+    than silently treated as 'no auth required'. Set a default credential to
+    cover every caller not registered individually.
     """
 
     def __init__(self, agent_url: str) -> None:
         super().__init__(
             f"No credential config registered for agent '{agent_url}'. "
-            "Register it with AuthManager.register_agent(), or construct "
-            "AuthManager(allow_unregistered=True) to allow unregistered agents."
+            "Register it with AuthManager.register_agent(), or set credentials "
+            "for all other callers with AuthManager(default=...)."
         )
         self.agent_url = agent_url
 
@@ -200,26 +207,78 @@ class AuthManager:
                                subject="nexus-a2a", expires_in=3600)
     """
 
-    def __init__(self, allow_unregistered: bool = False) -> None:
+    def __init__(
+        self,
+        allow_unregistered: bool = False,
+        default: AgentCredentialConfig | None = None,
+    ) -> None:
         """
         Args:
-            allow_unregistered: If False (the default), verifying an agent
-                that was never registered raises UnknownAgentError. If True,
-                unregistered agents fall back to AuthScheme.NONE — the
-                pre-1.5.0 behaviour, which fails OPEN and should only be
-                used in development.
+            allow_unregistered: Deprecated, removed in 2.0. If True, callers
+                that were never registered fall back to AuthScheme.NONE, the
+                pre-1.5.0 behaviour, which fails OPEN. Pass
+                default=AgentCredentialConfig(scheme=AuthScheme.NONE) if you
+                genuinely mean "no auth for unknown callers".
+            default: Credentials that apply to any caller not registered
+                individually, e.g. one shared API key for the whole network.
+                Still fails closed: a caller with the wrong key is rejected.
+                register_agent("*", config) sets the same thing.
         """
-        # agent_url → AgentCredentialConfig
+        # agent_url -> AgentCredentialConfig
         self._configs: dict[str, AgentCredentialConfig] = {}
         # jwks_url -> JWKSClient, so key sets are fetched and cached once per
         # URL rather than per request.
         self._jwks_clients: dict[str, Any] = {}
+        self._default: AgentCredentialConfig | None = None
+        if default is not None:
+            self.set_default(default)
+
         self._allow_unregistered = allow_unregistered
         if allow_unregistered:
+            warnings.warn(
+                "AuthManager(allow_unregistered=True) fails open and will be "
+                "removed in nexus-a2a 2.0. Pass "
+                "default=AgentCredentialConfig(scheme=AuthScheme.NONE) to keep "
+                "unauthenticated access for unknown callers explicitly.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             logger.warning(
                 "AuthManager(allow_unregistered=True): requests from agents "
                 "that are not registered will bypass authentication."
             )
+
+    @property
+    def has_default(self) -> bool:
+        """True when a default credential covers unregistered callers."""
+        return self._default is not None
+
+    def advertised_config(self) -> AgentCredentialConfig | None:
+        """
+        The credential scheme a server should advertise on its agent card.
+
+        The default credential if there is one; otherwise the scheme every
+        registered caller shares; otherwise None, because callers are handled
+        differently and no single scheme describes them. Only the scheme and
+        header name are ever published from this — never the secret.
+        """
+        if self._default is not None:
+            return self._default
+        configs = list(self._configs.values())
+        if configs and len({c.scheme for c in configs}) == 1:
+            return configs[0]
+        return None
+
+    def set_default(self, config: AgentCredentialConfig) -> None:
+        """
+        Set the credentials that apply to every caller not registered by URL.
+
+        Raises:
+            ValueError: If the config is incomplete for the chosen scheme.
+        """
+        self._validate_config(config)
+        self._default = config
+        logger.info("Default auth set with scheme '%s'", config.scheme.value)
 
     # ── Registration ──────────────────────────────────────────────────────────
 
@@ -238,6 +297,13 @@ class AuthManager:
         Raises:
             ValueError: If the config is incomplete for the chosen scheme.
         """
+        if agent_url.strip() == WILDCARD:
+            # Documented as a wildcard since 1.2, but it was stored as the
+            # literal URL "*" and never matched any caller, so a shared secret
+            # configured this way was silently never checked.
+            self.set_default(config)
+            return
+
         self._validate_config(config)
         self._configs[agent_url.rstrip("/")] = config
         logger.info(
@@ -247,7 +313,10 @@ class AuthManager:
         )
 
     def unregister_agent(self, agent_url: str) -> None:
-        """Remove the credential config for an agent."""
+        """Remove the credential config for an agent ("*" clears the default)."""
+        if agent_url.strip() == WILDCARD:
+            self._default = None
+            return
         self._configs.pop(agent_url.rstrip("/"), None)
 
     # ── Verification (inbound requests) ──────────────────────────────────────
@@ -491,13 +560,19 @@ class AuthManager:
         typo'd or attacker-supplied URL cannot bypass authentication by
         landing on a permissive default.
 
+        Lookup order: the caller's own registration, then the default
+        credential, then (deprecated) the fail-open fallback.
+
         Raises:
-            UnknownAgentError: Agent is not registered and
+            UnknownAgentError: Agent is not registered, no default is set, and
                                allow_unregistered is False.
         """
         config = self._configs.get(agent_url.rstrip("/"))
         if config is not None:
             return config
+
+        if self._default is not None:
+            return self._default
 
         if self._allow_unregistered:
             return AgentCredentialConfig(scheme=AuthScheme.NONE)
@@ -544,4 +619,18 @@ class AuthManager:
             raise ValueError(
                 f"jwt_algorithm={config.jwt_algorithm!r} is not an asymmetric "
                 f"algorithm. Choose one of: {', '.join(_ASYMMETRIC_ALGORITHMS)}."
+            )
+
+        if config.jwt_secret and len(config.jwt_secret.encode()) < _MIN_HMAC_KEY_BYTES:
+            # RFC 7518 §3.2: an HS256 key must be at least as long as the
+            # hash output. A short secret can be brute-forced offline from any
+            # single token, after which every token can be forged.
+            warnings.warn(
+                f"jwt_secret is {len(config.jwt_secret.encode())} bytes; HS256 "
+                f"needs at least {_MIN_HMAC_KEY_BYTES} (RFC 7518 §3.2). A short "
+                "secret can be brute-forced from any captured token. "
+                "nexus-a2a 2.0 will reject it. Generate one with "
+                "`python -c \"import secrets; print(secrets.token_urlsafe(32))\"`.",
+                FutureWarning,
+                stacklevel=3,
             )

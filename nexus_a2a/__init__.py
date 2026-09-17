@@ -30,6 +30,7 @@ from nexus_a2a.adapters.langgraph import LangGraphAdapter
 from nexus_a2a.config import (
     AgentConfig,
     ConfigError,
+    ConfigWarning,
     NetworkConfig,
     NexusConfig,
     ObservabilityConfig,
@@ -103,6 +104,7 @@ from nexus_a2a.models.task import (
     TaskState,
 )
 from nexus_a2a.network import AgentNetwork, EventBus
+from nexus_a2a.runtime import AgentRuntime
 
 # ── Phase 3: Security ─────────────────────────────────────────────────────────
 from nexus_a2a.security.auth import (
@@ -216,7 +218,7 @@ from nexus_a2a.transport.webhook import (
 try:
     __version__ = _pkg_version("nexus-a2a")
 except PackageNotFoundError:  # running from a source tree without an install
-    __version__ = "1.8.0"
+    __version__ = "1.9.0"
 
 
 # ── What gets exported when someone does: from nexus_a2a import * ─────────────
@@ -306,6 +308,8 @@ __all__ = [
     # v1.6 — A2A protocol server
     "A2AServer",
     "A2AServerError",
+    "AgentRuntime",
+    "ConfigWarning",
     "InvalidAgentError",
     # Phase 4 — Orchestration + streaming
     "AgentNetwork",
