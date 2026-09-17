@@ -19,6 +19,11 @@ Environment variable overrides (container-friendly):
     NEXUS_STORAGE_URL       — overrides [storage].url
     NEXUS_TASK_TIMEOUT      — overrides [reliability].task_timeout_sec
     NEXUS_LOG_LEVEL         — overrides [observability].log_level
+    NEXUS_RATE_LIMIT        — overrides [security].rate_limit
+    NEXUS_PUSH_SECRET       — overrides [push].signing_secret
+    NEXUS_ADMIN_TOKEN       — overrides [ops].admin_token
+    NEXUS_OPS_PORT          — overrides [ops].port
+    NEXUS_OPS_URL           — overrides [ops].url
 
 All NEXUS_* env vars are read after the TOML file is parsed,
 so they always take precedence — ideal for container deployments.
@@ -31,9 +36,11 @@ Design:
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import tomllib
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -58,6 +65,77 @@ class ConfigError(Exception):
         location = f" (key: '{key}')" if key else ""
         super().__init__(f"nexus.toml config error{location}: {message}")
         self.key = key
+
+
+def _number(raw: dict[str, Any], key: str, default: float, path: str) -> float:
+    """Read a numeric key, turning a bad value into a ConfigError with its path."""
+    value = raw.get(key, default)
+    if isinstance(value, bool):
+        raise ConfigError(f"'{key}' must be a number, got a boolean", path)
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"'{key}' must be a number, got {value!r}", path) from exc
+
+
+class ConfigWarning(UserWarning):
+    """A nexus.toml problem that does not stop the config from loading."""
+
+
+# Every key the parser reads. Anything else is ignored — which, for a security
+# setting, silently leaves it unset — so unknown keys are reported.
+KNOWN_KEYS: dict[str, frozenset[str]] = {
+    "agent": frozenset({"name", "description", "version", "url", "streaming",
+                        "skills"}),
+    "network": frozenset({"agents"}),
+    "reliability": frozenset({"task_timeout_sec", "max_retries", "retry_on",
+                              "circuit_breaker_threshold", "circuit_recovery_sec",
+                              "base_delay_sec", "max_delay_sec"}),
+    "security": frozenset({"auth_scheme", "auth_secret", "trust_mode",
+                           "rate_limit", "rate_burst", "max_payload_bytes",
+                           "allow_insecure"}),
+    "storage": frozenset({"backend", "url", "ttl_sec", "task_retention_sec",
+                          "max_tasks"}),
+    "observability": frozenset({"tracing", "metrics", "log_level"}),
+    "push": frozenset({"signing_secret", "allow_private_urls", "max_retries"}),
+    "ops": frozenset({"port", "host", "url", "admin_token"}),
+    "dev": frozenset({"agents"}),  # read by `nexus dev`
+}
+_SKILL_KEYS = frozenset({"id", "name", "description", "tags", "examples"})
+
+
+def _unknown_key_messages(raw: dict[str, Any]) -> list[str]:
+    """Describe every key the parser would silently ignore."""
+
+    def suggest(name: str, choices: frozenset[str]) -> str:
+        close = difflib.get_close_matches(name, sorted(choices), n=1, cutoff=0.6)
+        return f" (did you mean '{close[0]}'?)" if close else ""
+
+    messages: list[str] = []
+    sections = frozenset(KNOWN_KEYS)
+    for section, body in raw.items():
+        if section not in KNOWN_KEYS:
+            messages.append(
+                f"unknown section [{section}]{suggest(section, sections)}"
+            )
+            continue
+        if not isinstance(body, dict):
+            continue
+        for key in body:
+            if key not in KNOWN_KEYS[section]:
+                messages.append(
+                    f"unknown key '{section}.{key}'"
+                    f"{suggest(key, KNOWN_KEYS[section])}"
+                )
+    for index, skill in enumerate(raw.get("agent", {}).get("skills", []) or []):
+        if isinstance(skill, dict):
+            for key in skill:
+                if key not in _SKILL_KEYS:
+                    messages.append(
+                        f"unknown key 'agent.skills[{index}].{key}'"
+                        f"{suggest(key, _SKILL_KEYS)}"
+                    )
+    return messages
 
 
 # ── Section dataclasses ───────────────────────────────────────────────────────
@@ -113,6 +191,14 @@ class SecurityConfig:
     auth_scheme: str = "none"  # "none" | "jwt" | "api_key"
     auth_secret: str = ""  # JWT secret or API key value
     trust_mode: str = "off"  # "strict" | "warn" | "off"
+    # Requests per second allowed per caller; 0 disables rate limiting.
+    rate_limit: float = 0.0
+    rate_burst: int = 20
+    # Largest accepted request body in bytes; 0 disables payload validation.
+    max_payload_bytes: int = 0
+    # Silence the warning for serving a public address with no security.
+    # In 2.0 that combination becomes an error unless this is set.
+    allow_insecure: bool = False
 
 
 @dataclass
@@ -122,6 +208,36 @@ class StorageConfig:
     backend: str = "memory"  # "memory" | "redis" | "postgres"
     url: str = ""  # redis:// or postgres:// connection URL
     ttl_sec: int = 3600  # TTL for Redis keys (ignored for memory/postgres)
+    # In-memory backend only: how long a finished task stays retrievable, and
+    # the most tasks held. 0 means "no limit" for either.
+    task_retention_sec: float = 3600.0
+    max_tasks: int = 10_000
+
+
+@dataclass
+class PushConfig:
+    """[push] section — outbound webhook delivery."""
+
+    signing_secret: str = ""  # HMAC-SHA256 key; empty sends unsigned
+    allow_private_urls: bool = False  # local development only
+    max_retries: int = 3
+
+
+@dataclass
+class OpsConfig:
+    """
+    [ops] section — the admin/metrics server and where the CLI finds it.
+
+    port:        Start an AgentServer on this port alongside the agent. 0 = off.
+    host:        Bind host for it. Empty = same host as the agent.
+    url:         Where `nexus trace` / `nexus replay` send admin requests.
+    admin_token: Token the ops server requires, and the CLI sends.
+    """
+
+    port: int = 0
+    host: str = ""
+    url: str = ""
+    admin_token: str = ""
 
 
 @dataclass
@@ -153,6 +269,8 @@ class NexusConfig:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    push: PushConfig = field(default_factory=PushConfig)
+    ops: OpsConfig = field(default_factory=OpsConfig)
 
     # ── Factory methods ───────────────────────────────────────────────────────
 
@@ -216,6 +334,14 @@ class NexusConfig:
     @classmethod
     def _parse(cls, raw: dict[str, Any]) -> NexusConfig:
         """Convert raw TOML dict to a NexusConfig with typed sections."""
+        for message in _unknown_key_messages(raw):
+            # Ignored keys are how a typo like `auth_schem` leaves an agent
+            # open. nexus-a2a 2.0 will reject them outright.
+            warnings.warn(
+                f"nexus.toml: {message} — it is ignored.",
+                ConfigWarning,
+                stacklevel=3,
+            )
         return cls(
             agent=cls._parse_agent(raw.get("agent", {})),
             network=cls._parse_network(raw.get("network", {})),
@@ -223,6 +349,8 @@ class NexusConfig:
             security=cls._parse_security(raw.get("security", {})),
             storage=cls._parse_storage(raw.get("storage", {})),
             observability=cls._parse_observability(raw.get("observability", {})),
+            push=cls._parse_push(raw.get("push", {})),
+            ops=cls._parse_ops(raw.get("ops", {})),
         )
 
     @staticmethod
@@ -309,6 +437,12 @@ class NexusConfig:
             auth_scheme=scheme,
             auth_secret=raw.get("auth_secret", ""),
             trust_mode=trust,
+            rate_limit=_number(raw, "rate_limit", 0.0, "security.rate_limit"),
+            rate_burst=int(_number(raw, "rate_burst", 20, "security.rate_burst")),
+            max_payload_bytes=int(
+                _number(raw, "max_payload_bytes", 0, "security.max_payload_bytes")
+            ),
+            allow_insecure=bool(raw.get("allow_insecure", False)),
         )
 
     @staticmethod
@@ -324,6 +458,27 @@ class NexusConfig:
             backend=backend,
             url=raw.get("url", ""),
             ttl_sec=int(raw.get("ttl_sec", 3600)),
+            task_retention_sec=_number(
+                raw, "task_retention_sec", 3600.0, "storage.task_retention_sec"
+            ),
+            max_tasks=int(_number(raw, "max_tasks", 10_000, "storage.max_tasks")),
+        )
+
+    @staticmethod
+    def _parse_push(raw: dict[str, Any]) -> PushConfig:
+        return PushConfig(
+            signing_secret=raw.get("signing_secret", ""),
+            allow_private_urls=bool(raw.get("allow_private_urls", False)),
+            max_retries=int(_number(raw, "max_retries", 3, "push.max_retries")),
+        )
+
+    @staticmethod
+    def _parse_ops(raw: dict[str, Any]) -> OpsConfig:
+        return OpsConfig(
+            port=int(_number(raw, "port", 0, "ops.port")),
+            host=raw.get("host", ""),
+            url=raw.get("url", ""),
+            admin_token=raw.get("admin_token", ""),
         )
 
     @staticmethod
@@ -388,6 +543,34 @@ class NexusConfig:
                 raise ConfigError(
                     f"NEXUS_TASK_TIMEOUT='{timeout}' is not a valid number",
                     "reliability.task_timeout_sec",
+                ) from exc
+
+        # [security] — rate limit
+        if rate := os.environ.get("NEXUS_RATE_LIMIT"):
+            try:
+                self.security.rate_limit = float(rate)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"NEXUS_RATE_LIMIT='{rate}' is not a valid number",
+                    "security.rate_limit",
+                ) from exc
+
+        # [push]
+        if push_secret := os.environ.get("NEXUS_PUSH_SECRET"):
+            self.push.signing_secret = push_secret
+
+        # [ops]
+        if admin_token := os.environ.get("NEXUS_ADMIN_TOKEN"):
+            self.ops.admin_token = admin_token
+        if ops_url := os.environ.get("NEXUS_OPS_URL"):
+            self.ops.url = ops_url
+        if ops_port := os.environ.get("NEXUS_OPS_PORT"):
+            try:
+                self.ops.port = int(ops_port)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"NEXUS_OPS_PORT='{ops_port}' is not a valid port",
+                    "ops.port",
                 ) from exc
 
         # [observability]
@@ -455,6 +638,42 @@ class NexusConfig:
                 "max_retries cannot be negative.",
                 "reliability.max_retries",
             )
+        # Security limits
+        if self.security.rate_limit < 0:
+            raise ConfigError(
+                "rate_limit cannot be negative (0 disables it).",
+                "security.rate_limit",
+            )
+        if self.security.rate_limit > 0 and self.security.rate_burst < 1:
+            raise ConfigError(
+                "rate_burst must be at least 1 when rate_limit is set.",
+                "security.rate_burst",
+            )
+        if self.security.max_payload_bytes < 0:
+            raise ConfigError(
+                "max_payload_bytes cannot be negative (0 disables it).",
+                "security.max_payload_bytes",
+            )
+
+        # Storage limits
+        if self.storage.task_retention_sec < 0:
+            raise ConfigError(
+                "task_retention_sec cannot be negative (0 means keep forever).",
+                "storage.task_retention_sec",
+            )
+        if self.storage.max_tasks < 0:
+            raise ConfigError(
+                "max_tasks cannot be negative (0 means no cap).",
+                "storage.max_tasks",
+            )
+
+        # Ops server
+        if not 0 <= self.ops.port <= 65535:
+            raise ConfigError(
+                f"ops.port={self.ops.port} is not a valid port (0 disables it).",
+                "ops.port",
+            )
+
         if self.reliability.circuit_breaker_threshold < 1:
             raise ConfigError(
                 "circuit_breaker_threshold must be at least 1.",
@@ -480,7 +699,10 @@ class NexusConfig:
         if backend == "memory":
             from nexus_a2a.storage.task_store import InMemoryTaskStore
 
-            return InMemoryTaskStore()
+            return InMemoryTaskStore(
+                retention_sec=self.storage.task_retention_sec or None,
+                max_tasks=self.storage.max_tasks or None,
+            )
 
         if backend == "redis":
             try:
@@ -545,18 +767,174 @@ class NexusConfig:
         scheme = scheme_map[self.security.auth_scheme]
         manager = AuthManager()
 
-        # For non-NONE schemes, register a wildcard default credential.
-        # Developers can override per-agent creds by calling register_agent().
+        # The configured secret applies to every caller not registered
+        # individually. Before 1.9.0 this was registered under the literal URL
+        # "*", which the lookup never matched, so the secret was never checked
+        # (and before 1.5.0, every caller was let in without one).
+        # Per-agent credentials can still be added with register_agent().
         if scheme != AuthScheme.NONE and self.security.auth_secret:
             cred_kwargs: dict[str, Any] = {"scheme": scheme}
             if scheme == AuthScheme.JWT:
                 cred_kwargs["jwt_secret"] = self.security.auth_secret
             elif scheme == AuthScheme.API_KEY:
                 cred_kwargs["api_key"] = self.security.auth_secret
-            cred = AgentCredentialConfig(**cred_kwargs)
-            manager.register_agent("*", cred)
+            manager.set_default(AgentCredentialConfig(**cred_kwargs))
 
         return manager
+
+    def build_security(self, server_url: str) -> Any:
+        """
+        Build the SecurityMiddleware described by [security].
+
+        Args:
+            server_url: This agent's own URL — the target of trust rules.
+
+        trust_mode:
+            off     No trust checks.
+            strict  Only [network].agents may call this agent.
+            warn    Same rules, but violations are logged and allowed. Use it
+                    to find out what strict would break before enforcing it.
+        """
+        from nexus_a2a.security.middleware import SecurityMiddleware
+        from nexus_a2a.security.rate_limiter import RateLimitConfig, RateLimiter
+        from nexus_a2a.security.trust import TrustBoundary
+        from nexus_a2a.security.validator import PayloadValidator, ValidatorConfig
+
+        auth = None
+        if self.security.auth_scheme != "none":
+            auth = self.build_auth_manager()
+
+        trust = None
+        if self.security.trust_mode != "off":
+            trust = TrustBoundary()
+            for caller in self.network.agents:
+                trust.allow(caller, server_url)
+            if not self.network.agents and self.security.trust_mode == "strict":
+                logger.warning(
+                    "trust_mode='strict' with an empty [network].agents list "
+                    "refuses every caller."
+                )
+
+        rate_limiter: Any = None
+        if self.security.rate_limit > 0:
+            rate_cfg = RateLimitConfig(
+                rate=self.security.rate_limit, burst=self.security.rate_burst
+            )
+            if self.storage.backend == "redis":
+                from nexus_a2a.security.redis_rate_limiter import RedisRateLimiter
+
+                # Shared across replicas, so N processes enforce ONE limit.
+                rate_limiter = RedisRateLimiter(
+                    url=self.storage.url, default_config=rate_cfg
+                )
+            else:
+                rate_limiter = RateLimiter(rate_cfg)
+
+        validator = None
+        if self.security.max_payload_bytes > 0:
+            validator = PayloadValidator(
+                ValidatorConfig(max_bytes=self.security.max_payload_bytes)
+            )
+
+        return SecurityMiddleware(
+            auth=auth,
+            trust=trust,
+            rate_limiter=rate_limiter,
+            validator=validator,
+            server_url=server_url if trust is not None else None,
+            trust_warn_only=self.security.trust_mode == "warn",
+        )
+
+    def build_runtime(
+        self,
+        agent: Any,
+        host: str | None = None,
+        port: int | None = None,
+    ) -> Any:
+        """
+        Build everything needed to serve `agent` as nexus.toml describes.
+
+        Args:
+            agent: An @agent-decorated class or instance.
+            host:  Bind host. Default: the host in [agent].url.
+            port:  Bind port. Default: the port in [agent].url.
+
+        Returns:
+            An AgentRuntime. Nothing is connected or started until
+            `await runtime.start()` (or `async with runtime:`).
+        """
+        from urllib.parse import urlparse
+
+        from nexus_a2a.core.a2a_server import A2AServer
+        from nexus_a2a.core.agent_server import AgentServer
+        from nexus_a2a.core.task_manager import TaskManager
+        from nexus_a2a.network import AgentNetwork
+        from nexus_a2a.runtime import AgentRuntime
+        from nexus_a2a.transport.webhook import WebhookConfig
+
+        parsed = urlparse(self.agent.url)
+        bind_host = host or parsed.hostname or "127.0.0.1"
+        bind_port = port if port is not None else (parsed.port or 8000)
+        server_url = self.agent.url.rstrip("/")
+
+        resources: list[Any] = []
+
+        store = self.build_task_store()
+        if hasattr(store, "connect"):
+            resources.append(store)
+
+        manager = TaskManager(
+            store=store, timeout_sec=self.reliability.task_timeout_sec
+        )
+
+        security = self.build_security(server_url)
+        if hasattr(security.rate_limiter, "connect"):
+            resources.append(security.rate_limiter)
+
+        push_store = None
+        dlq_store = None
+        if self.storage.backend == "redis":
+            from nexus_a2a.storage.dlq_store import RedisDLQStore
+            from nexus_a2a.storage.push_store import RedisPushStore
+
+            push_store = RedisPushStore(url=self.storage.url)
+            resources.append(push_store)
+            if self.ops.port:
+                dlq_store = RedisDLQStore(url=self.storage.url)
+                resources.append(dlq_store)
+
+        server = A2AServer(
+            agent,
+            host=bind_host,
+            port=bind_port,
+            task_manager=manager,
+            security=security,
+            public_url=server_url,
+            push_config=WebhookConfig(
+                signing_secret=self.push.signing_secret or None,
+                allow_private_urls=self.push.allow_private_urls,
+                max_retries=self.push.max_retries,
+            ),
+            push_store=push_store,
+            allow_insecure=self.security.allow_insecure,
+        )
+
+        ops = None
+        if self.ops.port:
+            network = AgentNetwork(task_manager=manager, dlq_store=dlq_store)
+            ops = AgentServer(
+                network=network,
+                host=self.ops.host or bind_host,
+                port=self.ops.port,
+                admin_token=self.ops.admin_token or None,
+            )
+
+        return AgentRuntime(
+            server=server,
+            ops=ops,
+            resources=resources,
+            watchdog=manager,
+        )
 
     def configure_logging(self) -> None:
         """Apply [observability].log_level to the root nexus_a2a logger."""
@@ -600,11 +978,28 @@ class NexusConfig:
                 "auth_scheme": self.security.auth_scheme,
                 "auth_secret": "***REDACTED***" if self.security.auth_secret else "",
                 "trust_mode": self.security.trust_mode,
+                "rate_limit": self.security.rate_limit,
+                "rate_burst": self.security.rate_burst,
+                "max_payload_bytes": self.security.max_payload_bytes,
+                "allow_insecure": self.security.allow_insecure,
             },
             "storage": {
                 "backend": self.storage.backend,
                 "url": self.storage.url,
                 "ttl_sec": self.storage.ttl_sec,
+                "task_retention_sec": self.storage.task_retention_sec,
+                "max_tasks": self.storage.max_tasks,
+            },
+            "push": {
+                "signing_secret": "***REDACTED***" if self.push.signing_secret else "",
+                "allow_private_urls": self.push.allow_private_urls,
+                "max_retries": self.push.max_retries,
+            },
+            "ops": {
+                "port": self.ops.port,
+                "host": self.ops.host,
+                "url": self.ops.url,
+                "admin_token": "***REDACTED***" if self.ops.admin_token else "",
             },
             "observability": {
                 "tracing": self.observability.tracing,

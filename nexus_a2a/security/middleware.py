@@ -130,6 +130,9 @@ class SecurityMiddleware:
         caller_header:  Header carrying the caller's base URL.
         require_caller: Reject requests with no caller identity, even when
                         auth is not configured.
+        trust_warn_only: Log trust violations instead of refusing them. For
+                        rolling out a trust policy: see what it would block
+                        before it blocks anything.
 
     Raises:
         ValueError: If trust is configured without server_url.
@@ -144,6 +147,7 @@ class SecurityMiddleware:
         server_url: str | None = None,
         caller_header: str = CALLER_HEADER,
         require_caller: bool = False,
+        trust_warn_only: bool = False,
     ) -> None:
         if trust is not None and not server_url:
             raise ValueError(
@@ -158,6 +162,7 @@ class SecurityMiddleware:
         self.server_url = server_url.rstrip("/") if server_url else None
         self.caller_header = caller_header
         self.require_caller = require_caller
+        self.trust_warn_only = trust_warn_only
 
     # ── Introspection ─────────────────────────────────────────────────────────
 
@@ -177,6 +182,7 @@ class SecurityMiddleware:
             "rate_limit": self.rate_limiter is not None,
             "validation": self.validator is not None,
             "require_caller": self.require_caller,
+            "trust_warn_only": self.trust_warn_only,
         }
 
     # ── Stage 1: size ─────────────────────────────────────────────────────────
@@ -228,24 +234,35 @@ class SecurityMiddleware:
         if self.rate_limiter is not None:
             await self.rate_limiter.check(identity.label)
 
+        # A default credential (one shared key for every caller) does not need
+        # to know who is calling — the announced URL is self-asserted anyway,
+        # so it would add nothing to a shared-secret check. Per-caller
+        # credentials and trust rules still require the identity.
+        auth_needs_identity = self.auth is not None and not self.auth.has_default
         needs_identity = (
-            self.require_caller or self.auth is not None or self.trust is not None
+            self.require_caller or auth_needs_identity or self.trust is not None
         )
         if needs_identity and caller_url is None:
             raise MissingCallerError(self.caller_header)
 
         # ── 3. Authenticate ───────────────────────────────────────────────────
         if self.auth is not None:
-            # caller_url is non-None here: needs_identity was True.
-            identity.claims = await self.auth.verify(str(caller_url), headers)
+            # An anonymous caller here is checked against the default
+            # credential; AuthManager still fails closed on a wrong secret.
+            identity.claims = await self.auth.verify(caller_url or "", headers)
 
         # ── 4. Trust ──────────────────────────────────────────────────────────
         if self.trust is not None:
-            self.trust.check(
-                caller_url=str(caller_url),
-                target_url=str(self.server_url),
-                skill_id=skill_id,
-            )
+            try:
+                self.trust.check(
+                    caller_url=str(caller_url),
+                    target_url=str(self.server_url),
+                    skill_id=skill_id,
+                )
+            except TrustError as exc:
+                if not self.trust_warn_only:
+                    raise
+                logger.warning("Trust violation allowed (warn-only mode): %s", exc)
 
         return identity
 

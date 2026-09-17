@@ -20,6 +20,12 @@ from typing import Any
 import click
 import httpx
 
+from nexus_a2a.cli.admin import (
+    admin_headers,
+    forbidden_hint,
+    resolve_admin_token,
+    resolve_ops_url,
+)
 from nexus_a2a.cli.context import NexusContext, pass_ctx
 from nexus_a2a.cli.output import (
     console,
@@ -46,12 +52,24 @@ def _parse_duration(value: str) -> timedelta:
     return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
 
-async def _fetch_dlq_entries(agent_url: str, skill: str | None) -> list[dict[str, Any]]:
-    """GET /dlq from a running agent. Raises on network/HTTP errors."""
+class AdminForbiddenError(Exception):
+    """The ops server refused the admin request."""
+
+
+async def _fetch_dlq_entries(
+    agent_url: str,
+    skill: str | None,
+    token: str | None = None,
+) -> list[dict[str, Any]]:
+    """GET /dlq from a running ops server. Raises on network/HTTP errors."""
     agent_url = agent_url.rstrip("/")
     params = {"skill": skill} if skill else {}
     async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(f"{agent_url}/dlq", params=params)
+        resp = await client.get(
+            f"{agent_url}/dlq", params=params, headers=admin_headers(token)
+        )
+        if resp.status_code == 403:
+            raise AdminForbiddenError(forbidden_hint(agent_url, token))
         resp.raise_for_status()
         data = resp.json()
         result: list[dict[str, Any]] = data.get("entries", [])
@@ -59,7 +77,10 @@ async def _fetch_dlq_entries(agent_url: str, skill: str | None) -> list[dict[str
 
 
 async def _replay_remote(
-    agent_url: str, task_ids: list[str], verbose: bool
+    agent_url: str,
+    task_ids: list[str],
+    verbose: bool,
+    token: str | None = None,
 ) -> tuple[int, int]:
     """POST /dlq/replay once per task_id, with a progress bar. Returns (succeeded, failed)."""
     agent_url = agent_url.rstrip("/")
@@ -72,7 +93,9 @@ async def _replay_remote(
             for task_id in task_ids:
                 try:
                     resp = await client.post(
-                        f"{agent_url}/dlq/replay", json={"task_id": task_id}
+                        f"{agent_url}/dlq/replay",
+                        json={"task_id": task_id},
+                        headers=admin_headers(token),
                     )
                     resp.raise_for_status()
                     body = resp.json()
@@ -129,7 +152,13 @@ def _for_display(entry: dict[str, Any]) -> dict[str, Any]:
     "agent_url",
     default=None,
     metavar="URL",
-    help="Agent URL to replay against (default: agent.url from nexus.toml).",
+    help="Ops server to replay against (default: NEXUS_OPS_URL, [ops].url, [agent].url).",
+)
+@click.option(
+    "--admin-token",
+    default=None,
+    metavar="TOKEN",
+    help="Admin token for /dlq (default: NEXUS_ADMIN_TOKEN, [ops].admin_token).",
 )
 @click.option(
     "--dry-run",
@@ -147,6 +176,7 @@ def replay(
     skill: str | None,
     last: str | None,
     agent_url: str | None,
+    admin_token: str | None,
     dry_run: bool,
     yes: bool,
 ) -> None:
@@ -166,9 +196,9 @@ def replay(
         raise SystemExit(0)
 
     # ── Resolve target agent ──────────────────────────────────────────────────
-    if agent_url is None:
-        cfg = ctx.load_config()
-        agent_url = cfg.get("agent", {}).get("url")
+    cfg = ctx.load_config()
+    agent_url = resolve_ops_url(agent_url, cfg)
+    token = resolve_admin_token(admin_token, cfg)
     if not agent_url:
         print_error(
             "No agent URL. Pass --agent http://host:port or set agent.url in "
@@ -188,7 +218,10 @@ def replay(
 
     # ── Fetch matching entries from the running agent ────────────────────────
     try:
-        all_entries = asyncio.run(_fetch_dlq_entries(agent_url, skill))
+        all_entries = asyncio.run(_fetch_dlq_entries(agent_url, skill, token))
+    except AdminForbiddenError as e:
+        print_error(str(e))
+        raise SystemExit(1) from e
     except Exception as e:
         print_error(f"Failed to read DLQ from {agent_url}: {e}")
         raise SystemExit(1) from e
@@ -217,7 +250,7 @@ def replay(
     task_ids = [e["task_id"] for e in entries]
     try:
         succeeded, failed_count = asyncio.run(
-            _replay_remote(agent_url, task_ids, ctx.verbose)
+            _replay_remote(agent_url, task_ids, ctx.verbose, token)
         )
     except Exception as e:
         print_error(f"Replay error: {e}")

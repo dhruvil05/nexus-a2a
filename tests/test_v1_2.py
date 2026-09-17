@@ -620,6 +620,8 @@ class TestToDict:
             "security",
             "storage",
             "observability",
+            "push",
+            "ops",
         }
         assert set(d.keys()) == expected_keys
 

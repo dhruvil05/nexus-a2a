@@ -348,3 +348,92 @@ class TestRedisDLQStoreContract:
         decoded = RedisDLQStore._decode(json.dumps(entry.to_storage_dict()))
         assert decoded is not None
         assert decoded.task_id == entry.task_id
+
+
+# ── Redis backend against a fake server ───────────────────────────────────────
+
+
+@pytest.fixture
+def fake_redis():
+    pytest.importorskip("fakeredis")
+    import fakeredis.aioredis as fr
+
+    return fr.FakeRedis(decode_responses=True)
+
+
+class TestRedisDLQStoreOperations:
+    async def test_round_trip(self, fake_redis):
+        async with RedisDLQStore(client=fake_redis) as store:
+            entry = DLQEntry(task=failed_task("a"), error="boom", skill_id="s")
+            await store.save(entry)
+            got = await store.get(entry.task_id)
+            assert got is not None
+            assert (got.task_id, got.error, got.skill_id) == (
+                entry.task_id, "boom", "s",
+            )
+
+    async def test_get_missing(self, fake_redis):
+        async with RedisDLQStore(client=fake_redis) as store:
+            assert await store.get("nope") is None
+
+    async def test_list_count_delete_clear(self, fake_redis):
+        async with RedisDLQStore(client=fake_redis) as store:
+            entries = [DLQEntry(task=failed_task(str(i)), error="e") for i in range(3)]
+            for entry in entries:
+                await store.save(entry)
+            assert await store.count() == 3
+            assert {e.task_id for e in await store.list_all()} == {
+                e.task_id for e in entries
+            }
+            await store.delete(entries[0].task_id)
+            assert await store.count() == 2
+            await store.clear()
+            assert await store.count() == 0
+            assert await store.list_all() == []
+
+    async def test_ttl_is_applied(self, fake_redis):
+        async with RedisDLQStore(client=fake_redis, ttl=120) as store:
+            entry = DLQEntry(task=failed_task(), error="e")
+            await store.save(entry)
+            ttl = await fake_redis.ttl(store._key(entry.task_id))
+            assert 0 < ttl <= 120
+
+    async def test_zero_ttl_never_expires(self, fake_redis):
+        async with RedisDLQStore(client=fake_redis, ttl=0) as store:
+            entry = DLQEntry(task=failed_task(), error="e")
+            await store.save(entry)
+            assert await fake_redis.ttl(store._key(entry.task_id)) == -1
+
+    async def test_corrupt_record_skipped_in_listing(self, fake_redis):
+        async with RedisDLQStore(client=fake_redis) as store:
+            good = DLQEntry(task=failed_task(), error="e")
+            await store.save(good)
+            await fake_redis.set(store._key("bad"), "{not json")
+            listed = await store.list_all()
+            assert [e.task_id for e in listed] == [good.task_id]
+
+    async def test_other_keys_are_ignored(self, fake_redis):
+        async with RedisDLQStore(client=fake_redis) as store:
+            await fake_redis.set("unrelated:key", "x")
+            assert await store.count() == 0
+            await store.clear()
+            assert await fake_redis.get("unrelated:key") == "x"
+
+    async def test_injected_client_survives_disconnect(self, fake_redis):
+        store = RedisDLQStore(client=fake_redis)
+        await store.connect()
+        await store.disconnect()
+        assert await fake_redis.ping() is True
+        with pytest.raises(RuntimeError, match="not connected"):
+            store._require_client()
+
+    async def test_queue_survives_a_restart(self, fake_redis):
+        """The durability property itself, through the real DeadLetterQueue."""
+        async with RedisDLQStore(client=fake_redis) as store:
+            first = DeadLetterQueue(runner=completing_runner, store=store)
+            await first.capture(failed_task("durable"), agent_url="http://a:1")
+
+        async with RedisDLQStore(client=fake_redis) as store:
+            revived = DeadLetterQueue(runner=completing_runner, store=store)
+            assert await revived.load() == 1
+            assert revived.count() == 1

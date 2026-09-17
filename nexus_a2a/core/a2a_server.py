@@ -91,16 +91,24 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import ipaddress
 import json
 import logging
 import time
+import warnings
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.responses import (
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.routing import Route
 
 from nexus_a2a.core.input_handler import InputHandler
@@ -170,6 +178,94 @@ class A2AServerError(Exception):
 
 class InvalidAgentError(A2AServerError):
     """Raised when the object passed to A2AServer is not a usable agent."""
+
+
+# ── Stream watchers ───────────────────────────────────────────────────────────
+
+# How long a follower waits for the next event before sending a keep-alive.
+_DEFAULT_HEARTBEAT_SEC = 15.0
+
+# Events buffered per follower. A follower that falls further behind than this
+# is disconnected rather than allowed to grow memory without bound.
+_WATCHER_QUEUE_SIZE = 256
+
+
+@dataclass(eq=False)  # identity hashing: watchers live in a set
+class _Watcher:
+    """One GET /stream follower."""
+
+    queue: asyncio.Queue[tuple[str, bool]] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=_WATCHER_QUEUE_SIZE)
+    )
+    overflowed: bool = False
+
+
+class _TaskWatchers:
+    """
+    Fans a task's SSE lines out to everyone following it via GET /stream.
+
+    In-process only: a follower on one replica does not see a task running on
+    another.
+    """
+
+    def __init__(self) -> None:
+        self._subs: dict[str, set[_Watcher]] = {}
+        # Lines already emitted by a run still in progress. A follower that
+        # joins mid-run would otherwise miss every chunk before it arrived,
+        # since in-flight chunks are not persisted until the task finishes.
+        self._backlog: dict[str, list[str]] = {}
+
+    def subscribe(self, task_id: str) -> tuple[_Watcher, list[str]]:
+        """
+        Start following a task. Returns the watcher and the lines the current
+        run has already emitted. No await happens between the two, so nothing
+        published can fall into the gap.
+        """
+        watcher = _Watcher()
+        self._subs.setdefault(task_id, set()).add(watcher)
+        return watcher, list(self._backlog.get(task_id, ()))
+
+    def end(self, task_id: str) -> None:
+        """Forget a run's backlog. Safe to call more than once."""
+        self._backlog.pop(task_id, None)
+
+    def unsubscribe(self, task_id: str, watcher: _Watcher) -> None:
+        subs = self._subs.get(task_id)
+        if subs is None:
+            return
+        subs.discard(watcher)
+        if not subs:
+            del self._subs[task_id]
+
+    def publish(self, task_id: str, line: str, terminal: bool = False) -> None:
+        """Deliver a line without ever blocking the task that produced it."""
+        if terminal:
+            self.end(task_id)
+        else:
+            backlog = self._backlog.setdefault(task_id, [])
+            if len(backlog) < _WATCHER_QUEUE_SIZE:
+                backlog.append(line)
+
+        for watcher in list(self._subs.get(task_id, ())):
+            try:
+                watcher.queue.put_nowait((line, terminal))
+            except asyncio.QueueFull:
+                # Too slow to keep up: cut it loose instead of buffering forever.
+                watcher.overflowed = True
+                self.unsubscribe(task_id, watcher)
+
+    def count(self) -> int:
+        return sum(len(s) for s in self._subs.values())
+
+
+_CREATED_MARKER = f'"type": "{StreamEventType.TASK_CREATED.value}"'
+
+
+def _is_terminal_line(line: str) -> bool:
+    """True for the SSE lines that end a stream: done and error."""
+    return f'"type": "{StreamEventType.DONE.value}"' in line or (
+        f'"type": "{StreamEventType.ERROR.value}"' in line
+    )
 
 
 # ── Agent invocation ──────────────────────────────────────────────────────────
@@ -301,6 +397,8 @@ class A2AServer:
         input_handler: InputHandler | None = None,
         push_config: WebhookConfig | None = None,
         push_store: AbstractPushStore | None = None,
+        stream_heartbeat: float = _DEFAULT_HEARTBEAT_SEC,
+        allow_insecure: bool = False,
     ) -> None:
         self._agent_instance, self._card = self._resolve_agent(agent)
 
@@ -321,6 +419,9 @@ class A2AServer:
         # mid-flight, and so tests can await them.
         self._push_tasks: set[asyncio.Task[None]] = set()
         self.security = security or SecurityMiddleware()
+        self._watchers = _TaskWatchers()
+        self._stream_heartbeat = stream_heartbeat
+        self.allow_insecure = allow_insecure
         self.public_url = (public_url or str(self._card.url)).rstrip("/")
         self.log_level = log_level
 
@@ -396,6 +497,8 @@ class A2AServer:
         if self._serve_task is not None and not self._serve_task.done():
             raise RuntimeError(f"A2AServer for '{self._card.name}' already running.")
 
+        self._warn_if_insecure()
+
         config = uvicorn.Config(
             self._app,
             host=self.host,
@@ -415,6 +518,27 @@ class A2AServer:
             self.host,
             self.port,
             self.security.summary() if self.security.enabled else "disabled",
+        )
+
+    def _warn_if_insecure(self) -> None:
+        """
+        Warn when an agent with no security is reachable beyond this machine.
+
+        In nexus-a2a 2.0 this becomes an error. Silence it — deliberately — with
+        allow_insecure=True (or [security] allow_insecure = true).
+        """
+        if self.allow_insecure or self.security.enabled:
+            return
+        if _is_loopback(self.host):
+            return
+        warnings.warn(
+            f"A2AServer '{self._card.name}' is binding {self.host}:{self.port} "
+            "with no authentication, trust rules or rate limit, so anyone who "
+            "can reach it can run the agent. nexus-a2a 2.0 will refuse this. "
+            "Pass security=SecurityMiddleware(...), bind 127.0.0.1, or set "
+            "allow_insecure=True to accept the risk explicitly.",
+            FutureWarning,
+            stacklevel=3,
         )
 
     async def stop(self) -> None:
@@ -479,12 +603,16 @@ class A2AServer:
         async def stream_get(request: Request) -> Response:
             return await self._handle_stream_get(request)
 
+        async def metrics(request: Request) -> Response:
+            return await self._handle_metrics(request)
+
         return Starlette(
             routes=[
                 Route(AGENT_CARD_PATH, agent_card),
                 Route("/health", health),
                 Route("/ready", ready),
                 Route(STREAM_PATH, stream_get),
+                Route("/metrics", metrics),
                 Route("/", rpc, methods=["POST"]),
             ],
         )
@@ -495,7 +623,75 @@ class A2AServer:
         """GET /.well-known/agent-card.json — the discovery document."""
         data = self._card.to_well_known_dict()
         data["url"] = self.public_url
+
+        # Advertise the auth this server actually ENFORCES. The decorator's
+        # card defaults to scheme "none", so an agent secured through
+        # SecurityMiddleware (or [security] in nexus.toml) used to tell every
+        # client that discovered it that no credentials were needed.
+        enforced = self._advertised_auth()
+        if enforced is not None:
+            data["authentication"] = enforced
         return JSONResponse(data)
+
+    def _advertised_auth(self) -> dict[str, Any] | None:
+        """Scheme (and header) the security layer requires, never secrets."""
+        auth = self.security.auth
+        if auth is None:
+            return None
+        config = auth.advertised_config()
+        if config is None:
+            return None
+        advertised: dict[str, Any] = {"scheme": config.scheme.value}
+        if config.scheme.value == "api_key":
+            advertised["header_name"] = config.header_name
+        return advertised
+
+    async def _handle_metrics(self, request: Request) -> Response:
+        """
+        GET /metrics — Prometheus text format.
+
+            nexus_a2a_tasks_active          tasks not yet finished
+            nexus_a2a_tasks{state="..."}    tasks currently held, by state
+            nexus_a2a_stream_watchers       live GET /stream followers
+            nexus_a2a_uptime_seconds
+
+        Public, like AgentServer's, so a scraper needs no credentials. It
+        reports counts only — never task content.
+        """
+        by_state: dict[str, int] = {state.value: 0 for state in TaskState}
+        try:
+            for task in await self.tasks.list_all():
+                by_state[_state_value(task.state)] += 1
+        except Exception:
+            logger.exception("A2AServer /metrics could not read the task store")
+
+        active = sum(
+            by_state[state.value]
+            for state in TaskState
+            if not state.is_terminal
+        )
+
+        lines = [
+            "# HELP nexus_a2a_tasks_active Tasks not yet in a terminal state.",
+            "# TYPE nexus_a2a_tasks_active gauge",
+            f"nexus_a2a_tasks_active {active}",
+            "# HELP nexus_a2a_tasks Tasks currently held, by state.",
+            "# TYPE nexus_a2a_tasks gauge",
+        ]
+        lines += [
+            f'nexus_a2a_tasks{{state="{state}"}} {count}'
+            for state, count in by_state.items()
+        ]
+        lines += [
+            "# TYPE nexus_a2a_stream_watchers gauge",
+            f"nexus_a2a_stream_watchers {self._watchers.count()}",
+            "# TYPE nexus_a2a_uptime_seconds gauge",
+            f"nexus_a2a_uptime_seconds {round(self.uptime_seconds or 0.0, 2)}",
+        ]
+        return PlainTextResponse(
+            "\n".join(lines) + "\n",
+            media_type="text/plain; version=0.0.4",
+        )
 
     async def _handle_ready(self, request: Request) -> Response:
         """GET /ready — 200 only when the task store answers."""
@@ -831,9 +1027,42 @@ class A2AServer:
                              self._card.name, task.id)
             failed = await self.tasks.fail(task.id, f"{type(exc).__name__}: {exc}")
             await self._notify(failed, "task_failed")
+            self._publish_outcome(failed)
             return _rpc_result(rpc_id, _task_dict(failed))
 
-        return _rpc_result(rpc_id, _task_dict(await self._finish(task, output)))
+        finished = await self._finish(task, output)
+        self._publish_outcome(finished, output)
+        return _rpc_result(rpc_id, _task_dict(finished))
+
+    def _publish_outcome(self, task: Task, output: Any = None) -> None:
+        """
+        Tell GET /stream followers how a message/send run ended.
+
+        message/send produces no chunks of its own, so followers get the
+        finished artifacts, the prompt if the task paused, then the status.
+        """
+        if self._watchers.count() == 0:
+            return
+        for index, artifact in enumerate(task.artifacts):
+            for part in artifact.parts:
+                self._watchers.publish(
+                    task.id,
+                    SSEFormatter.artifact_chunk(
+                        _chunk_text(part.content), task.id, index=index
+                    ),
+                )
+        if isinstance(output, NeedsInput):
+            self._watchers.publish(
+                task.id,
+                SSEFormatter.event(
+                    StreamEventType.MESSAGE,
+                    {"taskId": task.id, "content": output.as_message().text()},
+                ),
+            )
+        self._watchers.publish(
+            task.id, SSEFormatter.task_status(_state_value(task.state), task.id)
+        )
+        self._watchers.publish(task.id, SSEFormatter.done(), terminal=True)
 
     async def _rpc_stream(self, rpc_id: Any, params: dict[str, Any]) -> Response:
         """
@@ -890,6 +1119,20 @@ class A2AServer:
         )
 
     async def _stream_task(self, task: Task) -> AsyncIterator[str]:
+        """
+        Run the agent and yield SSE lines, copying each one to anyone following
+        this task through GET /stream.
+        """
+        try:
+            async for line in self._run_stream(task):
+                self._watchers.publish(task.id, line, _is_terminal_line(line))
+                yield line
+        finally:
+            # A client that disconnects mid-run never sees the terminal line,
+            # so release the backlog here too.
+            self._watchers.end(task.id)
+
+    async def _run_stream(self, task: Task) -> AsyncIterator[str]:
         """Run the agent and yield SSE lines for each stage of the task."""
         yield SSEFormatter.event(StreamEventType.TASK_CREATED, _task_dict(task))
 
@@ -950,12 +1193,15 @@ class A2AServer:
 
     async def _handle_stream_get(self, request: Request) -> Response:
         """
-        GET /stream?taskId=... — observe a task's current state as SSE.
+        GET /stream?taskId=... — observe a task as SSE.
 
-        This is the endpoint SSEStreamer targets. Because message/send runs the
-        agent inline, a task is already terminal by the time it can be looked
-        up, so this reports the task's state and closes rather than following a
-        run in progress. Use message/stream to watch work as it happens.
+        This is the endpoint SSEStreamer targets.
+
+        A finished task, or one paused waiting for input, is reported and the
+        stream closes. A task that is still RUNNING — being served by another
+        request's message/send or message/stream — is followed live: the
+        follower gets its chunks and status as they happen, with keep-alive
+        comments in between, until the run ends. Following is in-process only.
         """
         try:
             self.security.check_size(b"")
@@ -969,22 +1215,63 @@ class A2AServer:
                 {"error": "Missing 'taskId' query parameter."}, status_code=400
             )
 
+        # Subscribe BEFORE reading the snapshot, so an event published in
+        # between is queued rather than lost.
+        watcher, backlog = self._watchers.subscribe(task_id)
         try:
             task = await self.tasks.get(task_id)
         except TaskNotFoundError:
+            self._watchers.unsubscribe(task_id, watcher)
             return JSONResponse(
                 {"error": f"Task not found: {task_id}"}, status_code=404
             )
 
+        running = task.state in (TaskState.SUBMITTED, TaskState.WORKING)
+
         async def emit() -> AsyncIterator[str]:
-            yield SSEFormatter.event(StreamEventType.TASK_CREATED, _task_dict(task))
-            for index, artifact in enumerate(task.artifacts):
-                for part in artifact.parts:
-                    yield SSEFormatter.artifact_chunk(
-                        _chunk_text(part.content), task.id, index=index
+            try:
+                if running and backlog:
+                    # Joined mid-run: replay what the run has emitted so far,
+                    # which starts with its own task_created.
+                    for line in backlog:
+                        yield line
+                else:
+                    yield SSEFormatter.event(
+                        StreamEventType.TASK_CREATED, _task_dict(task)
                     )
-            yield SSEFormatter.task_status(_state_value(task.state), task.id)
-            yield SSEFormatter.done()
+                    for index, artifact in enumerate(task.artifacts):
+                        for part in artifact.parts:
+                            yield SSEFormatter.artifact_chunk(
+                                _chunk_text(part.content), task.id, index=index
+                            )
+
+                if not running:
+                    yield SSEFormatter.task_status(_state_value(task.state), task.id)
+                    yield SSEFormatter.done()
+                    return
+
+                while True:
+                    if watcher.overflowed and watcher.queue.empty():
+                        yield SSEFormatter.error(
+                            "Follower fell too far behind and was disconnected."
+                        )
+                        return
+                    try:
+                        line, terminal = await asyncio.wait_for(
+                            watcher.queue.get(), timeout=self._stream_heartbeat
+                        )
+                    except TimeoutError:
+                        yield SSEFormatter.heartbeat()
+                        continue
+                    # Joined before the run emitted its first line: the store
+                    # snapshot above already stood in for task_created.
+                    if not backlog and _CREATED_MARKER in line:
+                        continue
+                    yield line
+                    if terminal:
+                        return
+            finally:
+                self._watchers.unsubscribe(task_id, watcher)
 
         return StreamingResponse(
             emit(),
@@ -1035,6 +1322,19 @@ class A2AServer:
             dict / list   — one JSON Artifact
             anything else — str()-ified into a text Artifact
         """
+        # The task watchdog can fail a task while run() is still going. The
+        # timeout has already been recorded and notified, so report that rather
+        # than erroring on an illegal transition out of a terminal state.
+        current = await self.tasks.get(task.id)
+        if current.is_done():
+            logger.warning(
+                "Task %s finished as %s before the agent returned; discarding "
+                "the late result.",
+                task.id,
+                _state_value(current.state),
+            )
+            return current
+
         # NeedsInput is a pause, not a result: the task stays open so the
         # caller can answer against the same id.
         if isinstance(output, NeedsInput):
@@ -1109,6 +1409,16 @@ def _push_dict(config: PushNotificationConfig | None) -> dict[str, Any] | None:
     if config is None:
         return None
     return {"url": config.url, "hasToken": config.token is not None}
+
+
+def _is_loopback(host: str) -> bool:
+    """True if a bind address is only reachable from this machine."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _state_value(state: Any) -> str:

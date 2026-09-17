@@ -8,7 +8,8 @@ All display logic lives here — command modules call these helpers and stay lea
 from __future__ import annotations
 
 import json
-from typing import Any
+import sys
+from typing import Any, TextIO
 
 from rich.console import Console
 from rich.panel import Panel
@@ -27,11 +28,45 @@ from rich.tree import Tree
 console = Console()
 err_console = Console(stderr=True, style="bold red")
 
+# ── Encoding safety ────────────────────────────────────────────────────────────
+
+
+def _can_encode(text: str, stream: TextIO | None) -> bool:
+    """True if `stream` can represent every character of `text`."""
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return False
+    return True
+
+
+def ensure_safe_output() -> None:
+    """
+    Make stdout/stderr replace unencodable characters instead of raising.
+
+    A Windows console on cp1252 (or cp437) cannot encode the status icons, and
+    before 1.9.0 printing one — even inside a warning — crashed the command
+    with UnicodeEncodeError. Called once at CLI start-up.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):
+            pass  # already detached or not reconfigurable — leave it
+
+
 # ── Icons ──────────────────────────────────────────────────────────────────────
-ICON_OK = "[bold green]✓[/bold green]"
-ICON_FAIL = "[bold red]✗[/bold red]"
-ICON_WARN = "[bold yellow]⚠[/bold yellow]"
-ICON_SLOW = "[bold yellow]⚡[/bold yellow]"  # latency warning
+# ASCII fallbacks for consoles that cannot show the Unicode glyphs.
+_UNICODE_ICONS = _can_encode("✓✗⚠⚡", sys.stdout)
+
+ICON_OK = "[bold green]" + ("✓" if _UNICODE_ICONS else "OK") + "[/bold green]"
+ICON_FAIL = "[bold red]" + ("✗" if _UNICODE_ICONS else "X") + "[/bold red]"
+ICON_WARN = "[bold yellow]" + ("⚠" if _UNICODE_ICONS else "!") + "[/bold yellow]"
+ICON_SLOW = "[bold yellow]" + ("⚡" if _UNICODE_ICONS else "~") + "[/bold yellow]"
 
 
 def status_icon(ok: bool) -> str:
@@ -96,6 +131,24 @@ def render_ping(result: dict[str, Any], fmt: str = "table") -> None:
 # ── Inspect output ─────────────────────────────────────────────────────────────
 
 
+def auth_scheme_of(auth: dict[str, Any]) -> str:
+    """
+    Read the auth scheme from a card's authentication block.
+
+    nexus-a2a cards use a single `scheme` string. Before 1.9.0 this read a
+    `schemes` list instead, so `nexus inspect` reported "none" for every
+    nexus-a2a agent whatever it required. The list form is still accepted for
+    cards from other A2A implementations.
+    """
+    scheme = auth.get("scheme")
+    if isinstance(scheme, str) and scheme:
+        return scheme
+    schemes = auth.get("schemes")
+    if isinstance(schemes, list) and schemes:
+        return ", ".join(str(s) for s in schemes)
+    return "none"
+
+
 def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
     """Pretty-print a full AgentCard."""
     if fmt == "json":
@@ -120,13 +173,11 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
     console.print(Panel(cap_table, title="Capabilities", border_style="dim"))
 
     # Auth
-    auth = card.get("authentication", {})
+    auth = card.get("authentication") or {}
     auth_table = Table(show_header=False, box=None, padding=(0, 2))
     auth_table.add_column("Key", style="dim")
     auth_table.add_column("Value")
-    auth_table.add_row(
-        "Scheme", auth.get("schemes", ["none"])[0] if auth.get("schemes") else "none"
-    )
+    auth_table.add_row("Scheme", auth_scheme_of(auth))
     auth_table.add_row("Token URL", auth.get("token_url") or "—")
     auth_table.add_row("Header", auth.get("header_name") or "—")
     console.print(Panel(auth_table, title="Authentication", border_style="dim"))
@@ -161,6 +212,11 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
 # ── Status / network table ─────────────────────────────────────────────────────
 
 
+def _count(value: Any) -> str:
+    """Render a count, or a dash when the server did not report one."""
+    return "—" if value is None else str(value)
+
+
 def render_status(
     agents: list[dict[str, Any]], summary: dict[str, Any], fmt: str = "table"
 ) -> None:
@@ -182,8 +238,8 @@ def render_status(
             agent.get("name", "—"),
             agent.get("url", "—"),
             status_icon(agent.get("healthy", False)),
-            str(agent.get("queue_depth", 0)),
-            str(agent.get("dlq_pending", 0)),
+            _count(agent.get("queue_depth")),
+            _count(agent.get("dlq_pending")),
             agent.get("last_seen", "—"),
         )
 
@@ -317,4 +373,51 @@ def make_progress(description: str = "Working") -> Progress:
         BarColumn(),
         TimeElapsedColumn(),
         console=console,
+    )
+
+
+# ── Verify report ──────────────────────────────────────────────────────────────
+
+_VERIFY_STYLE = {
+    "pass": ("green", ICON_OK),
+    "warn": ("yellow", ICON_WARN),
+    "fail": ("red", ICON_FAIL),
+    "skip": ("dim", "-"),
+}
+
+
+def render_verify(report: dict[str, Any], fmt: str = "table") -> None:
+    """Render the result of nexus verify."""
+    if fmt == "json":
+        print_json(report)
+        return
+
+    table = Table(title=f"Conformance: {report['url']}", header_style="bold cyan")
+    table.add_column("", justify="center", no_wrap=True)
+    table.add_column("Group", style="dim", no_wrap=True)
+    table.add_column("Check", no_wrap=True)
+    table.add_column("Detail")
+
+    for check in report["checks"]:
+        colour, icon = _VERIFY_STYLE.get(check["status"], ("white", "?"))
+        table.add_row(
+            icon,
+            check["group"],
+            f"[{colour}]{check['name']}[/{colour}]",
+            check.get("detail", ""),
+        )
+    console.print(table)
+
+    summary = report["summary"]
+    verdict = (
+        "[bold green]PASSED[/bold green]"
+        if report["passed"]
+        else "[bold red]FAILED[/bold red]"
+    )
+    console.print(
+        f"{verdict}  "
+        f"[green]{summary['pass']} pass[/green], "
+        f"[yellow]{summary['warn']} warn[/yellow], "
+        f"[red]{summary['fail']} fail[/red], "
+        f"[dim]{summary['skip']} skipped[/dim]"
     )

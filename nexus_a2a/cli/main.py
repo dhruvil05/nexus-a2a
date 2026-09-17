@@ -21,6 +21,7 @@ from pathlib import Path
 import click
 
 from nexus_a2a.cli.context import NexusContext, pass_ctx
+from nexus_a2a.cli.output import ensure_safe_output
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 
@@ -69,6 +70,7 @@ def cli(ctx: click.Context, config: str, verbose: bool, fmt: str) -> None:
       nexus trace <task_id>
       nexus replay --failed
     """
+    ensure_safe_output()
     _configure_logging(verbose)
     ctx.obj = NexusContext(
         config_path=Path(config),
@@ -81,12 +83,14 @@ def cli(ctx: click.Context, config: str, verbose: bool, fmt: str) -> None:
 
 
 def _register_commands() -> None:
+    from nexus_a2a.cli.commands.dev import dev
     from nexus_a2a.cli.commands.inspect import inspect
     from nexus_a2a.cli.commands.ping import ping
     from nexus_a2a.cli.commands.replay import replay
     from nexus_a2a.cli.commands.run import run
     from nexus_a2a.cli.commands.status import status
     from nexus_a2a.cli.commands.trace import trace
+    from nexus_a2a.cli.commands.verify import verify
 
     cli.add_command(ping)
     cli.add_command(inspect)
@@ -94,6 +98,8 @@ def _register_commands() -> None:
     cli.add_command(trace)
     cli.add_command(replay)
     cli.add_command(run)
+    cli.add_command(verify)
+    cli.add_command(dev)
 
 
 _register_commands()

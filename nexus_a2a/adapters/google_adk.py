@@ -132,7 +132,12 @@ class GoogleADKAdapter(BaseAdapter):
                 "google-adk is not installed. Run: pip install nexus-a2a google-adk"
             ) from exc
 
-        session_svc = self._session_service or InMemorySessionService()
+        # google-adk ships InMemorySessionService without annotations, so
+        # the call is untyped; treat the service as Any at this boundary.
+        session_svc: Any = (
+            self._session_service
+            or InMemorySessionService()  # type: ignore[no-untyped-call]
+        )
         session_id = str(uuid.uuid4())
 
         await session_svc.create_session(
@@ -155,6 +160,9 @@ class GoogleADKAdapter(BaseAdapter):
         input_text: str,
     ) -> str:
         """Stream ADK events and return the final response text."""
+        # Either a google.genai Content or a plain dict, depending on which
+        # packages are installed; the runner accepts both.
+        new_message: Any
         try:
             from google.genai import types as genai_types
 

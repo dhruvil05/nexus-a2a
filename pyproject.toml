@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 # ── Package identity ──────────────────────────────────────────────────────────
 [project]
 name = "nexus-a2a"
-version = "1.8.0"
+version = "1.9.0"
 description = "A developer-friendly Python package for building AI agent-to-agent (A2A) communication with ease."
 readme = "README.md"
 license = { text = "MIT" }
@@ -15,7 +15,7 @@ authors = [
 ]
 keywords = ["a2a", "agent", "multi-agent", "ai", "llm", "protocol"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3.11",
@@ -68,13 +68,16 @@ dev = [
   "fakeredis[lua]>=2.30",
   "PyJWT[crypto]>=2.10",
   "cryptography>=44.0",
+  # starlette.testclient is moving to httpx2 and warns when it falls back
+  # to httpx; test-time only.
+  "httpx2>=2.13",
 ]
 
 # ── Project links ─────────────────────────────────────────────────────────────
 [project.urls]
-Homepage      = "https://github.com/dhruvil05/nexus-a2a"
 Documentation = "https://github.com/dhruvil05/nexus-a2a#readme"
 Issues        = "https://github.com/dhruvil05/nexus-a2a/issues"
+Source        = "https://github.com/dhruvil05/nexus-a2a"
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
 [project.scripts]
