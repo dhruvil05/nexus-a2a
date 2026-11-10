@@ -273,6 +273,16 @@ class Task(BaseModel):
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
+    # Access control
+    owner: str | None = Field(
+        default=None,
+        description=(
+            "Verified identity of the caller that created the task. When set, "
+            "only that caller may read, cancel, continue or re-target it. "
+            "Server-side only: never sent on the wire."
+        ),
+    )
+
     model_config = {"use_enum_values": False}  # keep enum objects, not raw strings
 
     # ── Factory ───────────────────────────────────────────────────────────────
@@ -283,6 +293,7 @@ class Task(BaseModel):
         initial_message: Message,
         skill_id: str | None = None,
         context_id: str | None = None,
+        owner: str | None = None,
     ) -> Task:
         """
         Create a new Task in SUBMITTED state with an initial user message.
@@ -291,12 +302,14 @@ class Task(BaseModel):
             initial_message: The first Message from the client.
             skill_id:        Optional skill this task targets.
             context_id:      Optional context ID to group related tasks.
+            owner:           Verified caller identity, for access control.
         """
         return cls(
             skill_id=skill_id,
             context_id=context_id or _new_id(),
             state=TaskState.SUBMITTED,
             history=[initial_message],
+            owner=owner,
         )
 
     # ── State transitions ─────────────────────────────────────────────────────

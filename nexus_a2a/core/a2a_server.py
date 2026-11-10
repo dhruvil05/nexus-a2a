@@ -95,7 +95,6 @@ import ipaddress
 import json
 import logging
 import time
-import warnings
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -129,14 +128,19 @@ from nexus_a2a.models.task import (
     Task,
     TaskState,
 )
-from nexus_a2a.security.middleware import SecurityMiddleware, http_status_for
+from nexus_a2a.security.middleware import (
+    CallerIdentity,
+    SecurityMiddleware,
+    http_status_for,
+)
+from nexus_a2a.security.validator import PayloadTooLargeError
 from nexus_a2a.storage.push_store import AbstractPushStore, InMemoryPushStore
 from nexus_a2a.transport.sse import SSEFormatter, StreamEventType
 from nexus_a2a.transport.webhook import (
     WebhookConfig,
     WebhookDispatcher,
     WebhookUrlError,
-    validate_webhook_url,
+    resolve_webhook_url,
 )
 
 if TYPE_CHECKING:
@@ -145,6 +149,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AGENT_CARD_PATH = "/.well-known/agent-card.json"
+
+# Hard ceiling on a request body, enforced while reading it — even with no
+# PayloadValidator configured. A PayloadValidator's max_bytes lowers it.
+DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
+
+# Push deliveries queued behind the dispatcher's in-flight limit.
+_MAX_PENDING_DELIVERIES = 10_000
+
+# How long /metrics may reuse its task counts.
+_METRICS_CACHE_SEC = 5.0
 
 # JSON-RPC method names — must match transport/http_client.py.
 METHOD_SEND = "message/send"
@@ -178,6 +192,14 @@ class A2AServerError(Exception):
 
 class InvalidAgentError(A2AServerError):
     """Raised when the object passed to A2AServer is not a usable agent."""
+
+
+class InsecureServerError(A2AServerError):
+    """
+    Raised by start() when an agent with no security would be reachable from
+    other machines. Pass security=..., bind 127.0.0.1, or set
+    allow_insecure=True (nexus.toml: [security] allow_insecure = true).
+    """
 
 
 # ── Stream watchers ───────────────────────────────────────────────────────────
@@ -379,6 +401,10 @@ class A2AServer:
         public_url:   URL advertised in the served agent card. Defaults to the
                       card's own url.
         log_level:    Uvicorn log level. Defaults to 'warning' (quiet).
+        max_body_bytes: Largest request body accepted, enforced while the body
+                      is read so an oversized one is never buffered whole.
+                      Default 10 MiB; a PayloadValidator's max_bytes, if
+                      smaller, takes precedence.
 
     Raises:
         InvalidAgentError: agent is not @agent-decorated or has no async run().
@@ -399,8 +425,12 @@ class A2AServer:
         push_store: AbstractPushStore | None = None,
         stream_heartbeat: float = _DEFAULT_HEARTBEAT_SEC,
         allow_insecure: bool = False,
+        max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
     ) -> None:
+        if max_body_bytes <= 0:
+            raise ValueError(f"max_body_bytes must be > 0, got {max_body_bytes}")
         self._agent_instance, self._card = self._resolve_agent(agent)
+        self.max_body_bytes = max_body_bytes
 
         card_host, card_port = _split_url(str(self._card.url))
         self.host = host or card_host or "0.0.0.0"
@@ -426,6 +456,7 @@ class A2AServer:
         self.log_level = log_level
 
         self._started_at: float | None = None
+        self._metrics_cache: tuple[float, dict[str, int]] | None = None
         self._server: uvicorn.Server | None = None
         self._serve_task: asyncio.Task[None] | None = None
 
@@ -497,7 +528,7 @@ class A2AServer:
         if self._serve_task is not None and not self._serve_task.done():
             raise RuntimeError(f"A2AServer for '{self._card.name}' already running.")
 
-        self._warn_if_insecure()
+        self._refuse_if_insecure()
 
         config = uvicorn.Config(
             self._app,
@@ -520,26 +551,33 @@ class A2AServer:
             self.security.summary() if self.security.enabled else "disabled",
         )
 
-    def _warn_if_insecure(self) -> None:
+    def _refuse_if_insecure(self) -> None:
         """
-        Warn when an agent with no security is reachable beyond this machine.
+        Refuse to serve an agent with no security beyond this machine.
 
-        In nexus-a2a 2.0 this becomes an error. Silence it — deliberately — with
+        Through 1.9 this was a FutureWarning. Accept the risk deliberately —
+        e.g. behind a gateway that authenticates for you — with
         allow_insecure=True (or [security] allow_insecure = true).
+
+        Raises:
+            InsecureServerError: Non-loopback bind with no security stage.
         """
         if self.allow_insecure or self.security.enabled:
             return
         if _is_loopback(self.host):
             return
-        warnings.warn(
-            f"A2AServer '{self._card.name}' is binding {self.host}:{self.port} "
-            "with no authentication, trust rules or rate limit, so anyone who "
-            "can reach it can run the agent. nexus-a2a 2.0 will refuse this. "
-            "Pass security=SecurityMiddleware(...), bind 127.0.0.1, or set "
-            "allow_insecure=True to accept the risk explicitly.",
-            FutureWarning,
-            stacklevel=3,
+        raise InsecureServerError(
+            f"A2AServer '{self._card.name}' would bind {self.host}:{self.port} "
+            "with no authentication, trust rules, rate limit or payload "
+            "validation, so anyone who can reach it could run the agent. Pass "
+            "security=SecurityMiddleware(...), bind 127.0.0.1, or set "
+            "allow_insecure=True ([security] allow_insecure = true in "
+            "nexus.toml) to accept the risk explicitly — e.g. when a gateway "
+            "in front of this container does the authentication."
         )
+
+    # Kept for code that called the 1.9 name.
+    _warn_if_insecure = _refuse_if_insecure
 
     async def stop(self) -> None:
         """Shut the server down cleanly. Safe to call when not running."""
@@ -658,12 +696,7 @@ class A2AServer:
         Public, like AgentServer's, so a scraper needs no credentials. It
         reports counts only — never task content.
         """
-        by_state: dict[str, int] = {state.value: 0 for state in TaskState}
-        try:
-            for task in await self.tasks.list_all():
-                by_state[_state_value(task.state)] += 1
-        except Exception:
-            logger.exception("A2AServer /metrics could not read the task store")
+        by_state = await self._task_counts()
 
         active = sum(
             by_state[state.value]
@@ -693,23 +726,49 @@ class A2AServer:
             media_type="text/plain; version=0.0.4",
         )
 
+    async def _task_counts(self) -> dict[str, int]:
+        """
+        Tasks held, by state — cached briefly.
+
+        /metrics is public, and counting means reading every stored task. A
+        short cache keeps a scraper (or anyone hammering the endpoint) from
+        turning each request into a full scan of the store.
+        """
+        now = time.monotonic()
+        cached = self._metrics_cache
+        if cached is not None and now - cached[0] < _METRICS_CACHE_SEC:
+            return dict(cached[1])
+        by_state: dict[str, int] = {state.value: 0 for state in TaskState}
+        try:
+            for task in await self.tasks.list_all():
+                by_state[_state_value(task.state)] += 1
+        except Exception:
+            logger.exception("A2AServer /metrics could not read the task store")
+            return by_state
+        self._metrics_cache = (now, by_state)
+        return dict(by_state)
+
     async def _handle_ready(self, request: Request) -> Response:
         """GET /ready — 200 only when the task store answers."""
         try:
-            await self.tasks.list_all()
-        except Exception as exc:
+            # A keyed probe, not list_all(): this endpoint is public and was
+            # loading every stored task on each request.
+            await self.tasks.ping()
+        except Exception:
+            # The exception can carry hostnames or DSN fragments; keep it in
+            # the server log, not in an unauthenticated response.
+            logger.warning("A2AServer /ready: task store unreachable", exc_info=True)
             return JSONResponse(
-                {"ready": False, "reason": f"task store unreachable: {exc}"},
+                {"ready": False, "reason": "task store unreachable"},
                 status_code=503,
             )
         return JSONResponse({"ready": True, "agent": self._card.name})
 
     async def _handle_rpc(self, request: Request) -> Response:
         """POST / — the JSON-RPC 2.0 endpoint."""
-        raw = await request.body()
-
-        # ── Security stage 1: size, before any parsing ────────────────────────
+        # ── Security stage 1: size, while reading — before any parsing ────────
         try:
+            raw = await self._read_body(request)
             self.security.check_size(raw)
         except Exception as exc:
             return self._security_refusal(exc)
@@ -735,33 +794,83 @@ class A2AServer:
         # ── Security stages 2-4: who is calling, may they ────────────────────
         skill_id = params.get("skillId")
         try:
-            await self.security.authorize(
-                dict(request.headers),
-                skill_id=skill_id if isinstance(skill_id, str) else None,
+            identity = await self._authorize(
+                request, skill_id=skill_id if isinstance(skill_id, str) else None
             )
         except Exception as exc:
             return self._security_refusal(exc)
 
         # ── Dispatch ──────────────────────────────────────────────────────────
+        owner = _owner_of(identity)
         try:
             if method == METHOD_SEND:
-                return await self._rpc_send(rpc_id, params)
+                return await self._rpc_send(rpc_id, params, owner=owner)
             if method == METHOD_STREAM:
-                return await self._rpc_stream(rpc_id, params)
+                return await self._rpc_stream(rpc_id, params, owner=owner)
             if method == METHOD_GET:
-                return await self._rpc_get(rpc_id, params)
+                return await self._rpc_get(rpc_id, params, owner=owner)
             if method == METHOD_CANCEL:
-                return await self._rpc_cancel(rpc_id, params)
+                return await self._rpc_cancel(rpc_id, params, owner=owner)
             if method == METHOD_PUSH_SET:
-                return await self._rpc_push_set(rpc_id, params)
+                return await self._rpc_push_set(rpc_id, params, owner=owner)
             if method == METHOD_PUSH_GET:
-                return await self._rpc_push_get(rpc_id, params)
+                return await self._rpc_push_get(rpc_id, params, owner=owner)
             return _rpc_error(
                 rpc_id, ERR_METHOD_NOT_FOUND, f"Method not found: {method}"
             )
-        except Exception as exc:  # noqa: BLE001 - last-resort RPC boundary
+        except Exception:  # noqa: BLE001 - last-resort RPC boundary
+            # Details go to the log only: exception text can expose internals
+            # (paths, hostnames, store errors) to an untrusted caller.
             logger.exception("A2AServer: unhandled error in %s", method)
-            return _rpc_error(rpc_id, ERR_INTERNAL, f"Internal error: {exc}")
+            return _rpc_error(rpc_id, ERR_INTERNAL, "Internal error")
+
+    async def _authorize(
+        self, request: Request, skill_id: str | None = None
+    ) -> Any:
+        """
+        Run the security chain, passing the client address when supported.
+
+        A SecurityMiddleware subclass written against the older
+        authorize(headers, skill_id=None) signature keeps working; it just
+        does not get address-based rate limiting.
+        """
+        kwargs: dict[str, Any] = {"skill_id": skill_id}
+        if _accepts_kwarg(self.security.authorize, "client_host"):
+            kwargs["client_host"] = request.client.host if request.client else None
+        # ASGI TLS extension: servers that terminate TLS themselves (and
+        # implement it) hand over the verified client certificate chain.
+        tls = (request.scope.get("extensions") or {}).get("tls") or {}
+        chain = tls.get("client_cert_chain")
+        if chain and _accepts_kwarg(self.security.authorize, "peer_cert_chain"):
+            kwargs["peer_cert_chain"] = list(chain)
+        return await self.security.authorize(dict(request.headers), **kwargs)
+
+    def _body_limit(self) -> int:
+        limit = self.max_body_bytes
+        if self.security.validator is not None:
+            limit = min(limit, self.security.validator.max_bytes)
+        return limit
+
+    async def _read_body(self, request: Request) -> bytes:
+        """
+        Read the request body, refusing it as soon as it exceeds the limit.
+
+        request.body() buffers everything first, so a multi-gigabyte POST was
+        held in memory before any size check ran.
+
+        Raises:
+            PayloadTooLargeError: Declared or actual size exceeds the limit.
+        """
+        limit = self._body_limit()
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            raise PayloadTooLargeError(int(declared), limit)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > limit:
+                raise PayloadTooLargeError(len(body), limit)
+        return bytes(body)
 
     # ── Push notifications ────────────────────────────────────────────────────
 
@@ -791,9 +900,14 @@ class A2AServer:
         except Exception as exc:
             return ERR_INVALID_PARAMS, f"Invalid pushNotification config: {exc}"
 
+        # Async resolution: the sync check blocked the event loop for as long
+        # as the caller's (attacker-chosen) nameserver took to answer. This is
+        # only a registration-time check — delivery re-resolves and pins.
         try:
-            validate_webhook_url(
-                config.url, allow_private=self._push_config.allow_private_urls
+            await resolve_webhook_url(
+                config.url,
+                allow_private=self._push_config.allow_private_urls,
+                timeout=min(self._push_config.timeout, 5.0),
             )
         except WebhookUrlError as exc:
             logger.warning("Refused webhook registration: %s", exc)
@@ -821,18 +935,37 @@ class A2AServer:
         if config is None:
             return
 
-        async def deliver() -> None:
-            payload_task = task
-            try:
-                await self.push.dispatch_silent(
-                    config.url, payload_task, event=event
-                )
-            except Exception:  # noqa: BLE001 - detached, must never escape
-                logger.exception("Push notification failed for task %s", task.id)
+        if len(self._push_tasks) >= _MAX_PENDING_DELIVERIES:
+            # The dispatcher already limits deliveries in flight; this bounds
+            # the queue behind it, so a flood of tasks with slow webhooks
+            # cannot pile up unbounded coroutines.
+            logger.warning(
+                "Push notification for task %s dropped: %d deliveries pending.",
+                task.id,
+                len(self._push_tasks),
+            )
+        else:
 
-        job = asyncio.create_task(deliver())
-        self._push_tasks.add(job)
-        job.add_done_callback(self._push_tasks.discard)
+            async def deliver() -> None:
+                payload_task = task
+                try:
+                    # Only pass token= when there is one, so a replacement
+                    # dispatcher written against the older signature keeps
+                    # working for webhooks registered without a token.
+                    if config.token is None:
+                        await self.push.dispatch_silent(
+                            config.url, payload_task, event=event
+                        )
+                    else:
+                        await self.push.dispatch_silent(
+                            config.url, payload_task, event=event, token=config.token
+                        )
+                except Exception:  # noqa: BLE001 - detached, must never escape
+                    logger.exception("Push notification failed for task %s", task.id)
+
+            job = asyncio.create_task(deliver())
+            self._push_tasks.add(job)
+            job.add_done_callback(self._push_tasks.discard)
 
         # A terminal task will get no further updates, so release the target
         # rather than letting the store grow one entry per task forever.
@@ -849,14 +982,15 @@ class A2AServer:
         pending = list(self._push_tasks)
         await asyncio.wait(pending, timeout=timeout)
 
-    async def _rpc_push_set(self, rpc_id: Any, params: dict[str, Any]) -> Response:
+    async def _rpc_push_set(
+        self, rpc_id: Any, params: dict[str, Any], owner: str | None = None
+    ) -> Response:
         """tasks/pushNotificationConfig/set — register or replace a target."""
         task_id = params.get("taskId") or params.get("id")
         if not isinstance(task_id, str):
             return _rpc_error(rpc_id, ERR_INVALID_PARAMS, "Missing 'taskId' param.")
-        try:
-            await self.tasks.get(task_id)
-        except TaskNotFoundError:
+        task = await self._get_owned(task_id, owner)
+        if task is None:
             return _rpc_error(rpc_id, ERR_TASK_NOT_FOUND, f"Task not found: {task_id}")
 
         raw = params.get("pushNotificationConfig") or params.get("pushNotification")
@@ -879,11 +1013,19 @@ class A2AServer:
             },
         )
 
-    async def _rpc_push_get(self, rpc_id: Any, params: dict[str, Any]) -> Response:
+    async def _rpc_push_get(
+        self, rpc_id: Any, params: dict[str, Any], owner: str | None = None
+    ) -> Response:
         """tasks/pushNotificationConfig/get — read back a registered target."""
         task_id = params.get("taskId") or params.get("id")
         if not isinstance(task_id, str):
             return _rpc_error(rpc_id, ERR_INVALID_PARAMS, "Missing 'taskId' param.")
+        try:
+            existing = await self.tasks.get(task_id)
+        except TaskNotFoundError:
+            existing = None
+        if existing is not None and not _may_access(existing, owner):
+            return _rpc_error(rpc_id, ERR_TASK_NOT_FOUND, f"Task not found: {task_id}")
 
         config = await self._push_targets.get(task_id)
         if config is None:
@@ -899,6 +1041,7 @@ class A2AServer:
         self,
         message: Message,
         params: dict[str, Any],
+        owner: str | None = None,
     ) -> tuple[Task | None, Response | None, bool]:
         """
         Resolve a send/stream request to the task it should run.
@@ -918,11 +1061,16 @@ class A2AServer:
         if raw_task_id is None:
             skill_id = params.get("skillId")
             context_id = params.get("contextId")
-            task = await self.tasks.create(
-                initial_message=message,
-                skill_id=skill_id if isinstance(skill_id, str) else None,
-                context_id=context_id if isinstance(context_id, str) else None,
-            )
+            create_kwargs: dict[str, Any] = {
+                "initial_message": message,
+                "skill_id": skill_id if isinstance(skill_id, str) else None,
+                "context_id": context_id if isinstance(context_id, str) else None,
+            }
+            # Only pass owner= when there is one, so a TaskManager subclass
+            # that overrides create() with the older signature keeps working.
+            if owner is not None:
+                create_kwargs["owner"] = owner
+            task = await self.tasks.create(**create_kwargs)
 
             raw_push = params.get("pushNotification") or params.get(
                 "pushNotificationConfig"
@@ -951,12 +1099,12 @@ class A2AServer:
                 "not accept continuations. Omit 'taskId' to start a new task.",
             ), False
 
-        try:
-            task = await self.tasks.get(raw_task_id)
-        except TaskNotFoundError:
+        found = await self._get_owned(raw_task_id, owner)
+        if found is None:
             return None, _rpc_error(
                 rpc_id, ERR_TASK_NOT_FOUND, f"Task not found: {raw_task_id}"
             ), False
+        task = found
 
         # An agent suspended inside InputHandler.wait_for_input() is resumed by
         # firing its event; the request that is still holding that coroutine
@@ -980,7 +1128,9 @@ class A2AServer:
 
     # ── RPC methods ───────────────────────────────────────────────────────────
 
-    async def _rpc_send(self, rpc_id: Any, params: dict[str, Any]) -> Response:
+    async def _rpc_send(
+        self, rpc_id: Any, params: dict[str, Any], owner: str | None = None
+    ) -> Response:
         """
         message/send — create a task, run the agent, return the finished Task.
 
@@ -1001,7 +1151,7 @@ class A2AServer:
             return self._security_refusal(exc)
 
         task, error, resumed = await self._begin_task(
-            message, {**params, "__rpc_id": rpc_id}
+            message, {**params, "__rpc_id": rpc_id}, owner=owner
         )
         if error is not None:
             return error
@@ -1064,7 +1214,9 @@ class A2AServer:
         )
         self._watchers.publish(task.id, SSEFormatter.done(), terminal=True)
 
-    async def _rpc_stream(self, rpc_id: Any, params: dict[str, Any]) -> Response:
+    async def _rpc_stream(
+        self, rpc_id: Any, params: dict[str, Any], owner: str | None = None
+    ) -> Response:
         """
         message/stream — send a message and stream the result back as SSE.
 
@@ -1098,7 +1250,7 @@ class A2AServer:
             return self._security_refusal(exc)
 
         task, error, resumed = await self._begin_task(
-            message, {**params, "__rpc_id": rpc_id}
+            message, {**params, "__rpc_id": rpc_id}, owner=owner
         )
         if error is not None:
             return error
@@ -1205,9 +1357,10 @@ class A2AServer:
         """
         try:
             self.security.check_size(b"")
-            await self.security.authorize(dict(request.headers))
+            identity = await self._authorize(request)
         except Exception as exc:
             return self._security_refusal(exc)
+        owner = _owner_of(identity)
 
         task_id = request.query_params.get("taskId") or request.query_params.get("id")
         if not task_id:
@@ -1218,13 +1371,13 @@ class A2AServer:
         # Subscribe BEFORE reading the snapshot, so an event published in
         # between is queued rather than lost.
         watcher, backlog = self._watchers.subscribe(task_id)
-        try:
-            task = await self.tasks.get(task_id)
-        except TaskNotFoundError:
+        found = await self._get_owned(task_id, owner)
+        if found is None:
             self._watchers.unsubscribe(task_id, watcher)
             return JSONResponse(
                 {"error": f"Task not found: {task_id}"}, status_code=404
             )
+        task = found
 
         running = task.state in (TaskState.SUBMITTED, TaskState.WORKING)
 
@@ -1279,22 +1432,48 @@ class A2AServer:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def _rpc_get(self, rpc_id: Any, params: dict[str, Any]) -> Response:
+    async def _get_owned(self, task_id: str, owner: str | None) -> Task | None:
+        """
+        The task, or None if it does not exist OR the caller may not see it.
+
+        Both cases look identical to the caller, so probing ids cannot tell a
+        task that exists but belongs to someone else from one that does not.
+        """
+        try:
+            task = await self.tasks.get(task_id)
+        except TaskNotFoundError:
+            return None
+        if not _may_access(task, owner):
+            logger.warning(
+                "A2AServer '%s': refused access to task %s by a caller that "
+                "does not own it",
+                self._card.name,
+                task_id,
+            )
+            return None
+        return task
+
+    async def _rpc_get(
+        self, rpc_id: Any, params: dict[str, Any], owner: str | None = None
+    ) -> Response:
         """tasks/get — look up a task by id."""
         task_id = params.get("taskId") or params.get("id")
         if not isinstance(task_id, str):
             return _rpc_error(rpc_id, ERR_INVALID_PARAMS, "Missing 'taskId' param.")
-        try:
-            task = await self.tasks.get(task_id)
-        except TaskNotFoundError:
+        task = await self._get_owned(task_id, owner)
+        if task is None:
             return _rpc_error(rpc_id, ERR_TASK_NOT_FOUND, f"Task not found: {task_id}")
         return _rpc_result(rpc_id, _task_dict(task))
 
-    async def _rpc_cancel(self, rpc_id: Any, params: dict[str, Any]) -> Response:
+    async def _rpc_cancel(
+        self, rpc_id: Any, params: dict[str, Any], owner: str | None = None
+    ) -> Response:
         """tasks/cancel — move a task to CANCELLED."""
         task_id = params.get("taskId") or params.get("id")
         if not isinstance(task_id, str):
             return _rpc_error(rpc_id, ERR_INVALID_PARAMS, "Missing 'taskId' param.")
+        if await self._get_owned(task_id, owner) is None:
+            return _rpc_error(rpc_id, ERR_TASK_NOT_FOUND, f"Task not found: {task_id}")
         try:
             task = await self.tasks.cancel(task_id)
         except TaskNotFoundError:
@@ -1394,8 +1573,41 @@ class A2AServer:
 
 
 def _task_dict(task: Task) -> dict[str, Any]:
-    """Serialise a Task for the wire, JSON-safe."""
-    return task.model_dump(mode="json")
+    """Serialise a Task for the wire, JSON-safe. 'owner' stays server-side."""
+    return task.model_dump(mode="json", exclude={"owner"})
+
+
+def _accepts_kwarg(func: Any, name: str) -> bool:
+    """True if func takes keyword argument name (or **kwargs)."""
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+def _owner_of(identity: Any) -> str | None:
+    """
+    The identity a task created by this caller is bound to.
+
+    Only a VERIFIED caller can own a task. With no auth, or one shared key,
+    callers are indistinguishable, so tasks stay open to anyone who holds the
+    id — exactly as before; binding them to a self-asserted header would add
+    nothing but the illusion of isolation.
+    """
+    # A custom authorize() may return something else (or None): unverified.
+    if not isinstance(identity, CallerIdentity):
+        return None
+    if identity.verified and identity.url:
+        return identity.url
+    return None
+
+
+def _may_access(task: Task, owner: str | None) -> bool:
+    """An unowned task is open; an owned one only to its owner."""
+    return task.owner is None or task.owner == owner
 
 
 def _push_dict(config: PushNotificationConfig | None) -> dict[str, Any] | None:

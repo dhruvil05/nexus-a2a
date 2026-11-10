@@ -20,6 +20,7 @@ import logging
 from typing import Any
 
 from nexus_a2a.models.task import Task
+from nexus_a2a.security.redaction import redact_url
 from nexus_a2a.storage.task_store import AbstractTaskStore
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,9 @@ class RedisTaskStore(AbstractTaskStore):
         )
         # Ping to verify the connection is alive
         await self._redis.ping()
-        logger.info("RedisTaskStore: connected to %s (db=%d)", self._url, self._db)
+        logger.info(
+            "RedisTaskStore: connected to %s (db=%d)", redact_url(self._url), self._db
+        )
 
     async def disconnect(self) -> None:
         """Close the Redis connection pool."""

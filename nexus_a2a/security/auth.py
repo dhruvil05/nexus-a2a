@@ -169,6 +169,20 @@ class AgentCredentialConfig:
         return [_JWT_ALGORITHM]
 
 
+def _key_material(config: AgentCredentialConfig) -> tuple[str, str] | None:
+    """What a caller must hold to pass verify() under this config."""
+    if config.scheme == AuthScheme.API_KEY and config.api_key:
+        return ("api_key", config.api_key)
+    if config.scheme == AuthScheme.JWT:
+        if config.jwks_url:
+            return ("jwks", config.jwks_url.rstrip("/"))
+        if config.jwt_public_key:
+            return ("public_key", config.jwt_public_key.strip())
+        if config.jwt_secret:
+            return ("secret", config.jwt_secret)
+    return None
+
+
 # ── AuthManager ───────────────────────────────────────────────────────────────
 
 
@@ -268,6 +282,38 @@ class AuthManager:
         if configs and len({c.scheme for c in configs}) == 1:
             return configs[0]
         return None
+
+    def has_own_credentials(self, agent_url: str) -> bool:
+        """
+        True when agent_url is registered with key material NO other caller has.
+
+        Only then does a successful verify() prove the caller IS that agent,
+        which is what lets SecurityMiddleware trust the announced caller URL.
+        If two registrations (or a registration and the default) share an API
+        key, an HMAC secret, a public key or a JWKS URL, a holder of one can
+        verify as the other — then a JWT must also name the caller in 'sub'
+        (see jwt_applies()).
+        """
+        url = agent_url.rstrip("/")
+        config = self._configs.get(url)
+        if config is None or config.scheme == AuthScheme.NONE:
+            return False
+        material = _key_material(config)
+        if material is None:
+            return False
+        others = [c for u, c in self._configs.items() if u != url]
+        if self._default is not None:
+            others.append(self._default)
+        return all(_key_material(c) != material for c in others)
+
+    def jwt_applies(self, agent_url: str) -> bool:
+        """True when verify() for agent_url checks a JWT (own or default)."""
+        config = self._configs.get(agent_url.rstrip("/")) or self._default
+        return config is not None and config.scheme == AuthScheme.JWT
+
+    def default_scheme(self) -> AuthScheme | None:
+        """Scheme of the default credential, or None if there is none."""
+        return self._default.scheme if self._default is not None else None
 
     def set_default(self, config: AgentCredentialConfig) -> None:
         """
@@ -503,12 +549,18 @@ class AuthManager:
             # 'algorithms' comes from the CONFIG, never the token. Accepting
             # whatever `alg` a token declares is how an attacker signs with a
             # public key as an HMAC secret and gets believed.
+            #
+            # 'exp' is required: PyJWT only checks expiry when the claim is
+            # present, so a token without one (e.g. from an external JWKS
+            # issuer) would otherwise be valid forever. issue_jwt() always
+            # sets it.
             claims: dict[str, Any] = jwt.decode(
                 token,
                 key,
                 algorithms=config.allowed_algorithms(),
                 audience=config.jwt_audience,
                 issuer=config.jwt_issuer,
+                options={"require": ["exp"]},
             )
             return claims
 

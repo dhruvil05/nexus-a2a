@@ -742,13 +742,29 @@ class TestConfigNewKeys:
         assert store._max_tasks is None
 
 
+JWT_SECRET = "a-shared-jwt-secret-that-is-32-bytes!"
+
+
+def bearer_for(sub: str) -> dict[str, str]:
+    import time
+
+    import jwt
+
+    token = jwt.encode(
+        {"sub": sub, "iat": int(time.time()), "exp": int(time.time()) + 60},
+        JWT_SECRET,
+        algorithm="HS256",
+    )
+    return {CALLER_HEADER: sub, "Authorization": f"Bearer {token}"}
+
+
 class TestBuildSecurity:
     def test_nothing_configured_is_a_no_op(self):
         assert cfg_from().build_security("http://x:1").enabled is False
 
     def test_everything_configured(self):
         cfg = cfg_from(
-            security={"auth_scheme": "api_key", "auth_secret": "k",
+            security={"auth_scheme": "jwt", "auth_secret": JWT_SECRET,
                       "trust_mode": "strict", "rate_limit": 3, "max_payload_bytes": 100},
             network={"agents": ["http://peer:1"]},
         )
@@ -765,16 +781,42 @@ class TestBuildSecurity:
         from nexus_a2a.security.trust import AgentNotAllowedError
 
         mw = cfg_from(
-            security={"trust_mode": "strict"},
+            security={"trust_mode": "strict", "auth_scheme": "jwt",
+                      "auth_secret": JWT_SECRET},
             network={"agents": ["http://peer:1"]},
         ).build_security("http://me:1")
-        await mw.authorize({CALLER_HEADER: "http://peer:1"})
+        identity = await mw.authorize(bearer_for("http://peer:1"))
+        assert identity.verified is True
         with pytest.raises(AgentNotAllowedError):
-            await mw.authorize({CALLER_HEADER: "http://other:1"})
+            await mw.authorize(bearer_for("http://other:1"))
+
+    async def test_strict_trust_rejects_header_not_matching_jwt_sub(self):
+        from nexus_a2a.security.trust import UnverifiedCallerError
+
+        mw = cfg_from(
+            security={"trust_mode": "strict", "auth_scheme": "jwt",
+                      "auth_secret": JWT_SECRET},
+            network={"agents": ["http://peer:1"]},
+        ).build_security("http://me:1")
+        # A valid token for "other" cannot borrow the listed peer's URL.
+        headers = {**bearer_for("http://other:1"), CALLER_HEADER: "http://peer:1"}
+        with pytest.raises(UnverifiedCallerError):
+            await mw.authorize(headers)
+
+    @pytest.mark.parametrize("scheme", ["none", "api_key"])
+    def test_strict_without_jwt_is_a_config_error(self, scheme):
+        security = {"trust_mode": "strict", "auth_scheme": scheme}
+        if scheme == "api_key":
+            security["auth_secret"] = "k"
+        with pytest.raises(ConfigError, match="auth_scheme='jwt'"):
+            cfg_from(security=security).build_security("http://me:1")
 
     def test_strict_with_no_peers_warns(self, caplog):
         with caplog.at_level("WARNING"):
-            cfg_from(security={"trust_mode": "strict"}).build_security("http://me:1")
+            cfg_from(
+                security={"trust_mode": "strict", "auth_scheme": "jwt",
+                          "auth_secret": JWT_SECRET}
+            ).build_security("http://me:1")
         assert "refuses every caller" in caplog.text
 
     def test_redis_backend_uses_shared_rate_limiter(self):
@@ -954,10 +996,16 @@ class TestAgentRuntime:
 
 
 class TestFutureWarnings:
-    async def test_public_unsecured_bind_warns(self):
+    async def test_public_unsecured_bind_is_refused(self):
+        """2.0: the 1.9 FutureWarning is now an error."""
+        from nexus_a2a import InsecureServerError
+
         server = A2AServer(EchoAgent, host="0.0.0.0", port=0)
-        with pytest.warns(FutureWarning, match="2.0 will refuse"):
+        with pytest.raises(InsecureServerError, match="allow_insecure"):
             server._warn_if_insecure()
+        with pytest.raises(InsecureServerError):
+            await server.start()  # refused before binding anything
+        assert server._serve_task is None
 
     @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
     def test_loopback_does_not_warn(self, host):

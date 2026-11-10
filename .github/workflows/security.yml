@@ -29,6 +29,13 @@ on:
     branches: ["master"]
     paths:
       - "pyproject.toml"
+      - "uv.lock"
+      - "nexus_a2a/**"
+  # Gate dependency changes before they merge, not a week after.
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
       - "nexus_a2a/**"
   workflow_dispatch:         # Allow manual trigger from GitHub UI
 
@@ -79,6 +86,14 @@ jobs:
             pip-audit --skip-editable --format=json -r <(pip freeze) > audit-results.json || true
             exit 1
           fi
+
+      # The environment audit above covers what a fresh install resolves to
+      # today. This one audits the committed lockfile itself — the exact
+      # versions CI, the publish job and `uv sync` users get.
+      - name: Run pip-audit on uv.lock (all extras)
+        run: |
+          uv export --frozen --all-extras --no-hashes --no-emit-project > lock-requirements.txt
+          pip-audit --strict --no-deps --disable-pip -r lock-requirements.txt
 
       - name: Upload audit results on failure
         if: failure()

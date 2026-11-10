@@ -16,6 +16,7 @@ import httpx
 
 from nexus_a2a.cli.context import NexusContext, pass_ctx
 from nexus_a2a.cli.output import print_error, render_ping
+from nexus_a2a.transport.limits import capped_client
 
 
 async def _do_ping(url: str) -> dict[str, Any]:
@@ -26,7 +27,7 @@ async def _do_ping(url: str) -> dict[str, Any]:
         "health_endpoint_present": False,
     }
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with capped_client(timeout=10.0) as client:
         # 1. Fetch AgentCard
         t0 = time.perf_counter()
         try:

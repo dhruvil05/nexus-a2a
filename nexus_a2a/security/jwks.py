@@ -21,6 +21,11 @@ Caching:
     stream of tokens bearing unknown kids would turn this agent into a
     traffic amplifier pointed at the JWKS endpoint.
 
+    Stale-cache refreshes are single-flight and rate-limited too. If the
+    endpoint is down, previously fetched keys keep being served (with a
+    warning) until a refresh succeeds; only a client that has never fetched
+    any keys fails verification.
+
 Requires: pip install nexus-a2a[jwks]
 """
 
@@ -28,10 +33,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from typing import Any
 
 import httpx
+
+from nexus_a2a.security.redaction import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +47,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CACHE_TTL = 300.0
 
 # Floor between refreshes triggered by an unknown kid. Without it, tokens
-# carrying junk kids would each cause a fetch.
+# carrying junk kids would each cause a fetch. Stale-cache refreshes use the
+# same floor (capped at cache_ttl) after a failed attempt.
 _MIN_REFRESH_INTERVAL = 10.0
 
 _DEFAULT_TIMEOUT = 10.0
@@ -83,6 +92,11 @@ class JWKSClient:
         timeout:     HTTP timeout per fetch.
         client:      An existing httpx.AsyncClient to reuse. One is created
                      per fetch when omitted.
+        max_stale:   While the endpoint is failing, keep serving the last
+                     fetched keys for at most this many seconds past their
+                     TTL. Bounds how long a key the issuer has since revoked
+                     (removed from the set) stays usable during an outage.
+                     Default: 3600.
     """
 
     def __init__(
@@ -91,15 +105,19 @@ class JWKSClient:
         cache_ttl: float = _DEFAULT_CACHE_TTL,
         timeout: float = _DEFAULT_TIMEOUT,
         client: httpx.AsyncClient | None = None,
+        max_stale: float = 3600.0,
     ) -> None:
         self.url = url
         self.cache_ttl = cache_ttl
+        self.max_stale = max_stale
         self.timeout = timeout
         self._client = client
 
         self._keys: dict[str, Any] = {}
         self._fetched_at: float = 0.0
-        self._last_refresh_attempt: float = 0.0
+        # -inf = never attempted, so the first refresh is never rate-limited.
+        self._last_refresh_attempt: float = -math.inf
+        self._last_error: JWKSFetchError | None = None
         self._lock = asyncio.Lock()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -126,17 +144,19 @@ class JWKSClient:
         kid = header.get("kid")
 
         if self._is_stale():
-            await self.refresh()
+            await self._refresh_stale()
 
         key = self._lookup(kid)
         if key is not None:
             return key
 
         # Unknown kid: the signer may have rotated. One rate-limited retry.
-        if await self._refresh_if_allowed():
-            key = self._lookup(kid)
-            if key is not None:
-                return key
+        # Look up again regardless of who refreshed: a concurrent request may
+        # have fetched the rotated key while this one waited on the lock.
+        await self._refresh_if_allowed()
+        key = self._lookup(kid)
+        if key is not None:
+            return key
 
         raise JWKSKeyNotFoundError(kid)
 
@@ -144,20 +164,19 @@ class JWKSClient:
         """
         Fetch the key set and replace the cache.
 
+        An explicit call always fetches. Refreshes triggered by verification
+        (stale cache, unknown kid) go through rate-limited, single-flight
+        paths instead.
+
         Returns:
             How many keys were loaded.
 
         Raises:
             JWKSFetchError: The document could not be fetched or parsed.
+                The previously cached keys are left untouched.
         """
         async with self._lock:
-            self._last_refresh_attempt = time.monotonic()
-            data = await self._fetch()
-            keys = self._parse(data)
-            self._keys = keys
-            self._fetched_at = time.monotonic()
-            logger.info("JWKS: loaded %d key(s) from %s", len(keys), self.url)
-            return len(keys)
+            return await self._refresh_locked()
 
     @property
     def cached_key_ids(self) -> list[str]:
@@ -179,20 +198,99 @@ class JWKSClient:
             return next(iter(self._keys.values()))
         return None
 
+    async def _refresh_locked(self) -> int:
+        """Fetch and replace the cache. Caller must hold self._lock."""
+        self._last_refresh_attempt = time.monotonic()
+        try:
+            data = await self._fetch()
+            keys = self._parse(data)
+        except JWKSFetchError as exc:
+            self._last_error = exc
+            raise
+        self._keys = keys
+        self._fetched_at = time.monotonic()
+        self._last_error = None
+        logger.info("JWKS: loaded %d key(s) from %s", len(keys), redact_url(self.url))
+        return len(keys)
+
+    def _may_serve_stale(self) -> bool:
+        """True while cached keys are within cache_ttl + max_stale of fetch."""
+        age = time.monotonic() - self._fetched_at
+        if age <= self.cache_ttl + self.max_stale:
+            return True
+        logger.error(
+            "JWKS: keys from %s are %.0fs old and the endpoint is still "
+            "failing; refusing to keep serving them",
+            redact_url(self.url),
+            age,
+        )
+        return False
+
+    def _stale_refresh_floor(self) -> float:
+        # Never wait longer than the configured TTL: a caller asking for a
+        # very short TTL gets it, while the default TTL gets the full floor.
+        return max(0.0, min(_MIN_REFRESH_INTERVAL, self.cache_ttl))
+
+    async def _refresh_stale(self) -> None:
+        """
+        Refresh a stale cache — single-flight, rate-limited, stale-while-error.
+
+        - Concurrent callers queue on the lock; once inside, they re-check
+          staleness, so only the first one actually fetches.
+        - After a failed attempt, no new fetch is made until the floor has
+          passed, so an outage does not turn every request into a fetch.
+        - If a refresh fails but keys were fetched before, those keys keep
+          being served (with a warning) instead of failing every request.
+
+        Raises:
+            JWKSFetchError: Only when no keys have ever been fetched.
+        """
+        async with self._lock:
+            if not self._is_stale():
+                return  # another request refreshed while this one waited
+
+            elapsed = time.monotonic() - self._last_refresh_attempt
+            floor = self._stale_refresh_floor()
+            if elapsed < floor:
+                if self._keys and self._may_serve_stale():
+                    return  # recently attempted and failed: serve stale keys
+                reason = self._last_error.reason if self._last_error else "unknown"
+                raise JWKSFetchError(
+                    redact_url(self.url),
+                    f"{reason} (last attempt {elapsed:.1f}s ago; "
+                    f"retrying after {floor:.0f}s)",
+                )
+
+            try:
+                await self._refresh_locked()
+            except JWKSFetchError as exc:
+                if not self._keys or not self._may_serve_stale():
+                    raise
+                logger.warning(
+                    "JWKS: refresh from %s failed (%s); serving %d previously "
+                    "fetched key(s) until the next successful refresh",
+                    redact_url(self.url),
+                    exc.reason,
+                    len(self._keys),
+                )
+
     async def _refresh_if_allowed(self) -> bool:
         """Refresh unless one was attempted too recently. Never raises."""
-        elapsed = time.monotonic() - self._last_refresh_attempt
-        if elapsed < _MIN_REFRESH_INTERVAL:
-            logger.debug(
-                "JWKS: refresh suppressed, last attempt %.1fs ago", elapsed
-            )
-            return False
-        try:
-            await self.refresh()
-            return True
-        except JWKSFetchError:
-            logger.warning("JWKS: refresh for unknown kid failed", exc_info=True)
-            return False
+        async with self._lock:
+            # Checked under the lock so that concurrent unknown-kid requests
+            # do not each pass the check and then fetch one after another.
+            elapsed = time.monotonic() - self._last_refresh_attempt
+            if elapsed < _MIN_REFRESH_INTERVAL:
+                logger.debug(
+                    "JWKS: refresh suppressed, last attempt %.1fs ago", elapsed
+                )
+                return False
+            try:
+                await self._refresh_locked()
+                return True
+            except JWKSFetchError:
+                logger.warning("JWKS: refresh for unknown kid failed", exc_info=True)
+                return False
 
     async def _fetch(self) -> dict[str, Any]:
         try:

@@ -47,7 +47,10 @@ Usage (from the environment — there are no nexus.toml keys for mTLS):
     config = MutualTLSConfig.from_env()
 
 Design:
-    - Pure stdlib ssl module — no extra dependencies.
+    - SSL context building uses only the stdlib ssl module.
+    - Certificate inspection (verify_peer_certificate, local expiry warnings)
+      needs the `cryptography` package (pip install 'nexus-a2a[jwks]').
+      Without it, verify_peer_certificate() fails closed.
     - All file paths are validated at construction time (fail-fast).
     - Supports both PEM file paths and in-memory PEM bytes (for Kubernetes
       Secrets mounted as env vars or injected via vault).
@@ -469,6 +472,7 @@ def build_server_ssl_context(config: MutualTLSConfig) -> ssl.SSLContext:
 def verify_peer_certificate(
     config: MutualTLSConfig,
     cert_der: bytes,
+    intermediates: list[bytes] | None = None,
 ) -> CertInfo:
     """
     Parse and validate a peer's DER-encoded certificate against the CA bundle.
@@ -478,47 +482,212 @@ def verify_peer_certificate(
     peercert). It checks:
         - The certificate is parseable.
         - It is currently valid (not expired, not yet valid).
-        - Its issuer is trusted (signed by one of our CA certs).
+        - Its issuer is trusted: it chains to a CA certificate in the
+          configured bundle — directly, or through intermediate CA
+          certificates the peer presented (each currently valid, marked
+          CA:TRUE and signed by the next; at most 4 intermediates).
 
-    Note: Full chain verification is done by the ssl.SSLContext during
+    Note: Full chain verification is also done by the ssl.SSLContext during
     the TLS handshake. This function provides additional Python-level
     certificate inspection after the handshake completes.
+
+    Requires the `cryptography` package. If it is not installed this
+    function fails closed (raises MtlsCertificateError).
 
     Args:
         config:   MutualTLSConfig with CA bundle for trust verification.
         cert_der: The peer's certificate in DER (binary) format.
+        intermediates: DER intermediate CA certificates the peer sent with it
+                  (e.g. ssl's get_unverified_chain()[1:]). They are never
+                  trusted on their own — only as links to the CA bundle.
 
     Returns:
         CertInfo with parsed certificate details.
 
     Raises:
-        MtlsCertificateError: Certificate is invalid, expired, or untrusted.
+        MtlsCertificateError: Certificate is invalid, expired, not yet valid,
+            untrusted, no CA bundle is configured, or `cryptography` is missing.
     """
+    x509 = _require_cryptography()
+
     try:
-        cert = ssl.DER_cert_to_PEM_cert(cert_der)
+        cert = x509.load_der_x509_certificate(cert_der)
     except Exception as exc:
         raise MtlsCertificateError(f"Cannot decode DER certificate: {exc}") from exc
 
-    # Load into a temporary context to parse the cert using Python's ssl module
     try:
-        # Use load_verify_locations to build a temp context with the CA
-        temp_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ca_data = config._effective_ca()
-        if ca_data:
-            _load_ca(temp_ctx, ca_data)
-
-        # Parse the certificate fields using ssl.PEM_cert_to_DER_cert round-trip
-        # and ssl's built-in cert dict parser
-        cert_info = _parse_pem_cert(cert.encode())
-        return cert_info
-
-    except MtlsCertificateError:
-        raise
+        info = _cert_to_info(cert)
     except Exception as exc:
         raise MtlsCertificateError(f"Certificate inspection failed: {exc}") from exc
 
+    now = datetime.now(tz=UTC)
+    if now < info.not_before:
+        raise MtlsCertificateError(
+            f"certificate is not yet valid (valid from {info.not_before.isoformat()})",
+            subject=info.subject,
+        )
+    if info.is_expired:
+        raise MtlsCertificateError(
+            f"certificate has expired (valid until {info.not_after.isoformat()})",
+            subject=info.subject,
+        )
+
+    try:
+        ca_data = config._effective_ca()
+    except OSError as exc:
+        raise MtlsCertificateError(f"Cannot read CA bundle: {exc}") from exc
+    if not ca_data:
+        raise MtlsCertificateError(
+            "no CA bundle configured (set ca_file= or ca_pem=); "
+            "cannot establish trust in the peer certificate",
+            subject=info.subject,
+        )
+    try:
+        ca_certs = x509.load_pem_x509_certificates(ca_data)
+    except Exception as exc:
+        raise MtlsCertificateError(f"Cannot parse CA bundle: {exc}") from exc
+
+    chain: list[Any] = []
+    for index, der in enumerate(intermediates or []):
+        try:
+            chain.append(x509.load_der_x509_certificate(der))
+        except Exception as exc:
+            raise MtlsCertificateError(
+                f"Cannot decode intermediate certificate #{index}: {exc}"
+            ) from exc
+
+    if not _chains_to_bundle(cert, ca_certs, chain, now, _MAX_CHAIN_DEPTH):
+        raise MtlsCertificateError(
+            f"certificate was not issued by a trusted CA (issuer: '{info.issuer}')",
+            subject=info.subject,
+        )
+    return info
+
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+
+_CRYPTOGRAPHY_HINT = (
+    "the 'cryptography' package is required for certificate inspection; "
+    "install it with: pip install 'nexus-a2a[jwks]'"
+)
+
+
+def _require_cryptography() -> Any:
+    """Import cryptography.x509 lazily; fail closed if it is unavailable."""
+    try:
+        from cryptography import x509
+    except ImportError as exc:
+        raise MtlsCertificateError(_CRYPTOGRAPHY_HINT) from exc
+    return x509
+
+
+_MAX_CHAIN_DEPTH = 4
+
+
+def _is_usable_intermediate(cert: Any, now: datetime) -> bool:
+    """An intermediate must be in date and explicitly a CA (no v1 leniency)."""
+    from cryptography import x509
+
+    if not (cert.not_valid_before_utc <= now <= cert.not_valid_after_utc):
+        return False
+    try:
+        bc = cert.extensions.get_extension_for_class(x509.BasicConstraints)
+    except x509.ExtensionNotFound:
+        return False
+    return bool(bc.value.ca)
+
+
+def _chains_to_bundle(
+    cert: Any,
+    ca_certs: list[Any],
+    intermediates: list[Any],
+    now: datetime,
+    depth: int,
+) -> bool:
+    """True if cert is trusted directly or via a short chain of intermediates."""
+    if _issued_by_any(cert, ca_certs, now):
+        return True
+    if depth <= 0:
+        return False
+    for index, candidate in enumerate(intermediates):
+        if not _is_usable_intermediate(candidate, now):
+            continue
+        try:
+            cert.verify_directly_issued_by(candidate)
+        except Exception:  # noqa: S112 - not this issuer; try the next one
+            continue
+        remaining = intermediates[:index] + intermediates[index + 1 :]
+        if _chains_to_bundle(candidate, ca_certs, remaining, now, depth - 1):
+            return True
+    return False
+
+
+def _issued_by_any(cert: Any, ca_certs: list[Any], now: datetime) -> bool:
+    """
+    Return True if *cert* is one of *ca_certs* or is directly signed by one.
+
+    CA certificates outside their validity window, or that explicitly declare
+    themselves as non-CA (basicConstraints CA:FALSE), are ignored.
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+
+    cert_fp = cert.fingerprint(hashes.SHA256())
+    for ca in ca_certs:
+        if ca.fingerprint(hashes.SHA256()) == cert_fp:
+            # The peer cert is itself pinned in the trust bundle (e.g. a
+            # self-signed agent cert). Its validity was already checked.
+            return True
+        if not (ca.not_valid_before_utc <= now <= ca.not_valid_after_utc):
+            continue
+        try:
+            bc = ca.extensions.get_extension_for_class(x509.BasicConstraints)
+            if not bc.value.ca:
+                continue
+        except x509.ExtensionNotFound:
+            pass  # legacy v1 CA cert without extensions
+        try:
+            cert.verify_directly_issued_by(ca)
+        except Exception:
+            continue
+        return True
+    return False
+
+
+def _cert_to_info(cert: Any) -> CertInfo:
+    """Build a CertInfo from a cryptography x509.Certificate."""
+    from cryptography import x509
+
+    now = datetime.now(tz=UTC)
+    not_before: datetime = cert.not_valid_before_utc
+    not_after: datetime = cert.not_valid_after_utc
+
+    san: list[str] = []
+    try:
+        ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+    except x509.ExtensionNotFound:
+        ext = None
+    if ext is not None:
+        names = ext.value
+        san.extend(f"DNS:{v}" for v in names.get_values_for_type(x509.DNSName))
+        san.extend(f"IP Address:{v}" for v in names.get_values_for_type(x509.IPAddress))
+        san.extend(
+            f"URI:{v}"
+            for v in names.get_values_for_type(x509.UniformResourceIdentifier)
+        )
+        san.extend(f"email:{v}" for v in names.get_values_for_type(x509.RFC822Name))
+
+    return CertInfo(
+        subject=cert.subject.rfc4514_string(),
+        issuer=cert.issuer.rfc4514_string(),
+        not_before=not_before,
+        not_after=not_after,
+        serial=format(cert.serial_number, "X"),
+        san=san,
+        is_expired=now > not_after,
+        days_remaining=(not_after - now).days,
+    )
 
 
 def _load_ca(ctx: ssl.SSLContext, ca_data: bytes) -> None:
@@ -571,6 +740,8 @@ def _check_local_cert_expiry(config: MutualTLSConfig) -> None:
     """
     Log a warning if the local agent certificate expires soon.
     Uses check_expiry_days to determine the warning threshold.
+
+    Skipped (debug log only) if `cryptography` is not installed.
     """
     if config.check_expiry_days <= 0:
         return
@@ -600,45 +771,19 @@ def _parse_pem_cert(pem_data: bytes) -> CertInfo:
     """
     Parse an X.509 certificate from PEM bytes into a CertInfo dataclass.
 
-    Uses Python's ssl module (no cryptography lib needed).
+    If *pem_data* holds several certificates (a chain), the first one is
+    parsed. Requires the `cryptography` package.
+
+    Raises:
+        MtlsCertificateError: The data is not a valid PEM certificate, or
+            `cryptography` is not installed.
     """
-    import os as _os
-    import tempfile
-
-    # Write to a temp file so ssl.SSLContext can load it
-    with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as tmp:
-        tmp.write(pem_data)
-        tmp_path = tmp.name
-
+    x509 = _require_cryptography()
     try:
-        # Use a throw-away context to load and inspect the cert
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_verify_locations(cafile=tmp_path)
-        # Read the cert as a dict using load_cert_chain indirectly
-        # ssl module exposes limited cert parsing; use the DER→dict path
-        der = ssl.PEM_cert_to_DER_cert(pem_data.decode())
-        ssl.DER_cert_to_PEM_cert(der)  # round-trip for validation
-    except ssl.SSLError as exc:
+        cert = x509.load_pem_x509_certificate(pem_data)
+    except Exception as exc:
         raise MtlsCertificateError(f"Cannot parse certificate: {exc}") from exc
-    finally:
-        _os.unlink(tmp_path)
-
-    # ssl module doesn't expose a full cert dict from file — build CertInfo
-    # from what we can extract via the public API
-    now = datetime.now(tz=UTC)
-
-    # Fallback info (ssl doesn't parse PEM to dict without a socket context)
-    # We extract what we can without the cryptography library
-    return CertInfo(
-        subject="(see certificate file)",
-        issuer="(see certificate file)",
-        not_before=now,
-        not_after=now,
-        serial="(unavailable without cryptography lib)",
-        san=[],
-        is_expired=False,
-        days_remaining=30,
-    )
+    return _cert_to_info(cert)
 
 
 def _parse_cert_dict(cert_dict: dict[str, Any]) -> tuple[str, str, list[str]]:

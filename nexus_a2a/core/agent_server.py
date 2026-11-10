@@ -338,7 +338,7 @@ class AgentServer:
         GET /ready — Readiness probe.
 
         Returns 200 when the agent is fully ready to serve requests:
-        - Task store is reachable (ping via list_all())
+        - Task store is reachable (AbstractTaskStore.ping())
         - At least one agent in the registry is healthy (if any registered)
 
         Returns 503 if either check fails. Kubernetes stops routing traffic
@@ -358,10 +358,20 @@ class AgentServer:
 
         # Check 1: task store reachable
         try:
-            await self.network.task_manager._store.list_all()
+            store = self.network.task_manager._store
+            # A keyed probe for real stores; list_all() read every stored task
+            # on each unauthenticated /ready request.
+            from nexus_a2a.storage.task_store import AbstractTaskStore
+
+            if isinstance(store, AbstractTaskStore):
+                await store.ping()
+            else:
+                await store.list_all()
             checks["store"] = "ok"
         except Exception as exc:
-            checks["store"] = f"error: {exc}"
+            # Unauthenticated endpoint: report the failure, keep the detail
+            # (hostnames, DSN fragments) in the server log.
+            checks["store"] = "error: task store unreachable"
             overall_ok = False
             logger.warning("AgentServer /ready store check failed: %s", exc)
 

@@ -804,6 +804,22 @@ class NexusConfig:
         if self.security.auth_scheme != "none":
             auth = self.build_auth_manager()
 
+        if (
+            self.security.trust_mode == "strict"
+            and self.security.auth_scheme != "jwt"
+        ):
+            # Trust rules are evaluated against the caller's announced URL,
+            # which only a credential can prove. A shared API key (or no auth)
+            # proves nothing about WHICH caller is speaking, so strict mode
+            # would refuse every request — say so now instead.
+            raise ConfigError(
+                "trust_mode='strict' needs auth_scheme='jwt': callers must send "
+                "a JWT whose 'sub' claim equals their X-Nexus-Caller URL. A "
+                f"{self.security.auth_scheme!r} scheme cannot prove which caller "
+                "is speaking. Use trust_mode='warn' to observe without enforcing.",
+                "security.trust_mode",
+            )
+
         trust = None
         if self.security.trust_mode != "off":
             trust = TrustBoundary()
@@ -947,6 +963,31 @@ class NexusConfig:
         Serialise config back to a dict (useful for logging/debugging).
         Secrets are redacted for safety.
         """
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+        from nexus_a2a.security.redaction import redact_url
+
+        def _redacted_storage_url(url: str) -> str:
+            # Mask a password in the userinfo or the query; keep host, port,
+            # db and other options visible. URLs without secrets are unchanged.
+            try:
+                parts = urlsplit(url)
+                has_userinfo = bool(parts.username or parts.password)
+            except ValueError:
+                return redact_url(url)
+            query = parse_qsl(parts.query, keep_blank_values=True)
+            secret_keys = ("pass", "secret", "token", "key")
+            masked = [
+                (k, "***" if any(s in k.lower() for s in secret_keys) else v)
+                for k, v in query
+            ]
+            if not has_userinfo and masked == query:
+                return url
+            clean = redact_url(url, keep_query=False)
+            return urlunsplit(
+                urlsplit(clean)._replace(query=urlencode(masked, safe="*"), fragment="")
+            )
+
         return {
             "agent": {
                 "name": self.agent.name,
@@ -985,7 +1026,7 @@ class NexusConfig:
             },
             "storage": {
                 "backend": self.storage.backend,
-                "url": self.storage.url,
+                "url": _redacted_storage_url(self.storage.url),
                 "ttl_sec": self.storage.ttl_sec,
                 "task_retention_sec": self.storage.task_retention_sec,
                 "max_tasks": self.storage.max_tasks,

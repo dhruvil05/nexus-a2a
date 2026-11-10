@@ -29,6 +29,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from nexus_a2a.models.task import PushNotificationConfig
+from nexus_a2a.security.redaction import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,9 @@ class RedisPushStore(AbstractPushStore):
             decode_responses=True,
         )
         await self._redis.ping()
-        logger.info("RedisPushStore connected: %s (db=%d)", self._url, self._db)
+        logger.info(
+            "RedisPushStore connected: %s (db=%d)", redact_url(self._url), self._db
+        )
 
     async def disconnect(self) -> None:
         """Close the pool. An injected client belongs to its owner."""

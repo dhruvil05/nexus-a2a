@@ -44,6 +44,7 @@ from nexus_a2a.config import (
 from nexus_a2a.core.a2a_server import (
     A2AServer,
     A2AServerError,
+    InsecureServerError,
     InvalidAgentError,
 )
 
@@ -208,6 +209,7 @@ from nexus_a2a.transport.webhook import (
     WebhookDeliveryError,
     WebhookDispatcher,
     WebhookUrlError,
+    resolve_webhook_url,
     validate_webhook_url,
 )
 
@@ -310,6 +312,7 @@ __all__ = [
     "A2AServerError",
     "AgentRuntime",
     "ConfigWarning",
+    "InsecureServerError",
     "InvalidAgentError",
     # Phase 4 — Orchestration + streaming
     "AgentNetwork",
@@ -327,6 +330,7 @@ __all__ = [
     "StreamEventType",
     "WebhookDispatcher",
     "WebhookUrlError",
+    "resolve_webhook_url",
     "validate_webhook_url",
     "WebhookConfig",
     "WebhookDeliveryError",

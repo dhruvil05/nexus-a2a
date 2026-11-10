@@ -33,11 +33,17 @@ dependencies = [
   # PyJWT replaces python-jose (1.5.0): jose pulled in ecdsa, rsa and pyasn1
   # purely as transitive deps. ecdsa carries an unfixable timing-attack
   # advisory (PYSEC-2026-1325) and we only ever sign with HS256.
-  "PyJWT>=2.10",
+  # Floor 2.15 clears PYSEC-2026-4140..4152, -4183 and GHSA-pxh4-856f-4h89.
+  "PyJWT>=2.15",
   "click>=8.1",
   "rich>=13.0",
   # Transitive via httpx/anyio — floor pinned to clear PYSEC-2026-215.
   "idna>=3.15",
+  # Transitive via httpx/starlette — floors pinned to clear known advisories
+  # (certifi PYSEC-2026-4320; anyio, see pip-audit). Remove a floor once the
+  # parent package requires the fixed version itself.
+  "certifi>=2026.10.18",
+  "anyio>=4.14.2",
 ]
 
 # ── Optional extras ───────────────────────────────────────────────────────────
@@ -46,14 +52,19 @@ redis    = ["redis>=5.0"]
 postgres = ["asyncpg>=0.29"]
 # google-adk is a ~40-package tree and, like every other adapter, is imported
 # lazily. Install it only if you use GoogleADKAdapter.
-adk      = ["google-adk>=2.4.0"]
+adk      = ["google-adk>=2.4.0",
+            # Transitive via google-adk — floors clear known advisories.
+            "urllib3>=2.8.0", "pyasn1>=0.6.5", "authlib>=1.9.1",
+            "joserfc>=1.7.6", "opentelemetry-api>=1.45.1"]
 # Asymmetric JWT (RS256/ES256) and JWKS need cryptography. HS256 does not,
 # so this stays optional and the core install keeps its small tree.
-jwks     = ["PyJWT[crypto]>=2.10", "cryptography>=44.0"]
+jwks     = ["PyJWT[crypto]>=2.15", "cryptography>=50.0"]
 all      = ["redis>=5.0", "asyncpg>=0.29", "google-adk>=2.4.0",
-            "PyJWT[crypto]>=2.10", "cryptography>=44.0"]
+            "urllib3>=2.8.0", "pyasn1>=0.6.5", "authlib>=1.9.1",
+            "joserfc>=1.7.6", "opentelemetry-api>=1.45.1",
+            "PyJWT[crypto]>=2.15", "cryptography>=50.0"]
 dev = [
-  "pytest>=8.0",
+  "pytest>=9.0.3",
   "pytest-asyncio>=0.23",
   "pytest-cov>=5.0",
   "anyio[trio]>=4.3",
@@ -66,8 +77,8 @@ dev = [
   "redis>=5.0",
   # Lua-capable fake so RedisRateLimiter's script is covered without a server
   "fakeredis[lua]>=2.30",
-  "PyJWT[crypto]>=2.10",
-  "cryptography>=44.0",
+  "PyJWT[crypto]>=2.15",
+  "cryptography>=50.0",
   # starlette.testclient is moving to httpx2 and warns when it falls back
   # to httpx; test-time only.
   "httpx2>=2.13",

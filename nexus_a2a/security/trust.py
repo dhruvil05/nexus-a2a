@@ -20,10 +20,46 @@ Design:
 
 from __future__ import annotations
 
-import fnmatch
+import functools
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+# What a wildcard may NOT match inside a URL pattern. fnmatch's '*' matches
+# anything, so "http://internal-*" also matched
+# "http://internal-x.attacker.example" and "http://internal-x@evil:1".
+# Here '*' stays inside one host label / path segment.
+_WILDCARD_STOP = r"/.@?#"
+
+
+@functools.lru_cache(maxsize=1024)
+def _compile_pattern(pattern: str) -> re.Pattern[str]:
+    out = []
+    for ch in pattern:
+        if ch == "*":
+            out.append(f"[^{re.escape(_WILDCARD_STOP)}]*")
+        elif ch == "?":
+            out.append(f"[^{re.escape(_WILDCARD_STOP)}]")
+        else:
+            out.append(re.escape(ch))
+    return re.compile("".join(out))
+
+
+def _url_matches(value: str, pattern: str) -> bool:
+    """
+    Match a caller/target URL against a rule.
+
+    "*" alone matches everything. Otherwise '*' and '?' are wildcards that
+    never cross '.', '/', '@', '?' or '#', so a pattern cannot be satisfied by
+    an attacker-registered domain that merely starts with the right prefix.
+    Use one '*' per host label: "http://*.corp.example:8000".
+    """
+    if pattern == "*" or value == pattern:
+        return True
+    if "*" not in pattern and "?" not in pattern:
+        return False
+    return _compile_pattern(pattern).fullmatch(value) is not None
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -40,6 +76,25 @@ class AgentNotAllowedError(TrustError):
         super().__init__(f"Agent '{caller_url}' is not allowed to call '{target_url}'.")
         self.caller_url = caller_url
         self.target_url = target_url
+
+
+class UnverifiedCallerError(AgentNotAllowedError):
+    """
+    Raised when trust is enforced but the caller's announced URL was not
+    proven by its credentials.
+
+    The X-Nexus-Caller header is self-asserted. Evaluating trust rules against
+    it without a credential that binds it — a key registered for that URL, or
+    a JWT whose 'sub' is that URL — lets any caller claim to be any agent.
+    """
+
+    def __init__(self, caller_url: str, target_url: str) -> None:
+        super().__init__(caller_url, target_url)
+        self.args = (
+            f"Caller identity '{caller_url}' is not verified: register a "
+            "credential for that URL, or send a JWT whose 'sub' claim equals "
+            "it. Trust rules are only evaluated against verified callers.",
+        )
 
 
 class SkillNotAllowedError(TrustError):
@@ -119,7 +174,8 @@ class TrustBoundary:
 
         Args:
             caller_url: The agent initiating the call.
-                        Supports fnmatch wildcards e.g. "http://internal-*".
+                        Supports wildcards e.g. "http://internal-*"; a
+                        '*' never crosses '.', '/' or '@'.
             target_url: The agent receiving the call. Use "*" for any target.
             skills:     Optional list of skill IDs the caller may invoke on
                         the target. If None, all skills are permitted.
@@ -276,17 +332,13 @@ class TrustBoundary:
     def _is_allowed(self, caller: str, target: str) -> bool:
         """
         Check if caller has an allow rule that matches target.
-        Supports fnmatch wildcard patterns in caller keys and "*" as target.
+        Supports wildcard patterns (see _url_matches) and "*" as target.
         """
         for rule_caller, targets in self._allow_rules.items():
             # Match caller against wildcard patterns
-            if fnmatch.fnmatchcase(caller, rule_caller) or caller == rule_caller:
-                if "*" in targets or target in targets:
+            if _url_matches(caller, rule_caller):
+                if any(_url_matches(target, t) for t in targets):
                     return True
-                # Check fnmatch patterns in target set
-                for t in targets:
-                    if fnmatch.fnmatchcase(target, t):
-                        return True
         return False
 
     def _check_skill(
@@ -311,18 +363,11 @@ class TrustBoundary:
         matched_any = False
 
         for rule_caller, target_acl in self._skill_acl.items():
-            if not (
-                fnmatch.fnmatchcase(caller, rule_caller) or caller == rule_caller
-            ):
+            if not _url_matches(caller, rule_caller):
                 continue
 
             for rule_target, allowed_skills in target_acl.items():
-                target_matches = (
-                    rule_target == "*"
-                    or rule_target == target
-                    or fnmatch.fnmatchcase(target, rule_target)
-                )
-                if not target_matches:
+                if not _url_matches(target, rule_target):
                     continue
 
                 matched_any = True

@@ -351,10 +351,20 @@ class TestStreamEvent:
 
 
 class TestWebhookDispatcher:
+    @pytest.fixture(autouse=True)
+    def _public_dns(self, monkeypatch):
+        """Delivery re-resolves the host; answer with a public address."""
+
+        async def fake_resolve(host: str) -> list[str]:
+            return ["93.184.216.34"]
+
+        monkeypatch.setattr("nexus_a2a.transport.webhook._resolve_host", fake_resolve)
+
     def _make_response(self, status: int) -> MagicMock:
         resp = MagicMock()
         resp.status_code = status
         resp.is_success = 200 <= status < 300
+        resp.aclose = AsyncMock()
         return resp
 
     async def test_successful_delivery(self):
@@ -363,7 +373,8 @@ class TestWebhookDispatcher:
 
         with patch("nexus_a2a.transport.webhook.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
-            instance.post = AsyncMock(return_value=self._make_response(200))
+            instance.build_request = MagicMock()
+            instance.send = AsyncMock(return_value=self._make_response(200))
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
@@ -389,7 +400,8 @@ class TestWebhookDispatcher:
 
         with patch("nexus_a2a.transport.webhook.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
-            instance.post = AsyncMock(side_effect=responses)
+            instance.build_request = MagicMock()
+            instance.send = AsyncMock(side_effect=responses)
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
@@ -405,7 +417,8 @@ class TestWebhookDispatcher:
 
         with patch("nexus_a2a.transport.webhook.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
-            instance.post = AsyncMock(return_value=self._make_response(404))
+            instance.build_request = MagicMock()
+            instance.send = AsyncMock(return_value=self._make_response(404))
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
@@ -413,7 +426,7 @@ class TestWebhookDispatcher:
             with pytest.raises(WebhookDeliveryError):
                 await dispatcher.dispatch("http://client/hook", task)
 
-        assert instance.post.call_count == 1
+        assert instance.send.call_count == 1
 
     async def test_raises_after_all_retries_exhausted(self):
         task = _make_task()
@@ -425,7 +438,8 @@ class TestWebhookDispatcher:
 
         with patch("nexus_a2a.transport.webhook.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
-            instance.post = AsyncMock(side_effect=_httpx.ConnectError("refused"))
+            instance.build_request = MagicMock()
+            instance.send = AsyncMock(side_effect=_httpx.ConnectError("refused"))
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
@@ -445,7 +459,8 @@ class TestWebhookDispatcher:
 
         with patch("nexus_a2a.transport.webhook.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
-            instance.post = AsyncMock(side_effect=_httpx.ConnectError("refused"))
+            instance.build_request = MagicMock()
+            instance.send = AsyncMock(side_effect=_httpx.ConnectError("refused"))
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
@@ -472,7 +487,8 @@ class TestWebhookDispatcher:
 
         with patch("nexus_a2a.transport.webhook.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
-            instance.post = AsyncMock(return_value=self._make_response(200))
+            instance.build_request = MagicMock()
+            instance.send = AsyncMock(return_value=self._make_response(200))
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance

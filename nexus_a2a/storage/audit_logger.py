@@ -70,13 +70,20 @@ class AuditEntry:
     agent_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        # The record stays flat (consumers parse it that way, and key order is
+        # unchanged), but the reserved fields always win: event-specific data
+        # — which can carry caller- or peer-controlled values — can never
+        # overwrite `event`, `timestamp`, `task_id` or `agent_url` and forge
+        # an audit record. Colliding custom keys are dropped.
+        record: dict[str, Any] = {
             "event": self.event.value,
             "timestamp": self.timestamp,
             "task_id": self.task_id,
             "agent_url": self.agent_url,
-            **self.data,
         }
+        for key, value in self.data.items():
+            record.setdefault(key, value)
+        return record
 
     def to_json(self) -> str:
         """Serialise to a single JSON line (NDJSON format)."""
@@ -258,7 +265,8 @@ class AuditLogger:
                 event=AuditEvent.CUSTOM,
                 task_id=task_id,
                 agent_url=agent_url,
-                data={"custom_event": event_name, **data},
+                # event_name last, so `data` cannot rename the event.
+                data={**data, "custom_event": event_name},
             )
         )
 

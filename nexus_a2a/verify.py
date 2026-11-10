@@ -40,6 +40,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from nexus_a2a.transport.limits import capped_client
+
 logger = logging.getLogger(__name__)
 
 CARD_PATH = "/.well-known/agent-card.json"
@@ -587,7 +589,7 @@ async def verify_agent(
         auth_headers["X-Nexus-Caller"] = caller_url
 
     own_client = client is None
-    http = client or httpx.AsyncClient(timeout=timeout)
+    http = client or capped_client(timeout=timeout)
     try:
         checker = _Checker(url, http, auth_headers, message, skill_id, read_only)
         return await checker.run()

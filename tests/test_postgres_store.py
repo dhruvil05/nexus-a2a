@@ -594,8 +594,12 @@ class TestDeleteOlderThan:
     async def test_delete_older_than_uses_interval_sql(self):
         store = await make_connected_store(pool_kwargs={"execute_result": "DELETE 0"})
         await store.delete_older_than(days=14)
-        sql = store._pool.execute.call_args[0][0]
-        assert "14 days" in sql
+        args = store._pool.execute.call_args[0]
+        sql = args[0]
+        # `days` is bound as a query parameter, never interpolated into SQL.
+        assert "14" not in sql
+        assert "$1" in sql and "INTERVAL" in sql
+        assert args[1] == 14
         assert "updated_at" in sql
 
 

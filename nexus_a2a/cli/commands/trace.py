@@ -20,16 +20,18 @@ import asyncio
 from typing import Any
 
 import click
-import httpx
 
 from nexus_a2a.cli.admin import (
+    UnsafeTokenDestinationError,
     admin_headers,
+    check_token_destination,
     forbidden_hint,
     resolve_admin_token,
     resolve_ops_url,
 )
 from nexus_a2a.cli.context import NexusContext, pass_ctx
 from nexus_a2a.cli.output import print_error, print_warning, render_trace
+from nexus_a2a.transport.limits import capped_client
 
 
 class AdminForbiddenError(Exception):
@@ -43,7 +45,7 @@ async def _fetch_trace_remote(
 ) -> dict[str, Any] | None:
     """Ask a running ops server for a trace via GET /traces/<id>."""
     agent_url = agent_url.rstrip("/")
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with capped_client(timeout=10.0) as client:
         resp = await client.get(
             f"{agent_url}/traces/{trace_id}", headers=admin_headers(token)
         )
@@ -137,6 +139,11 @@ def trace(
         token = resolve_admin_token(admin_token, cfg)
 
         if url:
+            try:
+                check_token_destination(agent_url, admin_token, cfg)
+            except UnsafeTokenDestinationError as e:
+                print_error(str(e))
+                raise SystemExit(1) from e
             try:
                 trace_data = asyncio.run(_fetch_trace_remote(url, task_id, token))
             except AdminForbiddenError as e:

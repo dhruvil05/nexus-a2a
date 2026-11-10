@@ -39,11 +39,18 @@ Design:
       A warning is logged on Windows instead of crashing.
     - drain() is idempotent — safe to call multiple times.
     - All state is exposed via properties for observability.
+    - Shared task stores (Redis, Postgres): several replicas see the same
+      tasks, so a replica must never wait for or cancel another replica's
+      work. With a shared store, only tasks this process created, started or
+      resumed (through the network's TaskManager, after GracefulShutdown was
+      constructed) are drained/cancelled, and paused INPUT_REQUIRED tasks are
+      left for any replica to resume. See `cancel_scope`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import signal
 import sys
@@ -60,6 +67,29 @@ logger = logging.getLogger(__name__)
 
 # Active states that need to finish before we shut down
 _ACTIVE_STATES = {TaskState.SUBMITTED, TaskState.WORKING, TaskState.INPUT_REQUIRED}
+
+# With a shared store, a paused INPUT_REQUIRED task is not running anywhere and
+# can be resumed by any replica, so only tasks actually in flight count.
+_OWNED_ACTIVE_STATES = {TaskState.SUBMITTED, TaskState.WORKING}
+
+# Store classes known to be shared between processes/replicas. Matched by
+# class name (anywhere in the MRO) so redis/asyncpg need not be importable.
+_SHARED_STORE_CLASSES = frozenset({"RedisTaskStore", "PostgresTaskStore"})
+
+_CANCEL_SCOPES = ("auto", "owned", "all")
+
+# TaskManager methods whose returned task is now being handled by this process.
+_CLAIMING_METHODS = ("create", "start", "provide_input")
+# TaskManager methods after which this process no longer handles the task.
+# request_input pauses the task; whichever replica resumes it claims it.
+_RELEASING_METHODS = ("request_input", "complete", "fail", "cancel", "delete")
+
+
+def _is_shared_store(store: Any) -> bool:
+    """True if *store* is known to be shared across processes."""
+    if getattr(store, "shared", None) is True:
+        return True
+    return any(cls.__name__ in _SHARED_STORE_CLASSES for cls in type(store).__mro__)
 
 
 # ── GracefulShutdown ──────────────────────────────────────────────────────────
@@ -81,6 +111,18 @@ class GracefulShutdown:
                            before forcefully cancelling them. Default: 30.
         poll_interval_sec: How often to check for active tasks during drain.
                            Default: 0.5.
+        cancel_scope:      Which tasks drain waits for and force-cancels.
+                           "auto" (default): "owned" when the TaskManager's
+                           store is shared (RedisTaskStore, PostgresTaskStore,
+                           or any store with `shared = True`), else "all".
+                           "all": every SUBMITTED/WORKING/INPUT_REQUIRED task
+                           in the store (single-process behaviour).
+                           "owned": only SUBMITTED/WORKING tasks this process
+                           created, started or resumed via the network's
+                           TaskManager after this object was constructed (or
+                           registered with track_task()). Paused
+                           INPUT_REQUIRED tasks are left for any replica to
+                           resume.
 
     Example::
 
@@ -96,11 +138,28 @@ class GracefulShutdown:
         server: AgentServer | None = None,
         drain_timeout_sec: float = 30.0,
         poll_interval_sec: float = 0.5,
+        cancel_scope: str = "auto",
     ) -> None:
+        if cancel_scope not in _CANCEL_SCOPES:
+            raise ValueError(
+                f"cancel_scope must be one of {_CANCEL_SCOPES}, got {cancel_scope!r}"
+            )
         self.network = network
         self.server = server
         self.drain_timeout_sec = drain_timeout_sec
         self.poll_interval_sec = poll_interval_sec
+
+        self._owned_task_ids: set[str] = set()
+        if cancel_scope == "auto":
+            store = getattr(network.task_manager, "_store", None)
+            cancel_scope = "owned" if _is_shared_store(store) else "all"
+        self._owned_only: bool = cancel_scope == "owned"
+        if self._owned_only:
+            self._install_ownership_tracking()
+            logger.debug(
+                "GracefulShutdown: shared task store — drain only covers tasks "
+                "handled by this process."
+            )
 
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._draining: bool = False
@@ -132,6 +191,20 @@ class GracefulShutdown:
         if self._drain_started_at is None or self._drain_ended_at is None:
             return None
         return self._drain_ended_at - self._drain_started_at
+
+    @property
+    def owned_task_ids(self) -> frozenset[str]:
+        """Task ids this process is currently handling (only tracked in "owned" scope)."""
+        return frozenset(self._owned_task_ids)
+
+    def track_task(self, task_id: str) -> None:
+        """
+        Mark a task as handled by this process, so drain covers it in the
+        "owned" scope. Only needed for tasks moved into SUBMITTED/WORKING
+        without going through the network's TaskManager (create/start/
+        provide_input are tracked automatically).
+        """
+        self._owned_task_ids.add(task_id)
 
     # ── Signal handling ───────────────────────────────────────────────────────
 
@@ -332,25 +405,85 @@ class GracefulShutdown:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
+    def _install_ownership_tracking(self) -> None:
+        """
+        Wrap the network TaskManager's lifecycle methods (on this instance
+        only) so the task ids this process handles are recorded.
+        """
+        manager = self.network.task_manager
+        owned = self._owned_task_ids
+
+        def wrap(name: str, claim: bool) -> None:
+            original = getattr(manager, name, None)
+            if original is None or not callable(original):
+                return
+
+            @functools.wraps(original)
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+                result = await original(*args, **kwargs)
+                task_id = getattr(result, "id", None)
+                if not isinstance(task_id, str):
+                    task_id = kwargs.get("task_id", args[0] if args else None)
+                if isinstance(task_id, str):
+                    if claim:
+                        owned.add(task_id)
+                    else:
+                        owned.discard(task_id)
+                return result
+
+            setattr(manager, name, wrapper)
+
+        for name in _CLAIMING_METHODS:
+            wrap(name, claim=True)
+        for name in _RELEASING_METHODS:
+            wrap(name, claim=False)
+
+    async def _active_tasks(self) -> list[Any]:
+        """Tasks this drain must wait for / cancel, according to the scope."""
+        manager = self.network.task_manager
+        if not self._owned_only:
+            tasks = await manager.list_all()
+            return [t for t in tasks if t.state in _ACTIVE_STATES]
+
+        # Owned scope: look up only our own tasks — never scan the shared
+        # store, which also holds every other replica's tasks.
+        active: list[Any] = []
+        for task_id in list(self._owned_task_ids):
+            try:
+                task = await manager.get(task_id)
+            except Exception:
+                # Deleted or expired — nothing left to drain.
+                self._owned_task_ids.discard(task_id)
+                continue
+            if task.state in _OWNED_ACTIVE_STATES:
+                active.append(task)
+            else:
+                self._owned_task_ids.discard(task_id)
+        return active
+
     async def _count_active_tasks(self) -> int:
-        """Return the number of tasks in SUBMITTED, WORKING, or INPUT_REQUIRED state."""
+        """
+        Return the number of active tasks this drain must wait for.
+
+        Scope "all": SUBMITTED, WORKING or INPUT_REQUIRED tasks in the store.
+        Scope "owned": this process's SUBMITTED or WORKING tasks.
+        """
         try:
-            tasks = await self.network.task_manager.list_all()
-            return sum(1 for t in tasks if t.state in _ACTIVE_STATES)
+            return len(await self._active_tasks())
         except Exception as exc:
             logger.warning("GracefulShutdown: error counting active tasks: %s", exc)
             return 0
 
     async def _cancel_active_tasks(self) -> int:
         """
-        Forcefully cancel all active tasks.
+        Forcefully cancel the active tasks in this drain's scope.
 
         Returns:
             Number of tasks cancelled.
         """
         cancelled = 0
         try:
-            tasks = await self.network.task_manager.list_all()
+            tasks = await self._active_tasks()
             for task in tasks:
                 if task.state in _ACTIVE_STATES:
                     try:

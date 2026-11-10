@@ -28,6 +28,7 @@ from nexus_a2a.core.orchestrator import DAGNode, Orchestrator, OrchestratorResul
 from nexus_a2a.core.registry import AgentRegistry
 from nexus_a2a.core.task_manager import TaskManager
 from nexus_a2a.models.task import Message, Task
+from nexus_a2a.security.redaction import redact_url
 from nexus_a2a.storage.dlq_store import AbstractDLQStore
 from nexus_a2a.transport.http_client import (
     A2AHttpClient,
@@ -322,7 +323,7 @@ class AgentNetwork:
                 "skills": card.skill_ids(),
             },
         )
-        logger.info("AgentNetwork: added '%s' at %s", card.name, url)
+        logger.info("AgentNetwork: added '%s' at %s", card.name, redact_url(url))
 
     async def remove(self, url: str) -> None:
         """
@@ -333,7 +334,7 @@ class AgentNetwork:
         """
         await self.registry.unregister(url)
         await self.bus.publish(self.EVENT_AGENT_REMOVED, {"url": url})
-        logger.info("AgentNetwork: removed agent at %s", url)
+        logger.info("AgentNetwork: removed agent at %s", redact_url(url))
 
     # ── Sending tasks ─────────────────────────────────────────────────────────
 
@@ -534,23 +535,27 @@ class AgentNetwork:
 
         Raises:
             ValueError: No suitable agent found.
+
+        The URL comes from the registry entry (the URL the agent was
+        registered under), not from the remote agent's self-declared
+        card.url, which could point anywhere.
         """
         if skill_id:
-            matches = self.registry.find_by_skill(skill_id)
+            matches = self.registry.find_urls_by_skill(skill_id)
             if not matches:
                 raise ValueError(
                     f"No healthy agent found with skill '{skill_id}'. "
                     "Register an agent that advertises this skill first."
                 )
-            return str(matches[0].url).rstrip("/")
+            return matches[0].rstrip("/")
 
-        healthy = self.registry.list_healthy()
+        healthy = self.registry.list_healthy_urls()
         if not healthy:
             raise ValueError(
                 "No healthy agents registered in this network. "
                 "Call await network.add(url) first."
             )
-        return str(healthy[0].url).rstrip("/")
+        return healthy[0].rstrip("/")
 
     def _get_orchestrator(self) -> Orchestrator:
         """Return (or lazily create) the Orchestrator with network's runner."""

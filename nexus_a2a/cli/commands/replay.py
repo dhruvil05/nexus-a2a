@@ -18,10 +18,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import click
-import httpx
 
 from nexus_a2a.cli.admin import (
+    UnsafeTokenDestinationError,
     admin_headers,
+    check_token_destination,
     forbidden_hint,
     resolve_admin_token,
     resolve_ops_url,
@@ -34,7 +35,9 @@ from nexus_a2a.cli.output import (
     print_warning,
     render_replay_preview,
     render_replay_result,
+    safe,
 )
+from nexus_a2a.transport.limits import capped_client
 
 
 def _parse_duration(value: str) -> timedelta:
@@ -64,7 +67,7 @@ async def _fetch_dlq_entries(
     """GET /dlq from a running ops server. Raises on network/HTTP errors."""
     agent_url = agent_url.rstrip("/")
     params = {"skill": skill} if skill else {}
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with capped_client(timeout=10.0) as client:
         resp = await client.get(
             f"{agent_url}/dlq", params=params, headers=admin_headers(token)
         )
@@ -87,7 +90,7 @@ async def _replay_remote(
     succeeded = 0
     failed = 0
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with capped_client(timeout=30.0) as client:
         with make_progress("Replaying tasks") as progress:
             task = progress.add_task("replay", total=len(task_ids))
             for task_id in task_ids:
@@ -105,11 +108,13 @@ async def _replay_remote(
                         failed += 1
                         if verbose:
                             err = body.get("results", [{}])[0].get("error")
-                            console.print(f"[red]  ✗ {task_id}: {err}[/red]")
+                            console.print(
+                                f"[red]  ✗ {safe(task_id)}: {safe(err)}[/red]"
+                            )
                 except Exception as exc:
                     failed += 1
                     if verbose:
-                        console.print(f"[red]  ✗ {task_id}: {exc}[/red]")
+                        console.print(f"[red]  ✗ {safe(task_id)}: {safe(exc)}[/red]")
                 finally:
                     progress.advance(task)
 
@@ -197,6 +202,7 @@ def replay(
 
     # ── Resolve target agent ──────────────────────────────────────────────────
     cfg = ctx.load_config()
+    explicit_agent_url = agent_url
     agent_url = resolve_ops_url(agent_url, cfg)
     token = resolve_admin_token(admin_token, cfg)
     if not agent_url:
@@ -205,6 +211,11 @@ def replay(
             "nexus.toml."
         )
         raise SystemExit(1)
+    try:
+        check_token_destination(explicit_agent_url, admin_token, cfg)
+    except UnsafeTokenDestinationError as e:
+        print_error(str(e))
+        raise SystemExit(1) from e
 
     # ── Build filter ──────────────────────────────────────────────────────────
     since: datetime | None = None

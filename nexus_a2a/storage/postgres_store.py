@@ -54,6 +54,7 @@ Requires: pip install nexus-a2a[postgres]
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from nexus_a2a.models.task import Task
@@ -63,6 +64,13 @@ logger = logging.getLogger(__name__)
 
 # Default table name — configurable to avoid conflicts in shared databases
 _DEFAULT_TABLE = "nexus_a2a_tasks"
+
+# The table name is interpolated into SQL (identifiers cannot be bound as
+# parameters), so it must be a plain identifier: letters, digits and
+# underscores, max 63 chars (the PostgreSQL limit). An optional
+# "schema." prefix of the same form is allowed.
+_IDENT = r"[A-Za-z_][A-Za-z0-9_]{0,62}"
+_TABLE_RE = re.compile(rf"(?:{_IDENT}\.)?{_IDENT}")
 
 
 class PostgresTaskStore(AbstractTaskStore):
@@ -96,6 +104,8 @@ class PostgresTaskStore(AbstractTaskStore):
         max_size:   Maximum pool connections. Default: 10.
         table:      Table name for task storage. Default: "nexus_a2a_tasks".
                     Override to isolate environments (e.g. "nexus_staging_tasks").
+                    Must be a plain SQL identifier (letters, digits, underscore;
+                    optionally "schema.table"), otherwise ValueError is raised.
         create_schema: If True (default), run CREATE TABLE IF NOT EXISTS on
                     connect(). Set False if you manage schema via migrations.
     """
@@ -111,6 +121,11 @@ class PostgresTaskStore(AbstractTaskStore):
         self._dsn = dsn
         self._min_size = min_size
         self._max_size = max_size
+        if not isinstance(table, str) or not _TABLE_RE.fullmatch(table):
+            raise ValueError(
+                f"Invalid table name {table!r}: must match "
+                "[A-Za-z_][A-Za-z0-9_]{0,62} (optionally prefixed by 'schema.')."
+            )
         self._table = table
         self._create_schema = create_schema
         self._pool: Any = None  # asyncpg.Pool — set after connect()
@@ -346,11 +361,13 @@ class PostgresTaskStore(AbstractTaskStore):
             Number of tasks deleted.
         """
         self._require_pool()
+        # Bound as a parameter — never interpolated into the SQL text.
         result = await self._pool.execute(
             f"""
             DELETE FROM {self._table}
-            WHERE updated_at < NOW() - INTERVAL '{days} days'
+            WHERE updated_at < NOW() - ($1::double precision * INTERVAL '1 day')
             """,
+            float(days),
         )
         # asyncpg returns "DELETE N" as the status string
         deleted = int(result.split()[-1]) if result else 0

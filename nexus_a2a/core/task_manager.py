@@ -99,6 +99,11 @@ class TaskManager:
                            None = no timeout (default).
         watchdog_interval: How often the watchdog scans. Default: 10s.
         on_timeout:        Async callback(task) called on timeout.
+        input_timeout_sec: Optional. Fail tasks left SUBMITTED or
+                           INPUT_REQUIRED (waiting for the caller) longer than
+                           this. Off by default, because a human-in-the-loop
+                           reply can legitimately take hours; set it when
+                           abandoned conversations must not accumulate.
     """
 
     def __init__(
@@ -107,9 +112,11 @@ class TaskManager:
         timeout_sec: float | None = None,
         watchdog_interval: float = 10.0,
         on_timeout: TimeoutCallback | None = None,
+        input_timeout_sec: float | None = None,
     ) -> None:
         self._store = store or InMemoryTaskStore()
         self._timeout_sec = timeout_sec
+        self._input_timeout_sec = input_timeout_sec
         self._watchdog_interval = watchdog_interval
         self._on_timeout = on_timeout
         self._watchdog_task: asyncio.Task[None] | None = None
@@ -117,7 +124,7 @@ class TaskManager:
     # ── Async context manager ─────────────────────────────────────────────────
 
     async def __aenter__(self) -> TaskManager:
-        if self._timeout_sec is not None:
+        if self._timeout_sec is not None or self._input_timeout_sec is not None:
             await self.start_watchdog()
         return self
 
@@ -138,8 +145,10 @@ class TaskManager:
             name="nexus-task-watchdog",
         )
         logger.info(
-            "TaskManager watchdog started (timeout=%.0fs, interval=%.0fs)",
+            "TaskManager watchdog started (timeout=%s, input_timeout=%s, "
+            "interval=%.0fs)",
             self._timeout_sec,
+            self._input_timeout_sec,
             self._watchdog_interval,
         )
 
@@ -166,26 +175,35 @@ class TaskManager:
                 logger.error("Watchdog scan error: %s", exc)
 
     async def _check_timeouts(self) -> None:
-        """Find and auto-fail any WORKING tasks past their timeout."""
-        if self._timeout_sec is None:
-            return
-
+        """Find and auto-fail tasks past their timeout."""
         import time
+
+        candidates: list[tuple[Task, float]] = []
+        # Query by state rather than loading every task ever stored: on a
+        # database store, list_all() grows with history, not with load.
+        if self._timeout_sec is not None:
+            for task in await self._store.list_by_state(TaskState.WORKING.value):
+                candidates.append((task, self._timeout_sec))
+        if self._input_timeout_sec is not None:
+            for waiting in (TaskState.SUBMITTED, TaskState.INPUT_REQUIRED):
+                for task in await self._store.list_by_state(waiting.value):
+                    candidates.append((task, self._input_timeout_sec))
+        if not candidates:
+            return
 
         now = time.time()
         failed = 0
 
-        for task in await self._store.list_all():
-            if task.state != TaskState.WORKING:
-                continue
+        for task, limit in candidates:
             age = now - task.updated_at.timestamp()
-            if age < self._timeout_sec:
+            if age < limit:
                 continue
 
+            state = task.state.value if hasattr(task.state, "value") else task.state
             reason = (
                 f"Task auto-failed by watchdog: "
-                f"exceeded timeout of {self._timeout_sec:.0f}s "
-                f"(was WORKING for {age:.0f}s)"
+                f"exceeded timeout of {limit:.0f}s "
+                f"(was {str(state).upper()} for {age:.0f}s)"
             )
             try:
                 task.transition(TaskState.FAILED, error=reason)
@@ -207,12 +225,14 @@ class TaskManager:
         initial_message: Message,
         skill_id: str | None = None,
         context_id: str | None = None,
+        owner: str | None = None,
     ) -> Task:
         """Create a new Task in SUBMITTED state and persist it."""
         task = Task.create(
             initial_message=initial_message,
             skill_id=skill_id,
             context_id=context_id,
+            owner=owner,
         )
         await self._store.save(task)
         logger.info("Task created: id=%s skill=%s", task.id, skill_id)
@@ -228,6 +248,10 @@ class TaskManager:
     async def list_all(self) -> list[Task]:
         """Return all tasks in the store."""
         return await self._store.list_all()
+
+    async def ping(self) -> None:
+        """Raise if the task store is unreachable. Cheap; for readiness checks."""
+        await self._store.ping()
 
     async def delete(self, task_id: str) -> None:
         """Remove a task permanently."""
