@@ -7,7 +7,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [2.0.0] — Unreleased
+## [2.0.0] — Security release — 2026-11-10
+
+A security-focused major release. It fixes the findings of a full security
+audit and makes the four 1.9 warnings errors, as announced. See
+**MIGRATING.md** ("1.9 → 2.0") before upgrading.
 
 ### Fixed — security
 
@@ -138,6 +142,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed — breaking
 
+- **The four 1.9 warnings are now errors**, as announced in 1.9:
+  - An unsecured agent on a public address refuses to start (below).
+  - `AuthManager(allow_unregistered=True)` raises `TypeError`. Use
+    `default=AgentCredentialConfig(scheme=AuthScheme.NONE)` instead.
+  - HS256 secrets shorter than 32 bytes raise `ValueError`, or `ConfigError`
+    when the secret comes from `nexus.toml`.
+  - Unknown `nexus.toml` keys raise `ConfigError`. The "did you mean" hint is
+    kept.
 - **An agent with no security now refuses to start on a public address.**
   `A2AServer.start()` raises `InsecureServerError`, replacing the 1.9
   `FutureWarning`. This applies to non-loopback binds with no auth, trust,

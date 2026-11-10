@@ -40,7 +40,6 @@ import difflib
 import logging
 import os
 import tomllib
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -349,13 +348,12 @@ class NexusConfig:
     @classmethod
     def _parse(cls, raw: dict[str, Any]) -> NexusConfig:
         """Convert raw TOML dict to a NexusConfig with typed sections."""
-        for message in _unknown_key_messages(raw):
+        unknown = _unknown_key_messages(raw)
+        if unknown:
             # Ignored keys are how a typo like `auth_schem` leaves an agent
-            # open. nexus-a2a 2.0 will reject them outright.
-            warnings.warn(
-                f"nexus.toml: {message} — it is ignored.",
-                ConfigWarning,
-                stacklevel=3,
+            # open, so since 2.0 they are an error rather than a warning.
+            raise ConfigError(
+                "unknown keys (fix or remove them): " + "; ".join(unknown)
             )
         return cls(
             agent=cls._parse_agent(raw.get("agent", {})),
@@ -793,7 +791,10 @@ class NexusConfig:
                 cred_kwargs["jwt_secret"] = self.security.auth_secret
             elif scheme == AuthScheme.API_KEY:
                 cred_kwargs["api_key"] = self.security.auth_secret
-            manager.set_default(AgentCredentialConfig(**cred_kwargs))
+            try:
+                manager.set_default(AgentCredentialConfig(**cred_kwargs))
+            except ValueError as exc:
+                raise ConfigError(str(exc), "security.auth_secret") from exc
 
         return manager
 

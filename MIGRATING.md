@@ -1,5 +1,80 @@
 # Migrating
 
+## 1.9 → 2.0
+
+2.0 is a security release. Most changes only affect deployments that relied
+on something unsafe; each entry says how to keep the old behaviour where that
+is still safe to do. `CHANGELOG.md` has the full list and the reasons.
+
+### The four 1.9 warnings are now errors
+
+| 1.9 warning | 2.0 | What to do |
+|---|---|---|
+| Unsecured `A2AServer` on a non-loopback address | `start()` raises `InsecureServerError` | Add `security=SecurityMiddleware(...)`, bind `127.0.0.1`, or — behind a gateway that authenticates for you — `allow_insecure=True` / `[security] allow_insecure = true` |
+| `AuthManager(allow_unregistered=True)` | `TypeError` | `AuthManager(default=AgentCredentialConfig(scheme=AuthScheme.NONE))` |
+| HS256 secret under 32 bytes | `ValueError` (`ConfigError` from `nexus.toml`) | `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| Unknown `nexus.toml` key | `ConfigError` | Fix the typo the message suggests, or remove the key |
+
+If you ran your tests with the filters from "Preparing for 2.0" below, these
+are already handled.
+
+### Identity, trust and rate limiting
+
+- **Trust rules need a verified caller.** `X-Nexus-Caller` alone is no
+  longer believed. A caller is verified by:
+  - a credential registered for its URL that no other caller shares,
+  - a JWT whose `sub` equals its URL, or
+  - an mTLS client certificate whose SAN names it.
+  Unverified callers get 403 under trust (or a log line in warn-only mode).
+- **`trust_mode = "strict"` in `nexus.toml` requires `auth_scheme = "jwt"`.**
+  Callers send a token with `sub` set to their URL:
+  `auth.issue_jwt(target_url, subject=my_url)`.
+- **Trust wildcards stay inside one host label or path segment.** Write
+  `http://10.0.*.*` rather than `http://10.0.*`, and `http://*.corp.example`
+  for one level of subdomain.
+- **Rate limits are keyed by verified identity, otherwise by client address.**
+  `set_limit(caller_url, ...)` applies to verified callers only; use
+  `set_limit("ip:<addr>", ...)` for anything else. Behind a reverse proxy,
+  pass `client_ip_header="X-Forwarded-For"` so clients are told apart.
+- **Tasks belong to the verified caller that created them.** Other callers
+  get "task not found". Servers without per-caller identity are unchanged.
+- **JWTs must carry `exp`.** `issue_jwt()` always sets it.
+
+### Limits that are now on by default
+
+- `A2AServer` refuses request bodies over 10 MiB (`max_body_bytes=`).
+- `A2AHttpClient` refuses responses over 10 MiB and SSE lines over 1 MiB
+  (`max_response_bytes=`, `max_sse_line=`). The `nexus` CLI uses the same cap.
+- Webhook deliveries: at most 100 in flight (`WebhookConfig.max_concurrent`),
+  one overall deadline per attempt (`timeout`), bounded delivery log.
+
+### Webhooks
+
+- Delivery re-checks the address on every attempt. Targets that resolve to
+  any non-public address — including CGNAT `100.64.0.0/10` and NAT64 — are
+  refused. Use `allow_private_urls=True` for local development only.
+- Deliveries now carry `X-A2A-Notification-Token`, `X-Nexus-Delivery-Id`,
+  `X-Nexus-Timestamp` and `X-Nexus-Signature-256-Timestamped`. The existing
+  `X-Nexus-Signature-256` is unchanged, so current receivers keep working;
+  switch to `WebhookDispatcher.verify_timestamped_signature()` to reject
+  replays.
+- `WebhookDispatcher` used on its own enforces the same address policy.
+
+### Other behaviour changes
+
+- **Routing follows the URL you registered,** not an agent card's
+  self-declared `url` on another origin. List trusted separate endpoint hosts
+  in `AgentRegistry(trusted_card_origins=[...])`, or use `"*"` for the old
+  behaviour.
+- **`verify_peer_certificate()` really verifies now** and needs
+  `cryptography` (`pip install "nexus-a2a[jwks]"`). Pass the peer's
+  intermediates with `intermediates=[...]`.
+- **`nexus trace` / `nexus replay` refuse to send `NEXUS_ADMIN_TOKEN`** to a
+  non-loopback URL taken from `nexus.toml`. Pass `--agent URL` or set
+  `NEXUS_OPS_URL` to confirm the destination.
+- **Error responses no longer include exception text** (`Internal error`,
+  `/ready`). The details are in the server log.
+
 ## 1.8 → 1.9
 
 1.9.0 is the last minor release before 2.0. It changes no public signatures,
@@ -75,8 +150,10 @@ Those keys never had any effect, so removing them changes nothing.
 
 ## Preparing for 2.0
 
-2.0 turns the four warnings above into errors. There are no other planned
-breaking changes.
+*Written for 1.9; kept for reference. 2.0 shipped these four as errors and
+also made the security changes in "1.9 → 2.0" above.*
+
+2.0 turns the four warnings above into errors.
 
 | In 2.0 | Why |
 |---|---|

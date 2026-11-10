@@ -1101,12 +1101,12 @@ class TestFutureWarnings:
         runtime = cfg_from(security={"allow_insecure": True}).build_runtime(EchoAgent)
         assert runtime.server.allow_insecure is True
 
-    def test_allow_unregistered_is_deprecated(self):
-        with pytest.warns(DeprecationWarning, match="removed in nexus-a2a 2.0"):
+    def test_allow_unregistered_is_removed(self):
+        with pytest.raises(TypeError, match="removed in nexus-a2a 2.0"):
             AuthManager(allow_unregistered=True)
 
-    def test_short_hs256_secret_warns(self):
-        with pytest.warns(FutureWarning, match="RFC 7518"):
+    def test_short_hs256_secret_rejected(self):
+        with pytest.raises(ValueError, match="RFC 7518"):
             AuthManager().register_agent(
                 "http://a:1",
                 AgentCredentialConfig(scheme=AuthScheme.JWT, jwt_secret="short"),
@@ -1143,18 +1143,20 @@ class TestLoopbackDetection:
 
 
 class TestUnknownConfigKeys:
-    def test_typo_is_reported_with_a_suggestion(self):
-        from nexus_a2a.config import ConfigWarning
+    def test_short_config_secret_is_a_config_error(self):
+        with pytest.raises(ConfigError, match="RFC 7518"):
+            cfg_from(
+                security={"auth_scheme": "jwt", "auth_secret": "short"}
+            ).build_auth_manager()
 
-        with pytest.warns(ConfigWarning, match="did you mean 'auth_scheme'"):
+    def test_typo_is_reported_with_a_suggestion(self):
+        with pytest.raises(ConfigError, match="did you mean 'auth_scheme'"):
             NexusConfig.from_dict(
                 {"agent": {"name": "a"}, "security": {"auth_schem": "api_key"}}
             )
 
     def test_unknown_section_is_reported(self):
-        from nexus_a2a.config import ConfigWarning
-
-        with pytest.warns(ConfigWarning, match=r"\[reliabilty\].*'reliability'"):
+        with pytest.raises(ConfigError, match=r"\[reliabilty\].*'reliability'"):
             NexusConfig.from_dict({"agent": {"name": "a"}, "reliabilty": {}})
 
     def test_formerly_documented_phantom_keys_are_reported(self):

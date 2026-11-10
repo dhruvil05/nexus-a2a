@@ -50,7 +50,7 @@ Agent A  ──HTTP/JSON-RPC──▶  Agent B  ──▶  Agent C
 - [Configuration (nexus.toml)](#configuration-nexustoml)
 - [Error Handling Reference](#error-handling-reference)
 - [Testing](#testing)
-- [Preparing for 2.0](#preparing-for-20)
+- [Upgrading to 2.0](#upgrading-to-20)
 
 ---
 
@@ -1408,7 +1408,7 @@ print(tracer.format_tree(trace))
 
 One file configures the agent `nexus run` serves: auth, trust, rate limits,
 storage, webhooks and an ops server. Every key below is read; anything else
-triggers a `ConfigWarning` with a "did you mean" suggestion, so a typo can't
+raises a `ConfigError` with a "did you mean" suggestion, so a typo can't
 silently leave an agent unsecured.
 
 ```toml
@@ -1433,7 +1433,7 @@ trust_mode        = "strict"     # off | warn | strict ([network].agents only)
 rate_limit        = 10           # requests/sec per verified caller, else per IP; 0 = off
 rate_burst        = 20
 max_payload_bytes = 1048576      # 0 = off
-allow_insecure    = false        # see "Preparing for 2.0"
+allow_insecure    = false        # see "Upgrading to 2.0"
 
 [storage]
 backend            = "redis"     # memory | redis | postgres
@@ -1650,9 +1650,9 @@ ruff format nexus_a2a
 
 ---
 
-## Preparing for 2.0
+## Upgrading to 2.0
 
-2.0 turns four 1.9 warnings into errors:
+2.0 is a security release. It turns four 1.9 warnings into errors:
 
 - an unsecured agent on a non-loopback address (`A2AServer.start()` raises
   `InsecureServerError`). Behind a gateway that authenticates for you —
@@ -1662,8 +1662,9 @@ ruff format nexus_a2a
 - HS256 secrets shorter than 32 bytes;
 - unknown `nexus.toml` keys.
 
-**[MIGRATING.md](MIGRATING.md)** explains each one, including how to make your
-test suite fail on them now.
+It also tightens identity, trust, rate limiting, webhooks and size limits.
+**[MIGRATING.md](MIGRATING.md)** ("1.9 → 2.0") lists every behaviour change
+and how to keep the old behaviour where that is safe.
 
 ---
 
@@ -1677,6 +1678,7 @@ test suite fail on them now.
 | **v0.4.0** | `Orchestrator` (sequential/parallel/dag), SSE streaming, `WebhookDispatcher`, `AgentNetwork` |
 | **v1.0.0** | LangGraph/CrewAI/AutoGen/GoogleADK adapters, `RedisTaskStore`, `AuditLogger`, `MetricsCollector` |
 | **v1.1.0** | Task timeout watchdog, `InputHandler`, `DeadLetterQueue`, `CircuitBreaker`, `Tracer`, `CapabilityGuard` |
+| **v2.0.0** | Security release: verified caller identity (per-caller keys, JWT `sub`, mTLS), task ownership, DNS-rebinding-safe webhooks with timestamped signatures, body/response size caps, unsecured public binds refused, the four 1.9 warnings now errors, dependencies cleared of known advisories |
 | **v1.9.0** | `nexus.toml` drives `nexus run` (`AgentRuntime`), `nexus verify`, `nexus dev`, live `GET /stream`, `/metrics` on agents, bounded task store; fixes the never-checked config secret, cards hiding their auth, and four CLI commands broken against real servers |
 | **v1.8.0** | Production scale: durable DLQ and push targets, distributed rate limiting (atomic via Lua), asymmetric JWT + JWKS with algorithm-confusion prevention |
 | **v1.7.0** | Streaming, multi-turn (`NeedsInput`) and push notifications. Every capability a card advertises is now served; HMAC webhook signing fixed (it had never validated) and webhook URLs are SSRF-checked |
