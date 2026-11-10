@@ -69,9 +69,9 @@ class TestAuthManagerNone:
         with pytest.raises(UnknownAgentError):
             await auth.verify("http://unknown:9999", {})
 
-    async def test_unregistered_agent_allowed_when_opted_in(self):
-        """allow_unregistered=True restores the pre-1.5.0 fail-open behaviour."""
-        auth = AuthManager(allow_unregistered=True)
+    async def test_unregistered_agent_allowed_with_explicit_none_default(self):
+        """2.0: open access for unknown callers is an explicit NONE default."""
+        auth = AuthManager(default=AgentCredentialConfig(scheme=AuthScheme.NONE))
         claims = await auth.verify("http://unknown:9999", {})
         assert claims["scheme"] == "none"
 

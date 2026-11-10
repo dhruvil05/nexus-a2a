@@ -44,16 +44,26 @@ SKILLS = [{"id": "write", "name": "Write", "description": "Write text."}]
 # ── Test agents ───────────────────────────────────────────────────────────────
 
 
-@agent(name="Writer", description="Streams words.", streaming=True,
-       skills=SKILLS, url=SERVER_URL)
+@agent(
+    name="Writer",
+    description="Streams words.",
+    streaming=True,
+    skills=SKILLS,
+    url=SERVER_URL,
+)
 class WriterAgent:
     async def run(self, task: Task):
         for word in WORDS:
             yield word
 
 
-@agent(name="StreamMethod", description="Streams via stream().",
-       streaming=True, skills=SKILLS, url=SERVER_URL)
+@agent(
+    name="StreamMethod",
+    description="Streams via stream().",
+    streaming=True,
+    skills=SKILLS,
+    url=SERVER_URL,
+)
 class StreamMethodAgent:
     async def run(self, task: Task) -> str:
         return "".join(WORDS)
@@ -69,16 +79,26 @@ class PlainAgent:
         return "one shot"
 
 
-@agent(name="BoomStream", description="Fails mid-stream.", streaming=True,
-       skills=SKILLS, url=SERVER_URL)
+@agent(
+    name="BoomStream",
+    description="Fails mid-stream.",
+    streaming=True,
+    skills=SKILLS,
+    url=SERVER_URL,
+)
 class BoomStreamAgent:
     async def run(self, task: Task):
         yield "partial"
         raise RuntimeError("stream exploded")
 
 
-@agent(name="JsonStream", description="Streams dicts.", streaming=True,
-       skills=SKILLS, url=SERVER_URL)
+@agent(
+    name="JsonStream",
+    description="Streams dicts.",
+    streaming=True,
+    skills=SKILLS,
+    url=SERVER_URL,
+)
 class JsonStreamAgent:
     async def run(self, task: Task):
         yield {"step": 1}
@@ -98,7 +118,7 @@ def parse_sse(text: str) -> list[dict]:
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("data:"):
-            events.append(json.loads(line[len("data:"):].strip()))
+            events.append(json.loads(line[len("data:") :].strip()))
     return events
 
 
@@ -112,8 +132,12 @@ def stream_rpc(
     params.update(params_extra or {})
     return client.post(
         "/",
-        json={"jsonrpc": "2.0", "id": "1", "method": "message/stream",
-              "params": params},
+        json={
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "message/stream",
+            "params": params,
+        },
         headers=headers or {},
     )
 
@@ -122,7 +146,9 @@ def send_rpc(client: TestClient, text: str = "go", headers: dict | None = None):
     return client.post(
         "/",
         json={
-            "jsonrpc": "2.0", "id": "1", "method": "message/send",
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "message/send",
             "params": {"message": Message.user_text(text).model_dump(mode="json")},
         },
         headers=headers or {},
@@ -135,7 +161,8 @@ def types_of(events: list[dict]) -> list[str]:
 
 def chunks_of(events: list[dict]) -> list[str]:
     return [
-        e["content"] for e in events
+        e["content"]
+        for e in events
         if e["type"] == StreamEventType.ARTIFACT_CHUNK.value
     ]
 
@@ -245,7 +272,10 @@ class TestMessageStream:
         assert idx == list(range(len(WORDS)))
 
     def test_stream_method_agent_streams(self):
-        assert chunks_of(parse_sse(stream_rpc(make_client(StreamMethodAgent)).text)) == WORDS
+        assert (
+            chunks_of(parse_sse(stream_rpc(make_client(StreamMethodAgent)).text))
+            == WORDS
+        )
 
     def test_json_chunks_are_machine_readable(self):
         chunks = chunks_of(parse_sse(stream_rpc(make_client(JsonStreamAgent)).text))
@@ -257,8 +287,12 @@ class TestMessageStream:
         task_id = events[0]["id"]
         got = client.post(
             "/",
-            json={"jsonrpc": "2.0", "id": "2", "method": "tasks/get",
-                  "params": {"taskId": task_id}},
+            json={
+                "jsonrpc": "2.0",
+                "id": "2",
+                "method": "tasks/get",
+                "params": {"taskId": task_id},
+            },
         ).json()["result"]
         assert got["state"] == "completed"
         assert got["artifacts"][0]["parts"][0]["content"] == "".join(WORDS)
@@ -277,7 +311,9 @@ class TestNonStreamingAgentOverStream:
     """A non-streaming agent must still be usable through message/stream."""
 
     def test_output_arrives_as_one_chunk(self):
-        assert chunks_of(parse_sse(stream_rpc(make_client(PlainAgent)).text)) == ["one shot"]
+        assert chunks_of(parse_sse(stream_rpc(make_client(PlainAgent)).text)) == [
+            "one shot"
+        ]
 
     def test_still_terminates_cleanly(self):
         events = types_of(parse_sse(stream_rpc(make_client(PlainAgent)).text))
@@ -321,16 +357,24 @@ class TestStreamFailures:
         task_id = events[0]["id"]
         got = client.post(
             "/",
-            json={"jsonrpc": "2.0", "id": "2", "method": "tasks/get",
-                  "params": {"taskId": task_id}},
+            json={
+                "jsonrpc": "2.0",
+                "id": "2",
+                "method": "tasks/get",
+                "params": {"taskId": task_id},
+            },
         ).json()["result"]
         assert got["state"] == "failed"
 
     def test_missing_message_is_an_rpc_error_not_a_stream(self):
         resp = make_client().post(
             "/",
-            json={"jsonrpc": "2.0", "id": "1", "method": "message/stream",
-                  "params": {}},
+            json={
+                "jsonrpc": "2.0",
+                "id": "1",
+                "method": "message/stream",
+                "params": {},
+            },
         )
         assert resp.headers["content-type"].startswith("application/json")
         assert resp.json()["error"]["code"] == ERR_INVALID_PARAMS
@@ -340,8 +384,12 @@ class TestStreamFailures:
         assert resp.status_code == 200  # sanity: the good path streams
         bad = make_client().post(
             "/",
-            json={"jsonrpc": "2.0", "id": "1", "method": "message/stream",
-                  "params": {"message": {"bad": 1}}},
+            json={
+                "jsonrpc": "2.0",
+                "id": "1",
+                "method": "message/stream",
+                "params": {"message": {"bad": 1}},
+            },
         )
         assert bad.json()["error"]["code"] == ERR_INVALID_PARAMS
 
@@ -409,7 +457,8 @@ class TestStreamSecurity:
             )
         )
         resp = client.post(
-            "/", content=b"x" * 5000,
+            "/",
+            content=b"x" * 5000,
             headers={"Content-Type": "application/json"},
         )
         assert resp.status_code == 413
@@ -473,7 +522,7 @@ class TestWireFormat:
 
         body = stream_rpc(make_client()).text
         raw_lines = [
-            line.strip()[len("data:"):].strip()
+            line.strip()[len("data:") :].strip()
             for line in body.splitlines()
             if line.strip().startswith("data:")
         ]
@@ -486,7 +535,7 @@ class TestWireFormat:
         from nexus_a2a.transport.sse import parse_sse_data
 
         first = [
-            line.strip()[len("data:"):].strip()
+            line.strip()[len("data:") :].strip()
             for line in stream_rpc(make_client()).text.splitlines()
             if line.strip().startswith("data:")
         ][0]

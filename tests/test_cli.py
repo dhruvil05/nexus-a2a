@@ -131,9 +131,7 @@ class TestContextIdentity:
 
     @pytest.mark.parametrize("name", COMMANDS)
     def test_commands_share_one_context_class(self, name: str):
-        module = __import__(
-            f"nexus_a2a.cli.commands.{name}", fromlist=["NexusContext"]
-        )
+        module = __import__(f"nexus_a2a.cli.commands.{name}", fromlist=["NexusContext"])
         assert module.NexusContext is NexusContext
 
 

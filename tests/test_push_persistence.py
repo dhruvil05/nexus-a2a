@@ -32,8 +32,12 @@ SERVER_URL = "http://push-agent:8001"
 HOOK = "http://127.0.0.1:9999/hook"
 
 
-@agent(name="Asker", description="Pauses for input.", push_notifications=True,
-       url=SERVER_URL)
+@agent(
+    name="Asker",
+    description="Pauses for input.",
+    push_notifications=True,
+    url=SERVER_URL,
+)
 class AskerAgent:
     async def run(self, task: Task):
         if sum(1 for m in task.history if m.role == "user") == 1:
@@ -74,8 +78,13 @@ async def send(server: A2AServer, text="go", **extra):
     transport = httpx.ASGITransport(app=server.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         resp = await c.post(
-            "/", json={"jsonrpc": "2.0", "id": "1", "method": "message/send",
-                       "params": params},
+            "/",
+            json={
+                "jsonrpc": "2.0",
+                "id": "1",
+                "method": "message/send",
+                "params": params,
+            },
         )
     await server.drain_notifications()
     return resp

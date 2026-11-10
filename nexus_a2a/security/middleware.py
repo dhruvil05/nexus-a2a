@@ -342,9 +342,7 @@ class SecurityMiddleware:
         if self.trust is not None:
             try:
                 if not identity.verified:
-                    raise UnverifiedCallerError(
-                        str(caller_url), str(self.server_url)
-                    )
+                    raise UnverifiedCallerError(str(caller_url), str(self.server_url))
                 self.trust.check(
                     caller_url=str(caller_url),
                     target_url=str(self.server_url),
@@ -479,9 +477,7 @@ class SecurityMiddleware:
 
     def _read_caller(self, headers: dict[str, str]) -> str | None:
         """Read the caller URL header, case-insensitively."""
-        raw = headers.get(self.caller_header) or headers.get(
-            self.caller_header.lower()
-        )
+        raw = headers.get(self.caller_header) or headers.get(self.caller_header.lower())
         if raw is None:
             return None
         caller = raw.strip().rstrip("/")

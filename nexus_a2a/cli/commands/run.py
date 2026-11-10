@@ -59,8 +59,10 @@ def build_config(raw: dict[str, Any], agent_class: Any) -> Any:
     from nexus_a2a.decorators import get_card
 
     card = get_card(agent_class if isinstance(agent_class, type) else type(agent_class))
-    merged = {key: dict(value) if isinstance(value, dict) else value
-              for key, value in raw.items()}
+    merged = {
+        key: dict(value) if isinstance(value, dict) else value
+        for key, value in raw.items()
+    }
     agent_section = merged.setdefault("agent", {})
     agent_section.setdefault("name", card.name)
     agent_section.setdefault("url", str(card.url).rstrip("/"))

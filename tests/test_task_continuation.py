@@ -37,8 +37,7 @@ def _user_turns(task: Task) -> int:
     return sum(1 for m in task.history if m.role == "user")
 
 
-@agent(name="Planner", description="Asks two questions, then answers.",
-       url=SERVER_URL)
+@agent(name="Planner", description="Asks two questions, then answers.", url=SERVER_URL)
 class PlannerAgent:
     async def run(self, task: Task):
         turns = _user_turns(task)
@@ -55,8 +54,12 @@ class OneShotAgent:
         return "done immediately"
 
 
-@agent(name="NoMultiTurn", description="Declines continuations.",
-       multi_turn=False, url=SERVER_URL)
+@agent(
+    name="NoMultiTurn",
+    description="Declines continuations.",
+    multi_turn=False,
+    url=SERVER_URL,
+)
 class NoMultiTurnAgent:
     async def run(self, task: Task):
         if _user_turns(task) == 1:
@@ -64,8 +67,9 @@ class NoMultiTurnAgent:
         return "second turn"
 
 
-@agent(name="StreamAsk", description="Streams then asks.", streaming=True,
-       url=SERVER_URL)
+@agent(
+    name="StreamAsk", description="Streams then asks.", streaming=True, url=SERVER_URL
+)
 class StreamAskAgent:
     async def run(self, task: Task):
         if _user_turns(task) == 1:
@@ -75,8 +79,7 @@ class StreamAskAgent:
             yield "confirmed!"
 
 
-@agent(name="PromptMessage", description="Asks with a Message object.",
-       url=SERVER_URL)
+@agent(name="PromptMessage", description="Asks with a Message object.", url=SERVER_URL)
 class PromptMessageAgent:
     async def run(self, task: Task):
         if _user_turns(task) == 1:
@@ -88,7 +91,9 @@ def make_client(agent_cls: type = PlannerAgent, **kwargs) -> TestClient:
     return TestClient(A2AServer(agent_cls, **kwargs).app)
 
 
-def send(client: TestClient, text: str, task_id: str | None = None, method="message/send"):
+def send(
+    client: TestClient, text: str, task_id: str | None = None, method="message/send"
+):
     params: dict = {"message": Message.user_text(text).model_dump(mode="json")}
     if task_id:
         params["taskId"] = task_id
@@ -105,7 +110,7 @@ def result_of(resp) -> dict:
 
 def parse_sse(text: str) -> list[dict]:
     return [
-        json.loads(line.strip()[len("data:"):].strip())
+        json.loads(line.strip()[len("data:") :].strip())
         for line in text.splitlines()
         if line.strip().startswith("data:")
     ]
@@ -153,8 +158,13 @@ class TestPausing:
         client = make_client()
         task_id = result_of(send(client, "plan"))["id"]
         got = client.post(
-            "/", json={"jsonrpc": "2.0", "id": "2", "method": "tasks/get",
-                       "params": {"taskId": task_id}},
+            "/",
+            json={
+                "jsonrpc": "2.0",
+                "id": "2",
+                "method": "tasks/get",
+                "params": {"taskId": task_id},
+            },
         ).json()["result"]
         assert got["state"] == "input_required"
 
@@ -204,10 +214,16 @@ class TestResuming:
     def test_context_id_survives_continuation(self):
         client = make_client()
         first = client.post(
-            "/", json={"jsonrpc": "2.0", "id": "1", "method": "message/send",
-                       "params": {
-                           "message": Message.user_text("plan").model_dump(mode="json"),
-                           "contextId": "ctx-77"}},
+            "/",
+            json={
+                "jsonrpc": "2.0",
+                "id": "1",
+                "method": "message/send",
+                "params": {
+                    "message": Message.user_text("plan").model_dump(mode="json"),
+                    "contextId": "ctx-77",
+                },
+            },
         ).json()["result"]
         second = result_of(send(client, "$500", task_id=first["id"]))
         assert second["context_id"] == "ctx-77"
@@ -237,10 +253,16 @@ class TestRejectedContinuations:
 
     def test_non_string_task_id(self):
         resp = make_client().post(
-            "/", json={"jsonrpc": "2.0", "id": "1", "method": "message/send",
-                       "params": {
-                           "message": Message.user_text("x").model_dump(mode="json"),
-                           "taskId": 123}},
+            "/",
+            json={
+                "jsonrpc": "2.0",
+                "id": "1",
+                "method": "message/send",
+                "params": {
+                    "message": Message.user_text("x").model_dump(mode="json"),
+                    "taskId": 123,
+                },
+            },
         )
         assert resp.json()["error"]["code"] == ERR_INVALID_PARAMS
 
@@ -267,9 +289,7 @@ class TestMultiTurnCapability:
         assert "error" not in send(client, "$500", task_id=first["id"]).json()
 
     def test_opting_out_is_advertised_on_the_card(self):
-        data = make_client(NoMultiTurnAgent).get(
-            "/.well-known/agent-card.json"
-        ).json()
+        data = make_client(NoMultiTurnAgent).get("/.well-known/agent-card.json").json()
         assert data["capabilities"]["multi_turn"] is False
 
 
@@ -278,32 +298,37 @@ class TestMultiTurnCapability:
 
 class TestStreamingContinuation:
     def test_stream_pauses_at_input_required(self):
-        events = parse_sse(send(make_client(StreamAskAgent), "go",
-                                method="message/stream").text)
+        events = parse_sse(
+            send(make_client(StreamAskAgent), "go", method="message/stream").text
+        )
         status = [e for e in events if e["type"] == "task_status"][-1]
         assert status["state"] == "input_required"
 
     def test_prompt_is_emitted_as_a_message_event(self):
-        events = parse_sse(send(make_client(StreamAskAgent), "go",
-                                method="message/stream").text)
+        events = parse_sse(
+            send(make_client(StreamAskAgent), "go", method="message/stream").text
+        )
         msgs = [e for e in events if e["type"] == StreamEventType.MESSAGE.value]
         assert msgs and msgs[0]["content"] == "Confirm?"
 
     def test_chunks_before_the_pause_are_delivered(self):
-        events = parse_sse(send(make_client(StreamAskAgent), "go",
-                                method="message/stream").text)
+        events = parse_sse(
+            send(make_client(StreamAskAgent), "go", method="message/stream").text
+        )
         chunks = [e["content"] for e in events if e["type"] == "artifact_chunk"]
         assert chunks == ["thinking..."]
 
     def test_needs_input_is_not_emitted_as_a_chunk(self):
-        events = parse_sse(send(make_client(StreamAskAgent), "go",
-                                method="message/stream").text)
+        events = parse_sse(
+            send(make_client(StreamAskAgent), "go", method="message/stream").text
+        )
         chunks = [e["content"] for e in events if e["type"] == "artifact_chunk"]
         assert not any("NeedsInput" in c for c in chunks)
 
     def test_stream_still_terminates_with_done(self):
-        events = parse_sse(send(make_client(StreamAskAgent), "go",
-                                method="message/stream").text)
+        events = parse_sse(
+            send(make_client(StreamAskAgent), "go", method="message/stream").text
+        )
         assert events[-1]["type"] == "done"
 
     def test_stream_continuation_completes(self):

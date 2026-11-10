@@ -369,7 +369,9 @@ class TestRedisDLQStoreOperations:
             got = await store.get(entry.task_id)
             assert got is not None
             assert (got.task_id, got.error, got.skill_id) == (
-                entry.task_id, "boom", "s",
+                entry.task_id,
+                "boom",
+                "s",
             )
 
     async def test_get_missing(self, fake_redis):

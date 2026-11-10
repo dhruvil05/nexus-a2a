@@ -145,8 +145,9 @@ class TestSharedAcrossReplicas:
         yield exactly 5 successes — a read-modify-write from Python would
         let several through on the same token.
         """
-        limiters = [await make_limiter(fake_client, rate=0.0001, burst=5)
-                    for _ in range(4)]
+        limiters = [
+            await make_limiter(fake_client, rate=0.0001, burst=5) for _ in range(4)
+        ]
         results = await asyncio.gather(
             *(limiters[i % 4].is_allowed(CALLER) for i in range(20))
         )

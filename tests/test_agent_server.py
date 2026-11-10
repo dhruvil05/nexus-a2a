@@ -490,5 +490,8 @@ class TestAdminEndpointsWithToken:
     def test_token_read_from_environment(self, monkeypatch):
         monkeypatch.setenv("NEXUS_ADMIN_TOKEN", "from-env")
         client = make_test_client(admin_token=None)
-        assert client.get("/info", headers={"X-Admin-Token": "from-env"}).status_code == 200
+        assert (
+            client.get("/info", headers={"X-Admin-Token": "from-env"}).status_code
+            == 200
+        )
         assert client.get("/info", headers={"X-Admin-Token": "nope"}).status_code == 403

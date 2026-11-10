@@ -21,7 +21,6 @@ from __future__ import annotations
 import hmac
 import logging
 import time
-import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,9 +44,15 @@ _JWT_ALGORITHM = "HS256"
 # header, and the two families never overlap.
 _SYMMETRIC_ALGORITHMS = ("HS256", "HS384", "HS512")
 _ASYMMETRIC_ALGORITHMS = (
-    "RS256", "RS384", "RS512",
-    "PS256", "PS384", "PS512",
-    "ES256", "ES384", "ES512",
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "ES256",
+    "ES384",
+    "ES512",
 )
 
 # Default header name for API key auth
@@ -223,14 +228,13 @@ class AuthManager:
 
     def __init__(
         self,
-        allow_unregistered: bool = False,
+        allow_unregistered: bool | None = None,
         default: AgentCredentialConfig | None = None,
     ) -> None:
         """
         Args:
-            allow_unregistered: Deprecated, removed in 2.0. If True, callers
-                that were never registered fall back to AuthScheme.NONE, the
-                pre-1.5.0 behaviour, which fails OPEN. Pass
+            allow_unregistered: Removed in 2.0 (it failed OPEN). Passing it
+                raises TypeError. Use
                 default=AgentCredentialConfig(scheme=AuthScheme.NONE) if you
                 genuinely mean "no auth for unknown callers".
             default: Credentials that apply to any caller not registered
@@ -238,6 +242,13 @@ class AuthManager:
                 Still fails closed: a caller with the wrong key is rejected.
                 register_agent("*", config) sets the same thing.
         """
+        if allow_unregistered is not None:
+            raise TypeError(
+                "AuthManager(allow_unregistered=...) was removed in nexus-a2a "
+                "2.0 because it failed open. Pass "
+                "default=AgentCredentialConfig(scheme=AuthScheme.NONE) to allow "
+                "unauthenticated access for unknown callers explicitly."
+            )
         # agent_url -> AgentCredentialConfig
         self._configs: dict[str, AgentCredentialConfig] = {}
         # jwks_url -> JWKSClient, so key sets are fetched and cached once per
@@ -246,21 +257,6 @@ class AuthManager:
         self._default: AgentCredentialConfig | None = None
         if default is not None:
             self.set_default(default)
-
-        self._allow_unregistered = allow_unregistered
-        if allow_unregistered:
-            warnings.warn(
-                "AuthManager(allow_unregistered=True) fails open and will be "
-                "removed in nexus-a2a 2.0. Pass "
-                "default=AgentCredentialConfig(scheme=AuthScheme.NONE) to keep "
-                "unauthenticated access for unknown callers explicitly.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            logger.warning(
-                "AuthManager(allow_unregistered=True): requests from agents "
-                "that are not registered will bypass authentication."
-            )
 
     @property
     def has_default(self) -> bool:
@@ -447,9 +443,7 @@ class AuthManager:
                 f"Agent at '{agent_url}' has no signing key: set jwt_private_key "
                 "(asymmetric) or jwt_secret (symmetric)."
             )
-        algorithm = (
-            config.jwt_algorithm if config.jwt_private_key else _JWT_ALGORITHM
-        )
+        algorithm = config.jwt_algorithm if config.jwt_private_key else _JWT_ALGORITHM
 
         now = int(time.time())
         payload: dict[str, Any] = {
@@ -613,11 +607,10 @@ class AuthManager:
         landing on a permissive default.
 
         Lookup order: the caller's own registration, then the default
-        credential, then (deprecated) the fail-open fallback.
+        credential.
 
         Raises:
-            UnknownAgentError: Agent is not registered, no default is set, and
-                               allow_unregistered is False.
+            UnknownAgentError: Agent is not registered and no default is set.
         """
         config = self._configs.get(agent_url.rstrip("/"))
         if config is not None:
@@ -625,9 +618,6 @@ class AuthManager:
 
         if self._default is not None:
             return self._default
-
-        if self._allow_unregistered:
-            return AgentCredentialConfig(scheme=AuthScheme.NONE)
 
         raise UnknownAgentError(agent_url)
 
@@ -677,12 +667,10 @@ class AuthManager:
             # RFC 7518 §3.2: an HS256 key must be at least as long as the
             # hash output. A short secret can be brute-forced offline from any
             # single token, after which every token can be forged.
-            warnings.warn(
+            raise ValueError(
                 f"jwt_secret is {len(config.jwt_secret.encode())} bytes; HS256 "
                 f"needs at least {_MIN_HMAC_KEY_BYTES} (RFC 7518 §3.2). A short "
-                "secret can be brute-forced from any captured token. "
-                "nexus-a2a 2.0 will reject it. Generate one with "
-                "`python -c \"import secrets; print(secrets.token_urlsafe(32))\"`.",
-                FutureWarning,
-                stacklevel=3,
+                "secret can be brute-forced from any captured token. Generate "
+                'one with `python -c "import secrets; '
+                'print(secrets.token_urlsafe(32))"`.'
             )

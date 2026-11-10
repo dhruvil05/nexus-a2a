@@ -57,9 +57,14 @@ CARD = {
 }
 
 
-@agent(name="Echo", description="Echoes.", streaming=True, push_notifications=True,
-       skills=[{"id": "echo", "name": "Echo", "description": "Echo."}],
-       url="http://verify.test:8001")
+@agent(
+    name="Echo",
+    description="Echoes.",
+    streaming=True,
+    push_notifications=True,
+    skills=[{"id": "echo", "name": "Echo", "description": "Echo."}],
+    url="http://verify.test:8001",
+)
 class EchoAgent:
     async def run(self, task):
         yield "echo"
@@ -99,7 +104,10 @@ class TestAdminResolution:
 
     def test_url_precedence(self, monkeypatch):
         cfg = {"ops": {"url": "http://file-ops"}, "agent": {"url": "http://agent"}}
-        assert admin.resolve_ops_url(None, {"agent": {"url": "http://agent"}}) == "http://agent"
+        assert (
+            admin.resolve_ops_url(None, {"agent": {"url": "http://agent"}})
+            == "http://agent"
+        )
         assert admin.resolve_ops_url(None, cfg) == "http://file-ops"
         monkeypatch.setenv("NEXUS_OPS_URL", "http://env-ops")
         assert admin.resolve_ops_url(None, cfg) == "http://env-ops"
@@ -121,7 +129,8 @@ class TestPrometheusParsing:
     def test_parses_plain_gauges(self):
         text = "# HELP x y\n# TYPE x gauge\nnexus_a2a_tasks_active 3\nfoo 1.5\n"
         assert status_cmd.parse_prometheus(text) == {
-            "nexus_a2a_tasks_active": 3.0, "foo": 1.5,
+            "nexus_a2a_tasks_active": 3.0,
+            "foo": 1.5,
         }
 
     def test_skips_labelled_and_junk_lines(self):
@@ -196,10 +205,18 @@ class TestStatus:
 # ── trace ─────────────────────────────────────────────────────────────────────
 
 
-TRACE = {"trace_id": "tr-1", "hops": [
-    {"url": AGENT, "duration_ms": 12.5, "status": "completed", "error": None,
-     "children": []},
-]}
+TRACE = {
+    "trace_id": "tr-1",
+    "hops": [
+        {
+            "url": AGENT,
+            "duration_ms": 12.5,
+            "status": "completed",
+            "error": None,
+            "children": [],
+        },
+    ],
+}
 
 
 class TestTrace:
@@ -207,16 +224,25 @@ class TestTrace:
         """Regression: /traces required a token the command never sent."""
         with respx.mock() as router:
             route = router.get(f"{OPS}/traces/tr-1").respond(200, json=TRACE)
-            result = invoke("--format", "json", "trace", "tr-1",
-                            "--agent", OPS, "--admin-token", "secret")
+            result = invoke(
+                "--format",
+                "json",
+                "trace",
+                "tr-1",
+                "--agent",
+                OPS,
+                "--admin-token",
+                "secret",
+            )
         assert route.calls.last.request.headers["X-Admin-Token"] == "secret"
         assert json.loads(result.output)["trace_id"] == "tr-1"
 
     def test_token_from_environment(self):
         with respx.mock() as router:
             route = router.get(f"{OPS}/traces/tr-1").respond(200, json=TRACE)
-            invoke("trace", "tr-1", "--agent", OPS,
-                   env={"NEXUS_ADMIN_TOKEN": "env-secret"})
+            invoke(
+                "trace", "tr-1", "--agent", OPS, env={"NEXUS_ADMIN_TOKEN": "env-secret"}
+            )
         assert route.calls.last.request.headers["X-Admin-Token"] == "env-secret"
 
     def test_ops_url_and_token_from_config(self, tmp_path):
@@ -259,10 +285,19 @@ class TestTrace:
 # ── replay ────────────────────────────────────────────────────────────────────
 
 
-ENTRIES = {"entries": [
-    {"task_id": "t-1", "error": "boom", "failed_at": 1_700_000_000.0,
-     "agent_url": AGENT, "skill_id": "s", "retry_count": 0, "replayed": False},
-]}
+ENTRIES = {
+    "entries": [
+        {
+            "task_id": "t-1",
+            "error": "boom",
+            "failed_at": 1_700_000_000.0,
+            "agent_url": AGENT,
+            "skill_id": "s",
+            "retry_count": 0,
+            "replayed": False,
+        },
+    ]
+}
 
 
 class TestReplay:
@@ -296,8 +331,9 @@ class TestReplay:
             replaying = router.post(f"{OPS}/dlq/replay").respond(
                 200, json={"succeeded": 1, "failed": 0, "results": []}
             )
-            result = invoke("replay", "--failed", "--yes", "--agent", OPS,
-                            "--admin-token", "secret")
+            result = invoke(
+                "replay", "--failed", "--yes", "--agent", OPS, "--admin-token", "secret"
+            )
         assert listing.calls.last.request.headers["X-Admin-Token"] == "secret"
         assert replaying.calls.last.request.headers["X-Admin-Token"] == "secret"
         assert json.loads(replaying.calls.last.request.content) == {"task_id": "t-1"}
@@ -336,8 +372,12 @@ class TestReplay:
         with respx.mock() as router:
             router.get(f"{OPS}/dlq").respond(200, json=ENTRIES)
             router.post(f"{OPS}/dlq/replay").respond(
-                200, json={"succeeded": 0, "failed": 1,
-                           "results": [{"error": "still broken"}]}
+                200,
+                json={
+                    "succeeded": 0,
+                    "failed": 1,
+                    "results": [{"error": "still broken"}],
+                },
             )
             result = invoke("--verbose", "replay", "--failed", "--yes", "--agent", OPS)
         assert result.exit_code == 1
@@ -438,8 +478,10 @@ class TestRunHelpers:
 
     def test_describe_secured_with_ops(self):
         cfg = run_cmd.build_config(
-            {"security": {"auth_scheme": "api_key", "auth_secret": "k"},
-             "ops": {"port": 9555, "admin_token": "t"}},
+            {
+                "security": {"auth_scheme": "api_key", "auth_secret": "k"},
+                "ops": {"port": 9555, "admin_token": "t"},
+            },
             EchoAgent,
         )
         text = "\n".join(run_cmd.describe_runtime(cfg, cfg.build_runtime(EchoAgent)))
@@ -466,7 +508,7 @@ class TestRunCommand:
             encoding="utf-8",
         )
         monkeypatch.syspath_prepend(str(tmp_path))
-        path = write_config(tmp_path, '[security]\nrate_limit = -5\n')
+        path = write_config(tmp_path, "[security]\nrate_limit = -5\n")
         result = CliRunner().invoke(
             cli, ["--config", path, "run", "--module", "bad_cfg_agent:B"]
         )
@@ -504,8 +546,10 @@ def fake_agent(card: dict, rpc_handler=None, health: bool = True) -> Starlette:
     async def health_ep(request):
         return PlainTextResponse("ok")
 
-    routes = [Route("/.well-known/agent-card.json", card_ep),
-              Route("/", rpc, methods=["POST"])]
+    routes = [
+        Route("/.well-known/agent-card.json", card_ep),
+        Route("/", rpc, methods=["POST"]),
+    ]
     if health:
         routes.append(Route("/health", health_ep))
     return Starlette(routes=routes)
@@ -531,7 +575,9 @@ class TestVerifyAgainstRealServer:
     async def test_dev_mode_push_is_flagged(self):
         from nexus_a2a.transport.webhook import WebhookConfig
 
-        server = A2AServer(EchoAgent, push_config=WebhookConfig(allow_private_urls=True))
+        server = A2AServer(
+            EchoAgent, push_config=WebhookConfig(allow_private_urls=True)
+        )
         async with asgi_client(server.app) as client:
             report = await verify_agent(self.URL, client=client)
         assert by_name(report)["push.ssrf_guard"].status == Status.FAIL
@@ -551,8 +597,11 @@ class TestVerifyAgainstRealServer:
         assert by_name(report)["task.send"].status == Status.SKIP
 
     async def test_secured_agent_without_credentials_is_skipped_not_failed(self):
-        security = SecurityMiddleware(auth=AuthManager(default=AgentCredentialConfig(
-            scheme=AuthScheme.API_KEY, api_key="k")))
+        security = SecurityMiddleware(
+            auth=AuthManager(
+                default=AgentCredentialConfig(scheme=AuthScheme.API_KEY, api_key="k")
+            )
+        )
         server = A2AServer(EchoAgent, security=security)
         async with asgi_client(server.app) as client:
             report = await verify_agent(self.URL, client=client)
@@ -562,8 +611,11 @@ class TestVerifyAgainstRealServer:
         assert checks["task.send"].status == Status.SKIP
 
     async def test_secured_agent_with_credentials_is_fully_checked(self):
-        security = SecurityMiddleware(auth=AuthManager(default=AgentCredentialConfig(
-            scheme=AuthScheme.API_KEY, api_key="k")))
+        security = SecurityMiddleware(
+            auth=AuthManager(
+                default=AgentCredentialConfig(scheme=AuthScheme.API_KEY, api_key="k")
+            )
+        )
         server = A2AServer(EchoAgent, security=security)
         async with asgi_client(server.app) as client:
             report = await verify_agent(self.URL, client=client, api_key="k")
@@ -573,8 +625,11 @@ class TestVerifyAgainstRealServer:
         assert report.passed
 
     async def test_wrong_credentials_fail_and_stop(self):
-        security = SecurityMiddleware(auth=AuthManager(default=AgentCredentialConfig(
-            scheme=AuthScheme.API_KEY, api_key="k")))
+        security = SecurityMiddleware(
+            auth=AuthManager(
+                default=AgentCredentialConfig(scheme=AuthScheme.API_KEY, api_key="k")
+            )
+        )
         server = A2AServer(EchoAgent, security=security)
         async with asgi_client(server.app) as client:
             report = await verify_agent(self.URL, client=client, api_key="wrong")
@@ -587,8 +642,12 @@ class TestVerifyCatchesBrokenAgents:
     URL = "http://broken.test:1"
 
     def card(self, **overrides):
-        base = {"name": "B", "description": "b", "url": self.URL,
-                "skills": [{"id": "x", "name": "X", "description": "x"}]}
+        base = {
+            "name": "B",
+            "description": "b",
+            "url": self.URL,
+            "skills": [{"id": "x", "name": "X", "description": "x"}],
+        }
         base.update(overrides)
         return base
 
@@ -597,7 +656,9 @@ class TestVerifyCatchesBrokenAgents:
             return await verify_agent(self.URL, client=client, **kwargs)
 
     async def test_card_advertising_auth_that_is_not_enforced(self):
-        report = await self.run(fake_agent(self.card(authentication={"scheme": "api_key"})))
+        report = await self.run(
+            fake_agent(self.card(authentication={"scheme": "api_key"}))
+        )
         check = by_name(report)["auth.matches_card"]
         assert check.status == Status.FAIL
         assert "open to anyone" in check.detail
@@ -614,8 +675,12 @@ class TestVerifyCatchesBrokenAgents:
     async def test_no_error_handling(self):
         report = await self.run(fake_agent(self.card()))
         checks = by_name(report)
-        for name in ("protocol.method_not_found", "protocol.parse_error",
-                     "protocol.invalid_params", "protocol.unknown_task"):
+        for name in (
+            "protocol.method_not_found",
+            "protocol.parse_error",
+            "protocol.invalid_params",
+            "protocol.unknown_task",
+        ):
             assert checks[name].status == Status.FAIL, name
 
     async def test_false_streaming_claim(self):
@@ -627,27 +692,54 @@ class TestVerifyCatchesBrokenAgents:
             try:
                 body = await request.json()
             except ValueError:
-                return JSONResponse({"jsonrpc": "2.0", "id": None,
-                                     "error": {"code": -32700, "message": "parse"}})
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": "parse"},
+                    }
+                )
             if body["method"].startswith("tasks/pushNotificationConfig"):
-                return JSONResponse({"jsonrpc": "2.0", "id": 1,
-                                     "error": {"code": -32601, "message": "nope"}})
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "error": {"code": -32601, "message": "nope"},
+                    }
+                )
             if body["method"] == "message/send":
-                return JSONResponse({"jsonrpc": "2.0", "id": 1, "result": {
-                    "id": "t", "context_id": "c", "state": "completed",
-                    "history": [], "artifacts": []}})
-            return JSONResponse({"jsonrpc": "2.0", "id": 1,
-                                 "error": {"code": -32001, "message": "x"}})
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "id": "t",
+                            "context_id": "c",
+                            "state": "completed",
+                            "history": [],
+                            "artifacts": [],
+                        },
+                    }
+                )
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": 1, "error": {"code": -32001, "message": "x"}}
+            )
 
         report = await self.run(
-            fake_agent(self.card(capabilities={"push_notifications": True}),
-                       rpc_handler=handler)
+            fake_agent(
+                self.card(capabilities={"push_notifications": True}),
+                rpc_handler=handler,
+            )
         )
         assert by_name(report)["push.config_get"].status == Status.FAIL
 
     async def test_duplicate_skills(self):
-        card = self.card(skills=[{"id": "a", "name": "A", "description": "a"},
-                                 {"id": "a", "name": "B", "description": "b"}])
+        card = self.card(
+            skills=[
+                {"id": "a", "name": "A", "description": "a"},
+                {"id": "a", "name": "B", "description": "b"},
+            ]
+        )
         report = await self.run(fake_agent(card))
         assert by_name(report)["card.skills"].status == Status.FAIL
 
@@ -706,7 +798,9 @@ class TestVerifyCommand:
 
         return VerifyReport(
             url=AGENT,
-            checks=[CheckResult("g", f"c{i}", s, "detail") for i, s in enumerate(statuses)],
+            checks=[
+                CheckResult("g", f"c{i}", s, "detail") for i, s in enumerate(statuses)
+            ],
         )
 
     def patch(self, monkeypatch, report, seen=None):
@@ -737,9 +831,25 @@ class TestVerifyCommand:
     def test_options_are_forwarded(self, monkeypatch):
         seen: dict = {}
         self.patch(monkeypatch, self.fake_report([Status.PASS]), seen)
-        invoke("verify", AGENT, "--api-key", "k", "--api-key-header", "X-K",
-               "--bearer", "b", "--caller-url", "http://me:1", "--skill", "s",
-               "--message", "hello", "--read-only", "--timeout", "3")
+        invoke(
+            "verify",
+            AGENT,
+            "--api-key",
+            "k",
+            "--api-key-header",
+            "X-K",
+            "--bearer",
+            "b",
+            "--caller-url",
+            "http://me:1",
+            "--skill",
+            "s",
+            "--message",
+            "hello",
+            "--read-only",
+            "--timeout",
+            "3",
+        )
         assert seen["api_key"] == "k" and seen["api_key_header"] == "X-K"
         assert seen["bearer"] == "b" and seen["caller_url"] == "http://me:1"
         assert seen["skill_id"] == "s" and seen["message"] == "hello"
@@ -772,14 +882,19 @@ class TestDevPlanning:
         raw = {"dev": {"agents": [{"module": "a:A", "port": 9001}]}}
         planned = dev_cmd.plan_agents(raw, ["b:B", "c:C"], 9000)
         assert [(p.module, p.port) for p in planned] == [
-            ("a:A", 9001), ("b:B", 9000), ("c:C", 9002),
+            ("a:A", 9001),
+            ("b:B", 9000),
+            ("c:C", 9002),
         ]
 
     def test_duplicate_ports_rejected(self):
         import click
 
-        raw = {"dev": {"agents": [{"module": "a:A", "port": 1},
-                                  {"module": "b:B", "port": 1}]}}
+        raw = {
+            "dev": {
+                "agents": [{"module": "a:A", "port": 1}, {"module": "b:B", "port": 1}]
+            }
+        }
         with pytest.raises(click.UsageError, match="same port"):
             dev_cmd.plan_agents(raw, [], 9000)
 
@@ -806,13 +921,16 @@ class TestDevConfig:
             "network": {"agents": ["http://external:1"]},
         }
         agent_ = dev_cmd.DevAgent("a:A", 9000)
-        cfg = dev_cmd.dev_config_for(raw, agent_, ["http://127.0.0.1:9000",
-                                                   "http://127.0.0.1:9001"])
+        cfg = dev_cmd.dev_config_for(
+            raw, agent_, ["http://127.0.0.1:9000", "http://127.0.0.1:9001"]
+        )
         assert cfg["agent"] == {"url": "http://127.0.0.1:9000"}
         assert "ops" not in cfg and "dev" not in cfg
         assert cfg["security"]["auth_secret"] == "k"
         assert cfg["network"]["agents"] == [
-            "http://external:1", "http://127.0.0.1:9000", "http://127.0.0.1:9001",
+            "http://external:1",
+            "http://127.0.0.1:9000",
+            "http://127.0.0.1:9001",
         ]
         assert cfg["push"]["allow_private_urls"] is True
         assert raw["network"]["agents"] == ["http://external:1"]  # not mutated
@@ -888,13 +1006,18 @@ class TestEncodingSafety:
 
 class TestRenderVerify:
     REPORT = {
-        "url": AGENT, "passed": False,
+        "url": AGENT,
+        "passed": False,
         "summary": {"pass": 1, "warn": 1, "fail": 1, "skip": 1},
         "checks": [
             {"group": "card", "name": "json", "status": "pass", "detail": ""},
             {"group": "card", "name": "url", "status": "warn", "detail": "mismatch"},
-            {"group": "auth", "name": "matches_card", "status": "fail",
-             "detail": "open to anyone"},
+            {
+                "group": "auth",
+                "name": "matches_card",
+                "status": "fail",
+                "detail": "open to anyone",
+            },
             {"group": "push", "name": "config_get", "status": "skip", "detail": "n/a"},
         ],
     }

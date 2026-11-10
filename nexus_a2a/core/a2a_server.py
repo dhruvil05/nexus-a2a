@@ -699,9 +699,7 @@ class A2AServer:
         by_state = await self._task_counts()
 
         active = sum(
-            by_state[state.value]
-            for state in TaskState
-            if not state.is_terminal
+            by_state[state.value] for state in TaskState if not state.is_terminal
         )
 
         lines = [
@@ -824,9 +822,7 @@ class A2AServer:
             logger.exception("A2AServer: unhandled error in %s", method)
             return _rpc_error(rpc_id, ERR_INTERNAL, "Internal error")
 
-    async def _authorize(
-        self, request: Request, skill_id: str | None = None
-    ) -> Any:
+    async def _authorize(self, request: Request, skill_id: str | None = None) -> Any:
         """
         Run the security chain, passing the client address when supported.
 
@@ -1029,8 +1025,9 @@ class A2AServer:
 
         config = await self._push_targets.get(task_id)
         if config is None:
-            return _rpc_result(rpc_id, {"taskId": task_id,
-                                        "pushNotificationConfig": None})
+            return _rpc_result(
+                rpc_id, {"taskId": task_id, "pushNotificationConfig": None}
+            )
         return _rpc_result(
             rpc_id, {"taskId": task_id, "pushNotificationConfig": _push_dict(config)}
         )
@@ -1085,25 +1082,35 @@ class A2AServer:
             return await self.tasks.start(task.id), None, False
 
         if not isinstance(raw_task_id, str):
-            return None, _rpc_error(
-                rpc_id, ERR_INVALID_PARAMS, "'taskId' must be a string."
-            ), False
+            return (
+                None,
+                _rpc_error(rpc_id, ERR_INVALID_PARAMS, "'taskId' must be a string."),
+                False,
+            )
 
         # multi_turn is what continuation IS, so honour the card's own claim
         # rather than leaving the flag decorative.
         if not self._card.capabilities.multi_turn:
-            return None, _rpc_error(
-                rpc_id,
-                ERR_TASK_NOT_WAITING,
-                f"Agent '{self._card.name}' declares multi_turn=False and does "
-                "not accept continuations. Omit 'taskId' to start a new task.",
-            ), False
+            return (
+                None,
+                _rpc_error(
+                    rpc_id,
+                    ERR_TASK_NOT_WAITING,
+                    f"Agent '{self._card.name}' declares multi_turn=False and does "
+                    "not accept continuations. Omit 'taskId' to start a new task.",
+                ),
+                False,
+            )
 
         found = await self._get_owned(raw_task_id, owner)
         if found is None:
-            return None, _rpc_error(
-                rpc_id, ERR_TASK_NOT_FOUND, f"Task not found: {raw_task_id}"
-            ), False
+            return (
+                None,
+                _rpc_error(
+                    rpc_id, ERR_TASK_NOT_FOUND, f"Task not found: {raw_task_id}"
+                ),
+                False,
+            )
         task = found
 
         # An agent suspended inside InputHandler.wait_for_input() is resumed by
@@ -1115,13 +1122,17 @@ class A2AServer:
 
         state = task.state
         if state != TaskState.INPUT_REQUIRED:
-            return None, _rpc_error(
-                rpc_id,
-                ERR_TASK_NOT_WAITING,
-                f"Task '{raw_task_id}' is '{_state_value(state)}', not "
-                "'input_required'. Only a task awaiting input can be continued; "
-                "omit 'taskId' to start a new one.",
-            ), False
+            return (
+                None,
+                _rpc_error(
+                    rpc_id,
+                    ERR_TASK_NOT_WAITING,
+                    f"Task '{raw_task_id}' is '{_state_value(state)}', not "
+                    "'input_required'. Only a task awaiting input can be continued; "
+                    "omit 'taskId' to start a new one.",
+                ),
+                False,
+            )
 
         # INPUT_REQUIRED -> WORKING, with the reply appended to history.
         return await self.tasks.provide_input(raw_task_id, message), None, False
@@ -1173,8 +1184,9 @@ class A2AServer:
             else:
                 output = await self._agent_instance.run(task)
         except Exception as exc:  # noqa: BLE001 - agent code is untrusted
-            logger.exception("Agent '%s' raised while running task %s",
-                             self._card.name, task.id)
+            logger.exception(
+                "Agent '%s' raised while running task %s", self._card.name, task.id
+            )
             failed = await self.tasks.fail(task.id, f"{type(exc).__name__}: {exc}")
             await self._notify(failed, "task_failed")
             self._publish_outcome(failed)
@@ -1319,7 +1331,9 @@ class A2AServer:
             )
             reason = f"{type(exc).__name__}: {exc}"
             try:
-                await self._notify(await self.tasks.fail(task.id, reason), "task_failed")
+                await self._notify(
+                    await self.tasks.fail(task.id, reason), "task_failed"
+                )
             except Exception:  # pragma: no cover - store already unhappy
                 logger.exception("Could not mark task %s failed", task.id)
             yield SSEFormatter.error(reason)

@@ -64,9 +64,7 @@ class HookReceiver:
 
         app = Starlette(routes=[Route("/hook", hook, methods=["POST"])])
         self._server = uvicorn.Server(
-            uvicorn.Config(
-                app, host="127.0.0.1", port=self.port, log_level="critical"
-            )
+            uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="critical")
         )
         self._task = asyncio.create_task(self._server.serve())
         for _ in range(200):
@@ -269,7 +267,9 @@ class TestFailuresAreContained:
                     push_notification={"url": f"http://127.0.0.1:{dead_port}/gone"},
                 )
                 elapsed = asyncio.get_running_loop().time() - started
-            assert elapsed < 2.0, f"response blocked on webhook retries ({elapsed:.1f}s)"
+            assert elapsed < 2.0, (
+                f"response blocked on webhook retries ({elapsed:.1f}s)"
+            )
         finally:
             await server.drain_notifications(timeout=15.0)
             await server.stop()

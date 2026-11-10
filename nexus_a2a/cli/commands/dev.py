@@ -100,15 +100,20 @@ def plan_agents(
     return planned
 
 
-def dev_config_for(raw: dict[str, Any], agent: DevAgent, peers: list[str]) -> dict[str, Any]:
+def dev_config_for(
+    raw: dict[str, Any], agent: DevAgent, peers: list[str]
+) -> dict[str, Any]:
     """
     Raw config for one dev agent: the shared file, minus what must differ.
 
     [agent] is replaced so each agent keeps its own name and gets its own
     address; [ops] is dropped so the agents do not fight over one port.
     """
-    cfg = {key: dict(value) if isinstance(value, dict) else value
-           for key, value in raw.items() if key not in ("agent", "ops", "dev")}
+    cfg = {
+        key: dict(value) if isinstance(value, dict) else value
+        for key, value in raw.items()
+        if key not in ("agent", "ops", "dev")
+    }
     cfg["agent"] = {"url": agent.url}
 
     network = cfg.setdefault("network", {})

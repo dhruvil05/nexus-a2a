@@ -38,8 +38,14 @@ def build_echo_agent(url: str) -> type:
     @agent(
         name="EchoAgent",
         description="Echoes the incoming text back.",
-        skills=[{"id": "echo", "name": "Echo", "description": "Echo input.",
-                 "tags": ["text"]}],
+        skills=[
+            {
+                "id": "echo",
+                "name": "Echo",
+                "description": "Echo input.",
+                "tags": ["text"],
+            }
+        ],
         url=url,
     )
     class EchoAgent:
@@ -402,9 +408,7 @@ class TestStreamingOverTheWire:
         try:
             async with A2AHttpClient(url) as client:
                 task = await client.send_message(Message.user_text("observe"))
-            events = [
-                ev.type async for ev in SSEStreamer(url).stream(task_id=task.id)
-            ]
+            events = [ev.type async for ev in SSEStreamer(url).stream(task_id=task.id)]
             assert events[0] == StreamEventType.TASK_CREATED
             assert events[-1] == StreamEventType.DONE
         finally:

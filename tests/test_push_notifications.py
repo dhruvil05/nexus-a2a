@@ -45,15 +45,23 @@ SECRET = "shared-secret"
 # ── Test agents ───────────────────────────────────────────────────────────────
 
 
-@agent(name="Pusher", description="Supports webhooks.", push_notifications=True,
-       url=SERVER_URL)
+@agent(
+    name="Pusher",
+    description="Supports webhooks.",
+    push_notifications=True,
+    url=SERVER_URL,
+)
 class PusherAgent:
     async def run(self, task: Task) -> str:
         return "done"
 
 
-@agent(name="Asker", description="Pauses for input.", push_notifications=True,
-       url=SERVER_URL)
+@agent(
+    name="Asker",
+    description="Pauses for input.",
+    push_notifications=True,
+    url=SERVER_URL,
+)
 class AskerAgent:
     async def run(self, task: Task):
         turns = sum(1 for m in task.history if m.role == "user")
@@ -128,8 +136,13 @@ async def asgi_send(server: A2AServer, text="go", **extra):
     transport = httpx.ASGITransport(app=server.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         resp = await c.post(
-            "/", json={"jsonrpc": "2.0", "id": "1", "method": "message/send",
-                       "params": params},
+            "/",
+            json={
+                "jsonrpc": "2.0",
+                "id": "1",
+                "method": "message/send",
+                "params": params,
+            },
         )
     await server.drain_notifications()
     return resp
@@ -172,9 +185,7 @@ class TestSigning:
         body = _canonical_body(payload)
         sent = httpx.Request("POST", "http://x/", content=body).content
         assert sent == body
-        assert WebhookDispatcher.verify_signature(
-            sent, sign_body(body, SECRET), SECRET
-        )
+        assert WebhookDispatcher.verify_signature(sent, sign_body(body, SECRET), SECRET)
 
     def test_canonical_body_is_stable(self):
         """Key order must not change the signature."""
@@ -234,8 +245,11 @@ class TestRegistration:
     def test_register_via_rpc_method(self):
         client = make_client(AskerAgent)
         task_id = send(client).json()["result"]["id"]
-        resp = rpc(client, "tasks/pushNotificationConfig/set",
-                   {"taskId": task_id, "pushNotificationConfig": {"url": HOOK}})
+        resp = rpc(
+            client,
+            "tasks/pushNotificationConfig/set",
+            {"taskId": task_id, "pushNotificationConfig": {"url": HOOK}},
+        )
         assert resp.json()["result"]["pushNotificationConfig"]["url"] == HOOK
 
     def test_get_returns_registered_config(self):
@@ -260,15 +274,19 @@ class TestRegistration:
         assert got.json()["result"]["pushNotificationConfig"]["hasToken"] is True
 
     def test_set_on_unknown_task(self):
-        body = rpc(make_client(), "tasks/pushNotificationConfig/set",
-                   {"taskId": "nope", "pushNotificationConfig": {"url": HOOK}}).json()
+        body = rpc(
+            make_client(),
+            "tasks/pushNotificationConfig/set",
+            {"taskId": "nope", "pushNotificationConfig": {"url": HOOK}},
+        ).json()
         assert body["error"]["code"] == ERR_TASK_NOT_FOUND
 
     def test_set_without_config(self):
         client = make_client(AskerAgent)
         task_id = send(client).json()["result"]["id"]
-        body = rpc(client, "tasks/pushNotificationConfig/set",
-                   {"taskId": task_id}).json()
+        body = rpc(
+            client, "tasks/pushNotificationConfig/set", {"taskId": task_id}
+        ).json()
         assert body["error"]["code"] == ERR_INVALID_PARAMS
 
     def test_config_without_url_rejected(self):
@@ -286,8 +304,10 @@ class TestRegistrationRefusals:
         """A server without allow_private_urls must refuse a metadata URL."""
         server = A2AServer(PusherAgent, push_config=WebhookConfig())
         client = TestClient(server.app)
-        body = send(client, push_notification={
-            "url": "http://169.254.169.254/latest/meta-data/"}).json()
+        body = send(
+            client,
+            push_notification={"url": "http://169.254.169.254/latest/meta-data/"},
+        ).json()
         assert body["error"]["code"] == ERR_PUSH_INVALID_URL
 
     def test_task_does_not_run_when_registration_is_refused(self):
@@ -299,8 +319,13 @@ class TestRegistrationRefusals:
         client = TestClient(server.app)
         send(client, push_notification={"url": "http://10.0.0.1/x"})
         listed = client.post(
-            "/", json={"jsonrpc": "2.0", "id": "2", "method": "tasks/get",
-                       "params": {"taskId": "any"}},
+            "/",
+            json={
+                "jsonrpc": "2.0",
+                "id": "2",
+                "method": "tasks/get",
+                "params": {"taskId": "any"},
+            },
         )
         assert listed.json()["error"]["code"] == ERR_TASK_NOT_FOUND
 

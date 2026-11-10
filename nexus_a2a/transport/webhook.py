@@ -102,8 +102,7 @@ def _canonical_body(payload: dict[str, Any]) -> bytes:
 def sign_body(body: bytes, secret: str) -> str:
     """Return the 'sha256=<hex>' signature for exactly these bytes."""
     return (
-        "sha256="
-        + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     )
 
 
@@ -190,8 +189,7 @@ def _check_addresses(url: str, addresses: list[str]) -> str:
         if reason is not None:
             raise WebhookUrlError(
                 url,
-                f"{reason}. Pass allow_private_urls=True only for local "
-                "development.",
+                f"{reason}. Pass allow_private_urls=True only for local development.",
             )
     return addresses[0]
 
@@ -530,7 +528,11 @@ class WebhookDispatcher:
                         delay,
                     )
 
-                except (httpx.ConnectError, httpx.TimeoutException, TimeoutError) as exc:
+                except (
+                    httpx.ConnectError,
+                    httpx.TimeoutException,
+                    TimeoutError,
+                ) as exc:
                     last_error = str(exc) or type(exc).__name__
                     logger.warning(
                         "Webhook attempt %d/%d connection error: %s, retrying in %.1fs",
@@ -709,9 +711,7 @@ class WebhookDispatcher:
         if token:
             headers[_NOTIFICATION_TOKEN_HEADER] = token
         if self._config.signing_secret:
-            headers[_SIGNATURE_HEADER] = sign_body(
-                body, self._config.signing_secret
-            )
+            headers[_SIGNATURE_HEADER] = sign_body(body, self._config.signing_secret)
             headers[_TIMESTAMPED_SIGNATURE_HEADER] = sign_timestamped(
                 body, timestamp, self._config.signing_secret
             )

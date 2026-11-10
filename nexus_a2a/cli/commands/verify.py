@@ -51,9 +51,7 @@ from nexus_a2a.cli.output import print_error, render_verify
     default=False,
     help="Skip checks that make the agent do work.",
 )
-@click.option(
-    "--strict", is_flag=True, default=False, help="Fail on warnings as well."
-)
+@click.option("--strict", is_flag=True, default=False, help="Fail on warnings as well.")
 @click.option(
     "--timeout",
     default=15.0,

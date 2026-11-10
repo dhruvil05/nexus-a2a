@@ -287,7 +287,9 @@ class TestTasksGet:
     def test_accepts_id_alias(self):
         client = make_client()
         task_id = send_text(client).json()["result"]["id"]
-        assert rpc(client, "tasks/get", {"id": task_id}).json()["result"]["id"] == task_id
+        assert (
+            rpc(client, "tasks/get", {"id": task_id}).json()["result"]["id"] == task_id
+        )
 
 
 # ── tasks/cancel ──────────────────────────────────────────────────────────────
@@ -352,7 +354,9 @@ class TestInterpretOutput:
         assert artifact.parts[0].content == "from adapter"
 
     def test_adapter_result_error_fails_task(self):
-        artifact, reply, err = _interpret_output(AdapterResult(error="framework blew up"))
+        artifact, reply, err = _interpret_output(
+            AdapterResult(error="framework blew up")
+        )
         assert artifact is None and reply is None
         assert err == "framework blew up"
 
@@ -509,13 +513,11 @@ class TestSecurityTrust:
         assert "not verified" in resp.json()["detail"]
 
     def test_untrusted_caller_rejected_403(self):
-        resp = send_text(self._client(allow_caller=False),
-                         headers=TRUSTED_HEADERS)
+        resp = send_text(self._client(allow_caller=False), headers=TRUSTED_HEADERS)
         assert resp.status_code == 403
 
     def test_trusted_caller_allowed(self):
-        resp = send_text(self._client(allow_caller=True),
-                         headers=TRUSTED_HEADERS)
+        resp = send_text(self._client(allow_caller=True), headers=TRUSTED_HEADERS)
         assert resp.status_code == 200
 
     def test_skill_outside_acl_rejected_403(self):
@@ -576,7 +578,9 @@ class TestSecurityRateLimit:
         """An unverified X-Nexus-Caller must not select the rate bucket."""
         client = self._client()
         codes = [
-            send_text(client, headers={CALLER_HEADER: f"http://spoof-{i}:1"}).status_code
+            send_text(
+                client, headers={CALLER_HEADER: f"http://spoof-{i}:1"}
+            ).status_code
             for i in range(3)
         ]
         assert codes == [200, 200, 429]
@@ -631,8 +635,9 @@ class TestSecurityPayload:
                 validator=PayloadValidator(ValidatorConfig(max_bytes=200))
             )
         )
-        resp = client.post("/", content=b"x" * 5000,
-                           headers={"Content-Type": "application/json"})
+        resp = client.post(
+            "/", content=b"x" * 5000, headers={"Content-Type": "application/json"}
+        )
         assert resp.status_code == 413
 
     def test_blank_text_part_rejected_400(self):
@@ -650,9 +655,7 @@ class TestSecurityPayload:
             role="user",
             parts=[Part(type=PartType.TEXT, content=f"p{i}") for i in range(5)],
         )
-        resp = rpc(
-            client, "message/send", {"message": message.model_dump(mode="json")}
-        )
+        resp = rpc(client, "message/send", {"message": message.model_dump(mode="json")})
         assert resp.status_code == 400
 
     def test_valid_payload_passes(self):
