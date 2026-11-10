@@ -85,17 +85,35 @@ class ConfigWarning(UserWarning):
 # Every key the parser reads. Anything else is ignored — which, for a security
 # setting, silently leaves it unset — so unknown keys are reported.
 KNOWN_KEYS: dict[str, frozenset[str]] = {
-    "agent": frozenset({"name", "description", "version", "url", "streaming",
-                        "skills"}),
+    "agent": frozenset(
+        {"name", "description", "version", "url", "streaming", "skills"}
+    ),
     "network": frozenset({"agents"}),
-    "reliability": frozenset({"task_timeout_sec", "max_retries", "retry_on",
-                              "circuit_breaker_threshold", "circuit_recovery_sec",
-                              "base_delay_sec", "max_delay_sec"}),
-    "security": frozenset({"auth_scheme", "auth_secret", "trust_mode",
-                           "rate_limit", "rate_burst", "max_payload_bytes",
-                           "allow_insecure"}),
-    "storage": frozenset({"backend", "url", "ttl_sec", "task_retention_sec",
-                          "max_tasks"}),
+    "reliability": frozenset(
+        {
+            "task_timeout_sec",
+            "max_retries",
+            "retry_on",
+            "circuit_breaker_threshold",
+            "circuit_recovery_sec",
+            "base_delay_sec",
+            "max_delay_sec",
+        }
+    ),
+    "security": frozenset(
+        {
+            "auth_scheme",
+            "auth_secret",
+            "trust_mode",
+            "rate_limit",
+            "rate_burst",
+            "max_payload_bytes",
+            "allow_insecure",
+        }
+    ),
+    "storage": frozenset(
+        {"backend", "url", "ttl_sec", "task_retention_sec", "max_tasks"}
+    ),
     "observability": frozenset({"tracing", "metrics", "log_level"}),
     "push": frozenset({"signing_secret", "allow_private_urls", "max_retries"}),
     "ops": frozenset({"port", "host", "url", "admin_token"}),
@@ -115,17 +133,14 @@ def _unknown_key_messages(raw: dict[str, Any]) -> list[str]:
     sections = frozenset(KNOWN_KEYS)
     for section, body in raw.items():
         if section not in KNOWN_KEYS:
-            messages.append(
-                f"unknown section [{section}]{suggest(section, sections)}"
-            )
+            messages.append(f"unknown section [{section}]{suggest(section, sections)}")
             continue
         if not isinstance(body, dict):
             continue
         for key in body:
             if key not in KNOWN_KEYS[section]:
                 messages.append(
-                    f"unknown key '{section}.{key}'"
-                    f"{suggest(key, KNOWN_KEYS[section])}"
+                    f"unknown key '{section}.{key}'{suggest(key, KNOWN_KEYS[section])}"
                 )
     for index, skill in enumerate(raw.get("agent", {}).get("skills", []) or []):
         if isinstance(skill, dict):
@@ -804,10 +819,7 @@ class NexusConfig:
         if self.security.auth_scheme != "none":
             auth = self.build_auth_manager()
 
-        if (
-            self.security.trust_mode == "strict"
-            and self.security.auth_scheme != "jwt"
-        ):
+        if self.security.trust_mode == "strict" and self.security.auth_scheme != "jwt":
             # Trust rules are evaluated against the caller's announced URL,
             # which only a credential can prove. A shared API key (or no auth)
             # proves nothing about WHICH caller is speaking, so strict mode

@@ -55,9 +55,12 @@ SERVER_URL = "http://agent-under-test:8001"
 LONG_SECRET = "a-32-byte-or-longer-test-secret-value!"
 
 
-@agent(name="Echo", description="Echoes.",
-       skills=[{"id": "echo", "name": "Echo", "description": "Echo."}],
-       url=SERVER_URL)
+@agent(
+    name="Echo",
+    description="Echoes.",
+    skills=[{"id": "echo", "name": "Echo", "description": "Echo."}],
+    url=SERVER_URL,
+)
 class EchoAgent:
     async def run(self, task: Task) -> str:
         return "echo: " + task.latest_message().text()
@@ -141,7 +144,11 @@ class TestTaskStoreRetention:
 
     async def test_cap_evicts_oldest_finished_first(self):
         store = InMemoryTaskStore(retention_sec=None, max_tasks=2)
-        first, second, third = finished_task("1"), finished_task("2"), finished_task("3")
+        first, second, third = (
+            finished_task("1"),
+            finished_task("2"),
+            finished_task("3"),
+        )
         for task in (first, second, third):
             await store.save(task)
         assert await store.get(first.id) is None
@@ -288,20 +295,24 @@ class TestAdvertisedConfig:
 class TestBuildAuthManagerFixed:
     async def test_configured_secret_is_enforced(self):
         """Before 1.9.0 the correct key was refused with UnknownAgentError."""
-        cfg = NexusConfig.from_dict({
-            "agent": {"name": "a", "url": "http://localhost:8001"},
-            "security": {"auth_scheme": "api_key", "auth_secret": "s3cret"},
-        })
+        cfg = NexusConfig.from_dict(
+            {
+                "agent": {"name": "a", "url": "http://localhost:8001"},
+                "security": {"auth_scheme": "api_key", "auth_secret": "s3cret"},
+            }
+        )
         manager = cfg.build_auth_manager()
         await manager.verify("http://any:1", {"X-API-Key": "s3cret"})
         with pytest.raises(InvalidCredentialsError):
             await manager.verify("http://any:1", {"X-API-Key": "nope"})
 
     async def test_jwt_secret_is_enforced(self):
-        cfg = NexusConfig.from_dict({
-            "agent": {"name": "a", "url": "http://localhost:8001"},
-            "security": {"auth_scheme": "jwt", "auth_secret": LONG_SECRET},
-        })
+        cfg = NexusConfig.from_dict(
+            {
+                "agent": {"name": "a", "url": "http://localhost:8001"},
+                "security": {"auth_scheme": "jwt", "auth_secret": LONG_SECRET},
+            }
+        )
         manager = cfg.build_auth_manager()
         with pytest.raises(MissingCredentialsError):
             await manager.verify("http://any:1", {})
@@ -378,7 +389,10 @@ class TestCardAdvertisesEnforcedAuth:
 
     def test_default_api_key_is_advertised(self):
         card = self.card(SecurityMiddleware(auth=AuthManager(default=api_key_config())))
-        assert card["authentication"] == {"scheme": "api_key", "header_name": "X-API-Key"}
+        assert card["authentication"] == {
+            "scheme": "api_key",
+            "header_name": "X-API-Key",
+        }
 
     def test_custom_header_is_advertised(self):
         config = AgentCredentialConfig(
@@ -517,9 +531,15 @@ class TestStreamFollowing:
         transport = httpx.ASGITransport(app=server.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             producer = asyncio.create_task(
-                c.post("/", json={"jsonrpc": "2.0", "id": "1",
-                                  "method": "message/stream",
-                                  "params": send_params()})
+                c.post(
+                    "/",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "1",
+                        "method": "message/stream",
+                        "params": send_params(),
+                    },
+                )
             )
             task_id = None
             for _ in range(200):
@@ -531,9 +551,7 @@ class TestStreamFollowing:
             assert task_id is not None
             await asyncio.sleep(0.05)  # let "before" be published
 
-            follower = asyncio.create_task(
-                c.get("/stream", params={"taskId": task_id})
-            )
+            follower = asyncio.create_task(c.get("/stream", params={"taskId": task_id}))
             await asyncio.sleep(0.15)  # follower is waiting; heartbeats flow
             gate.set()
             resp = await follower
@@ -561,8 +579,15 @@ class TestStreamFollowing:
         transport = httpx.ASGITransport(app=server.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             producer = asyncio.create_task(
-                c.post("/", json={"jsonrpc": "2.0", "id": "1",
-                                  "method": "message/send", "params": send_params()})
+                c.post(
+                    "/",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "1",
+                        "method": "message/send",
+                        "params": send_params(),
+                    },
+                )
             )
             task_id = None
             for _ in range(200):
@@ -590,7 +615,10 @@ class TestStreamFollowing:
 
     def test_unknown_task_leaves_no_watcher(self):
         server = A2AServer(EchoAgent)
-        assert TestClient(server.app).get("/stream", params={"taskId": "x"}).status_code == 404
+        assert (
+            TestClient(server.app).get("/stream", params={"taskId": "x"}).status_code
+            == 404
+        )
         assert server._watchers.count() == 0
 
 
@@ -673,12 +701,20 @@ class TestConfigNewKeys:
 
     def test_parses_every_new_key(self):
         cfg = cfg_from(
-            security={"rate_limit": 5, "rate_burst": 7, "max_payload_bytes": 2048,
-                      "allow_insecure": True},
+            security={
+                "rate_limit": 5,
+                "rate_burst": 7,
+                "max_payload_bytes": 2048,
+                "allow_insecure": True,
+            },
             storage={"task_retention_sec": 30, "max_tasks": 50},
             push={"signing_secret": "p", "allow_private_urls": True, "max_retries": 1},
-            ops={"port": 9100, "host": "0.0.0.0", "url": "http://o:9100",
-                 "admin_token": "t"},
+            ops={
+                "port": 9100,
+                "host": "0.0.0.0",
+                "url": "http://o:9100",
+                "admin_token": "t",
+            },
         )
         assert (cfg.security.rate_limit, cfg.security.rate_burst) == (5, 7)
         assert cfg.security.max_payload_bytes == 2048
@@ -725,19 +761,24 @@ class TestConfigNewKeys:
             cfg_from()
 
     def test_to_dict_redacts_new_secrets(self):
-        d = cfg_from(push={"signing_secret": "PUSHSECRET"},
-                     ops={"admin_token": "ADMINTOKEN"}).to_dict()
+        d = cfg_from(
+            push={"signing_secret": "PUSHSECRET"}, ops={"admin_token": "ADMINTOKEN"}
+        ).to_dict()
         assert "PUSHSECRET" not in json.dumps(d)
         assert "ADMINTOKEN" not in json.dumps(d)
         assert d["push"]["signing_secret"] == "***REDACTED***"
 
     def test_memory_store_gets_retention(self):
-        store = cfg_from(storage={"task_retention_sec": 42, "max_tasks": 7}).build_task_store()
+        store = cfg_from(
+            storage={"task_retention_sec": 42, "max_tasks": 7}
+        ).build_task_store()
         assert store._retention == 42
         assert store._max_tasks == 7
 
     def test_zero_means_unlimited(self):
-        store = cfg_from(storage={"task_retention_sec": 0, "max_tasks": 0}).build_task_store()
+        store = cfg_from(
+            storage={"task_retention_sec": 0, "max_tasks": 0}
+        ).build_task_store()
         assert store._retention is None
         assert store._max_tasks is None
 
@@ -764,8 +805,13 @@ class TestBuildSecurity:
 
     def test_everything_configured(self):
         cfg = cfg_from(
-            security={"auth_scheme": "jwt", "auth_secret": JWT_SECRET,
-                      "trust_mode": "strict", "rate_limit": 3, "max_payload_bytes": 100},
+            security={
+                "auth_scheme": "jwt",
+                "auth_secret": JWT_SECRET,
+                "trust_mode": "strict",
+                "rate_limit": 3,
+                "max_payload_bytes": 100,
+            },
             network={"agents": ["http://peer:1"]},
         )
         summary = cfg.build_security("http://me:1").summary()
@@ -781,8 +827,11 @@ class TestBuildSecurity:
         from nexus_a2a.security.trust import AgentNotAllowedError
 
         mw = cfg_from(
-            security={"trust_mode": "strict", "auth_scheme": "jwt",
-                      "auth_secret": JWT_SECRET},
+            security={
+                "trust_mode": "strict",
+                "auth_scheme": "jwt",
+                "auth_secret": JWT_SECRET,
+            },
             network={"agents": ["http://peer:1"]},
         ).build_security("http://me:1")
         identity = await mw.authorize(bearer_for("http://peer:1"))
@@ -794,8 +843,11 @@ class TestBuildSecurity:
         from nexus_a2a.security.trust import UnverifiedCallerError
 
         mw = cfg_from(
-            security={"trust_mode": "strict", "auth_scheme": "jwt",
-                      "auth_secret": JWT_SECRET},
+            security={
+                "trust_mode": "strict",
+                "auth_scheme": "jwt",
+                "auth_secret": JWT_SECRET,
+            },
             network={"agents": ["http://peer:1"]},
         ).build_security("http://me:1")
         # A valid token for "other" cannot borrow the listed peer's URL.
@@ -814,8 +866,11 @@ class TestBuildSecurity:
     def test_strict_with_no_peers_warns(self, caplog):
         with caplog.at_level("WARNING"):
             cfg_from(
-                security={"trust_mode": "strict", "auth_scheme": "jwt",
-                          "auth_secret": JWT_SECRET}
+                security={
+                    "trust_mode": "strict",
+                    "auth_scheme": "jwt",
+                    "auth_secret": JWT_SECRET,
+                }
             ).build_security("http://me:1")
         assert "refuses every caller" in caplog.text
 
@@ -826,7 +881,9 @@ class TestBuildSecurity:
             security={"rate_limit": 3},
             storage={"backend": "redis", "url": "redis://localhost:6379"},
         )
-        assert isinstance(cfg.build_security("http://me:1").rate_limiter, RedisRateLimiter)
+        assert isinstance(
+            cfg.build_security("http://me:1").rate_limiter, RedisRateLimiter
+        )
 
 
 class TestBuildRuntime:
@@ -847,7 +904,9 @@ class TestBuildRuntime:
         assert card["url"] == "http://127.0.0.1:8123"
 
     def test_ops_server_built_when_port_set(self):
-        runtime = cfg_from(ops={"port": 9555, "admin_token": "t"}).build_runtime(EchoAgent)
+        runtime = cfg_from(ops={"port": 9555, "admin_token": "t"}).build_runtime(
+            EchoAgent
+        )
         assert runtime.ops is not None
         assert runtime.ops.port == 9555
         assert runtime.ops._admin_token == "t"
@@ -932,8 +991,10 @@ class TestAgentRuntime:
         return AgentRuntime(
             server=Recorder(log, "server", fail.get("server")),
             ops=Recorder(log, "ops", fail.get("ops")),
-            resources=[Recorder(log, "db", fail.get("db")),
-                       Recorder(log, "cache", fail.get("cache"))],
+            resources=[
+                Recorder(log, "db", fail.get("db")),
+                Recorder(log, "cache", fail.get("cache")),
+            ],
             watchdog=Recorder(log, "watchdog", fail.get("watchdog")),
         )
 
@@ -943,10 +1004,16 @@ class TestAgentRuntime:
         async with runtime:
             pass
         assert log == [
-            "db.connect", "cache.connect", "watchdog.start",
-            "server.start", "ops.start",
-            "ops.stop", "server.stop", "watchdog.stop",
-            "cache.disconnect", "db.disconnect",
+            "db.connect",
+            "cache.connect",
+            "watchdog.start",
+            "server.start",
+            "ops.start",
+            "ops.stop",
+            "server.stop",
+            "watchdog.stop",
+            "cache.disconnect",
+            "db.disconnect",
         ]
 
     async def test_failed_start_tears_down_what_started(self):
@@ -1016,7 +1083,8 @@ class TestFutureWarnings:
 
     def test_security_silences_the_warning(self):
         server = A2AServer(
-            EchoAgent, host="0.0.0.0",
+            EchoAgent,
+            host="0.0.0.0",
             security=SecurityMiddleware(auth=AuthManager(default=api_key_config())),
         )
         with warnings.catch_warnings():
@@ -1057,9 +1125,14 @@ class TestLoopbackDetection:
     @pytest.mark.parametrize(
         ("host", "expected"),
         [
-            ("127.0.0.1", True), ("127.5.5.5", True), ("::1", True),
-            ("localhost", True), ("0.0.0.0", False), ("10.0.0.1", False),
-            ("example.com", False), ("", False),
+            ("127.0.0.1", True),
+            ("127.5.5.5", True),
+            ("::1", True),
+            ("localhost", True),
+            ("0.0.0.0", False),
+            ("10.0.0.1", False),
+            ("example.com", False),
+            ("", False),
         ],
     )
     def test_cases(self, host, expected):
@@ -1074,8 +1147,9 @@ class TestUnknownConfigKeys:
         from nexus_a2a.config import ConfigWarning
 
         with pytest.warns(ConfigWarning, match="did you mean 'auth_scheme'"):
-            NexusConfig.from_dict({"agent": {"name": "a"},
-                                   "security": {"auth_schem": "api_key"}})
+            NexusConfig.from_dict(
+                {"agent": {"name": "a"}, "security": {"auth_schem": "api_key"}}
+            )
 
     def test_unknown_section_is_reported(self):
         from nexus_a2a.config import ConfigWarning
@@ -1087,10 +1161,12 @@ class TestUnknownConfigKeys:
         """The README documented these; nothing ever read them."""
         from nexus_a2a.config import _unknown_key_messages
 
-        messages = _unknown_key_messages({
-            "security": {"mtls_cert_file": "x"},
-            "reliability": {"dlq_max_size": 5},
-        })
+        messages = _unknown_key_messages(
+            {
+                "security": {"mtls_cert_file": "x"},
+                "reliability": {"dlq_max_size": 5},
+            }
+        )
         assert any("security.mtls_cert_file" in m for m in messages)
         assert any("reliability.dlq_max_size" in m for m in messages)
 
@@ -1100,9 +1176,7 @@ class TestUnknownConfigKeys:
         messages = _unknown_key_messages(
             {"agent": {"skills": [{"id": "a", "name": "A", "tag": ["x"]}]}}
         )
-        assert messages == [
-            "unknown key 'agent.skills[0].tag' (did you mean 'tags'?)"
-        ]
+        assert messages == ["unknown key 'agent.skills[0].tag' (did you mean 'tags'?)"]
 
     def test_valid_config_is_silent(self):
         with warnings.catch_warnings():

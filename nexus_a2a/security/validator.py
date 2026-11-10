@@ -217,7 +217,9 @@ class PayloadValidator:
         try:
             parsed = json.loads(data)
         except (ValueError, UnicodeDecodeError) as exc:
-            raise InvalidPartError(index=-1, reason=f"Body is not valid JSON: {exc}") from exc
+            raise InvalidPartError(
+                index=-1, reason=f"Body is not valid JSON: {exc}"
+            ) from exc
 
         if not isinstance(parsed, dict):
             raise InvalidPartError(

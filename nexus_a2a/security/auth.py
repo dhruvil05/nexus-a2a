@@ -45,9 +45,15 @@ _JWT_ALGORITHM = "HS256"
 # header, and the two families never overlap.
 _SYMMETRIC_ALGORITHMS = ("HS256", "HS384", "HS512")
 _ASYMMETRIC_ALGORITHMS = (
-    "RS256", "RS384", "RS512",
-    "PS256", "PS384", "PS512",
-    "ES256", "ES384", "ES512",
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "ES256",
+    "ES384",
+    "ES512",
 )
 
 # Default header name for API key auth
@@ -447,9 +453,7 @@ class AuthManager:
                 f"Agent at '{agent_url}' has no signing key: set jwt_private_key "
                 "(asymmetric) or jwt_secret (symmetric)."
             )
-        algorithm = (
-            config.jwt_algorithm if config.jwt_private_key else _JWT_ALGORITHM
-        )
+        algorithm = config.jwt_algorithm if config.jwt_private_key else _JWT_ALGORITHM
 
         now = int(time.time())
         payload: dict[str, Any] = {
@@ -682,7 +686,7 @@ class AuthManager:
                 f"needs at least {_MIN_HMAC_KEY_BYTES} (RFC 7518 §3.2). A short "
                 "secret can be brute-forced from any captured token. "
                 "nexus-a2a 2.0 will reject it. Generate one with "
-                "`python -c \"import secrets; print(secrets.token_urlsafe(32))\"`.",
+                '`python -c "import secrets; print(secrets.token_urlsafe(32))"`.',
                 FutureWarning,
                 stacklevel=3,
             )

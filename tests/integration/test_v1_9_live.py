@@ -66,8 +66,9 @@ class TestLiveFollowOverTheWire:
         finally:
             await server.stop()
 
-        chunks = [e.data["content"] for e in seen
-                  if e.type == StreamEventType.ARTIFACT_CHUNK]
+        chunks = [
+            e.data["content"] for e in seen if e.type == StreamEventType.ARTIFACT_CHUNK
+        ]
         assert chunks == ["one", "two", "three"]
         assert any(e.type == StreamEventType.HEARTBEAT for e in seen)
         assert seen[-1].type == StreamEventType.DONE
@@ -78,18 +79,28 @@ class TestRuntimeFromConfig:
     def build(self, agent_port: int, ops_port: int):
         url = f"http://127.0.0.1:{agent_port}"
 
-        @agent(name="Configured", description="From nexus.toml.",
-               skills=[{"id": "echo", "name": "Echo", "description": "e"}], url=url)
+        @agent(
+            name="Configured",
+            description="From nexus.toml.",
+            skills=[{"id": "echo", "name": "Echo", "description": "e"}],
+            url=url,
+        )
         class Configured:
             async def run(self, task):
                 return "echo: " + task.latest_message().text()
 
-        cfg = NexusConfig.from_dict({
-            "agent": {"name": "Configured", "url": url},
-            "security": {"auth_scheme": "api_key", "auth_secret": "live-key",
-                         "rate_limit": 100, "max_payload_bytes": 4096},
-            "ops": {"port": ops_port, "admin_token": "ops-token"},
-        })
+        cfg = NexusConfig.from_dict(
+            {
+                "agent": {"name": "Configured", "url": url},
+                "security": {
+                    "auth_scheme": "api_key",
+                    "auth_secret": "live-key",
+                    "rate_limit": 100,
+                    "max_payload_bytes": 4096,
+                },
+                "ops": {"port": ops_port, "admin_token": "ops-token"},
+            }
+        )
         return cfg.build_runtime(Configured), url
 
     async def test_secured_agent_and_ops_server(self):
@@ -112,8 +123,9 @@ class TestRuntimeFromConfig:
 
                 assert (await http.get(f"{ops}/health")).status_code == 200
                 assert (await http.get(f"{ops}/info")).status_code == 403
-                info = await http.get(f"{ops}/info",
-                                      headers={"X-Admin-Token": "ops-token"})
+                info = await http.get(
+                    f"{ops}/info", headers={"X-Admin-Token": "ops-token"}
+                )
                 assert info.status_code == 200
 
                 metrics = (await http.get(f"{ops}/metrics")).text

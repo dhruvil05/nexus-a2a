@@ -167,8 +167,12 @@ class _Checker:
             return None
 
         if resp.status_code != 200:
-            self.record(group, "reachable", Status.FAIL,
-                        f"{CARD_PATH} returned HTTP {resp.status_code}")
+            self.record(
+                group,
+                "reachable",
+                Status.FAIL,
+                f"{CARD_PATH} returned HTTP {resp.status_code}",
+            )
             return None
         self.record(group, "reachable", Status.PASS)
 
@@ -195,19 +199,31 @@ class _Checker:
         card_url = str(card.get("url", ""))
         parsed = urlparse(card_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            self.record(group, "url", Status.FAIL,
-                        f"card url {card_url!r} is not an absolute http(s) URL")
+            self.record(
+                group,
+                "url",
+                Status.FAIL,
+                f"card url {card_url!r} is not an absolute http(s) URL",
+            )
         elif card_url.rstrip("/") != self.url:
-            self.record(group, "url", Status.WARN,
-                        f"card advertises {card_url} but was served from {self.url}; "
-                        "clients will call the advertised address")
+            self.record(
+                group,
+                "url",
+                Status.WARN,
+                f"card advertises {card_url} but was served from {self.url}; "
+                "clients will call the advertised address",
+            )
         else:
             self.record(group, "url", Status.PASS)
 
         skills = card.get("skills")
         if not skills:
-            self.record(group, "skills", Status.WARN,
-                        "no skills declared, so discovery by skill cannot find it")
+            self.record(
+                group,
+                "skills",
+                Status.WARN,
+                "no skills declared, so discovery by skill cannot find it",
+            )
         else:
             ids = [s.get("id") for s in skills if isinstance(s, dict)]
             if len(ids) != len(set(ids)):
@@ -220,8 +236,12 @@ class _Checker:
             if health.status_code == 200:
                 self.record(group, "health", Status.PASS)
             else:
-                self.record(group, "health", Status.WARN,
-                            f"/health returned HTTP {health.status_code}")
+                self.record(
+                    group,
+                    "health",
+                    Status.WARN,
+                    f"/health returned HTTP {health.status_code}",
+                )
         except httpx.HTTPError:
             self.record(group, "health", Status.WARN, "/health unreachable")
 
@@ -238,11 +258,19 @@ class _Checker:
         if code == -32601:
             self.record(group, "method_not_found", Status.PASS)
         elif code is not None:
-            self.record(group, "method_not_found", Status.WARN,
-                        f"unknown method returned error {code}, expected -32601")
+            self.record(
+                group,
+                "method_not_found",
+                Status.WARN,
+                f"unknown method returned error {code}, expected -32601",
+            )
         else:
-            self.record(group, "method_not_found", Status.FAIL,
-                        f"unknown method was not rejected (HTTP {resp.status_code})")
+            self.record(
+                group,
+                "method_not_found",
+                Status.FAIL,
+                f"unknown method was not rejected (HTTP {resp.status_code})",
+            )
 
         resp = await self.client.post(
             f"{self.url}/",
@@ -253,31 +281,51 @@ class _Checker:
         if code == -32700:
             self.record(group, "parse_error", Status.PASS)
         elif code is not None or resp.status_code == 400:
-            self.record(group, "parse_error", Status.WARN,
-                        f"malformed JSON rejected with {code or resp.status_code}, "
-                        "expected -32700")
+            self.record(
+                group,
+                "parse_error",
+                Status.WARN,
+                f"malformed JSON rejected with {code or resp.status_code}, "
+                "expected -32700",
+            )
         else:
-            self.record(group, "parse_error", Status.FAIL,
-                        f"malformed JSON was not rejected (HTTP {resp.status_code})")
+            self.record(
+                group,
+                "parse_error",
+                Status.FAIL,
+                f"malformed JSON was not rejected (HTTP {resp.status_code})",
+            )
 
         resp = await self.rpc("message/send", {})
         code = _rpc_error_code(resp)
         if code == -32602:
             self.record(group, "invalid_params", Status.PASS)
         elif code is not None or 400 <= resp.status_code < 500:
-            self.record(group, "invalid_params", Status.WARN,
-                        f"missing message rejected with {code or resp.status_code}, "
-                        "expected -32602")
+            self.record(
+                group,
+                "invalid_params",
+                Status.WARN,
+                f"missing message rejected with {code or resp.status_code}, "
+                "expected -32602",
+            )
         else:
-            self.record(group, "invalid_params", Status.FAIL,
-                        "message/send with no message was accepted")
+            self.record(
+                group,
+                "invalid_params",
+                Status.FAIL,
+                "message/send with no message was accepted",
+            )
 
         resp = await self.rpc("tasks/get", {"taskId": f"verify-{uuid.uuid4()}"})
         if _rpc_error_code(resp) is not None:
             self.record(group, "unknown_task", Status.PASS)
         else:
-            self.record(group, "unknown_task", Status.FAIL,
-                        "tasks/get for a task that does not exist did not error")
+            self.record(
+                group,
+                "unknown_task",
+                Status.FAIL,
+                "tasks/get for a task that does not exist did not error",
+            )
 
     # ── task ──────────────────────────────────────────────────────────────────
 
@@ -291,9 +339,13 @@ class _Checker:
         result = _rpc_result(resp)
         if result is None:
             code = _rpc_error_code(resp)
-            self.record(group, "send", Status.FAIL,
-                        f"message/send failed: "
-                        f"{'error ' + str(code) if code else 'HTTP ' + str(resp.status_code)}")
+            self.record(
+                group,
+                "send",
+                Status.FAIL,
+                f"message/send failed: "
+                f"{'error ' + str(code) if code else 'HTTP ' + str(resp.status_code)}",
+            )
             return None
 
         state = str(result.get("state", ""))
@@ -301,8 +353,12 @@ class _Checker:
             self.record(group, "send", Status.FAIL, f"unknown task state {state!r}")
             return None
         if state == "failed":
-            self.record(group, "send", Status.WARN,
-                        f"the agent failed the probe: {result.get('error')}")
+            self.record(
+                group,
+                "send",
+                Status.WARN,
+                f"the agent failed the probe: {result.get('error')}",
+            )
         else:
             self.record(group, "send", Status.PASS, f"state={state}")
 
@@ -318,34 +374,52 @@ class _Checker:
         history = result.get("history") or []
         texts = [
             p.get("content")
-            for m in history if isinstance(m, dict)
-            for p in m.get("parts", []) if isinstance(p, dict)
+            for m in history
+            if isinstance(m, dict)
+            for p in m.get("parts", [])
+            if isinstance(p, dict)
         ]
         if self.message in texts:
             self.record(group, "history", Status.PASS)
         else:
-            self.record(group, "history", Status.WARN,
-                        "task history does not contain the message that was sent")
+            self.record(
+                group,
+                "history",
+                Status.WARN,
+                "task history does not contain the message that was sent",
+            )
 
         task_id = result.get("id")
         got = _rpc_result(await self.rpc("tasks/get", {"taskId": task_id}))
         if got is not None and got.get("id") == task_id:
             self.record(group, "get", Status.PASS)
         else:
-            self.record(group, "get", Status.FAIL,
-                        "tasks/get did not return the task just created")
+            self.record(
+                group,
+                "get",
+                Status.FAIL,
+                "tasks/get did not return the task just created",
+            )
 
         if state in {"completed", "failed", "cancelled"}:
             resp = await self.rpc("tasks/cancel", {"taskId": task_id})
             cancelled = _rpc_result(resp)
             if cancelled is not None and cancelled.get("state") == "cancelled":
-                self.record(group, "cancel_finished", Status.FAIL,
-                            "cancelling a finished task reported success")
+                self.record(
+                    group,
+                    "cancel_finished",
+                    Status.FAIL,
+                    "cancelling a finished task reported success",
+                )
             else:
                 self.record(group, "cancel_finished", Status.PASS)
         else:
-            self.record(group, "cancel_finished", Status.SKIP,
-                        f"probe task is {state}, not finished")
+            self.record(
+                group,
+                "cancel_finished",
+                Status.SKIP,
+                f"probe task is {state}, not finished",
+            )
 
         return result
 
@@ -355,12 +429,14 @@ class _Checker:
         group = "stream"
         claims = bool(card.get("capabilities", {}).get("streaming"))
         if not claims:
-            self.record(group, "message_stream", Status.SKIP,
-                        "card does not claim streaming")
+            self.record(
+                group, "message_stream", Status.SKIP, "card does not claim streaming"
+            )
             return
         if self.read_only:
-            self.record(group, "message_stream", Status.SKIP,
-                        "read-only: agent not invoked")
+            self.record(
+                group, "message_stream", Status.SKIP, "read-only: agent not invoked"
+            )
             return
 
         from nexus_a2a.transport.sse import iter_sse_events
@@ -374,15 +450,21 @@ class _Checker:
         types: list[str] = []
         try:
             async with self.client.stream(
-                "POST", f"{self.url}/", json=body,
+                "POST",
+                f"{self.url}/",
+                json=body,
                 headers={"Accept": "text/event-stream", **self.auth_headers},
             ) as resp:
                 content_type = resp.headers.get("content-type", "")
                 if resp.status_code != 200 or "text/event-stream" not in content_type:
                     await resp.aread()
-                    self.record(group, "message_stream", Status.FAIL,
-                                f"card claims streaming but message/stream returned "
-                                f"HTTP {resp.status_code} ({content_type or 'no type'})")
+                    self.record(
+                        group,
+                        "message_stream",
+                        Status.FAIL,
+                        f"card claims streaming but message/stream returned "
+                        f"HTTP {resp.status_code} ({content_type or 'no type'})",
+                    )
                     return
                 async for event in iter_sse_events(resp):
                     types.append(event.type.value)
@@ -393,24 +475,37 @@ class _Checker:
             return
 
         if not types:
-            self.record(group, "message_stream", Status.FAIL, "stream carried no events")
+            self.record(
+                group, "message_stream", Status.FAIL, "stream carried no events"
+            )
         elif types[-1] == "error":
-            self.record(group, "message_stream", Status.WARN,
-                        "stream ended with an error event")
+            self.record(
+                group, "message_stream", Status.WARN, "stream ended with an error event"
+            )
         elif types[-1] != "done":
-            self.record(group, "message_stream", Status.FAIL,
-                        "stream closed without a terminal done event")
+            self.record(
+                group,
+                "message_stream",
+                Status.FAIL,
+                "stream closed without a terminal done event",
+            )
         else:
             self.record(group, "message_stream", Status.PASS, f"{len(types)} events")
 
     # ── push ──────────────────────────────────────────────────────────────────
 
-    async def check_push(self, card: dict[str, Any], task: dict[str, Any] | None) -> None:
+    async def check_push(
+        self, card: dict[str, Any], task: dict[str, Any] | None
+    ) -> None:
         group = "push"
         claims = bool(card.get("capabilities", {}).get("push_notifications"))
         if not claims:
-            self.record(group, "config_get", Status.SKIP,
-                        "card does not claim push notifications")
+            self.record(
+                group,
+                "config_get",
+                Status.SKIP,
+                "card does not claim push notifications",
+            )
             return
         if task is None:
             self.record(group, "config_get", Status.SKIP, "no probe task to query")
@@ -421,14 +516,22 @@ class _Checker:
         )
         code = _rpc_error_code(resp)
         if code == -32601:
-            self.record(group, "config_get", Status.FAIL,
-                        "card claims push notifications but the config methods "
-                        "are not implemented")
+            self.record(
+                group,
+                "config_get",
+                Status.FAIL,
+                "card claims push notifications but the config methods "
+                "are not implemented",
+            )
         elif _rpc_result(resp) is not None:
             self.record(group, "config_get", Status.PASS)
         else:
-            self.record(group, "config_get", Status.WARN,
-                        f"tasks/pushNotificationConfig/get returned error {code}")
+            self.record(
+                group,
+                "config_get",
+                Status.WARN,
+                f"tasks/pushNotificationConfig/get returned error {code}",
+            )
 
         # A push target is fetched by the AGENT, so it must refuse to be
         # pointed at cloud metadata or its own network.
@@ -442,9 +545,13 @@ class _Checker:
             },
         )
         if _rpc_result(resp) is not None:
-            self.record(group, "ssrf_guard", Status.FAIL,
-                        "agent accepted a cloud-metadata address as a webhook "
-                        "target — it can be used as an SSRF proxy")
+            self.record(
+                group,
+                "ssrf_guard",
+                Status.FAIL,
+                "agent accepted a cloud-metadata address as a webhook "
+                "target — it can be used as an SSRF proxy",
+            )
         else:
             self.record(group, "ssrf_guard", Status.PASS)
 
@@ -461,35 +568,60 @@ class _Checker:
 
         if scheme == "none":
             if refused:
-                self.record(group, "matches_card", Status.FAIL,
-                            f"card says no auth is needed, but an unauthenticated "
-                            f"request got HTTP {resp.status_code} — clients that "
-                            "trust the card will fail")
+                self.record(
+                    group,
+                    "matches_card",
+                    Status.FAIL,
+                    f"card says no auth is needed, but an unauthenticated "
+                    f"request got HTTP {resp.status_code} — clients that "
+                    "trust the card will fail",
+                )
             else:
-                self.record(group, "matches_card", Status.PASS,
-                            "no auth advertised, none enforced")
+                self.record(
+                    group,
+                    "matches_card",
+                    Status.PASS,
+                    "no auth advertised, none enforced",
+                )
             return
 
         if not refused:
-            self.record(group, "matches_card", Status.FAIL,
-                        f"card advertises {scheme!r} but an unauthenticated request "
-                        "was served — the agent is open to anyone")
+            self.record(
+                group,
+                "matches_card",
+                Status.FAIL,
+                f"card advertises {scheme!r} but an unauthenticated request "
+                "was served — the agent is open to anyone",
+            )
             return
-        self.record(group, "matches_card", Status.PASS,
-                    f"{scheme} advertised and enforced")
+        self.record(
+            group, "matches_card", Status.PASS, f"{scheme} advertised and enforced"
+        )
 
         if not self.auth_headers:
-            self.record(group, "credentials", Status.SKIP,
-                        "no credentials supplied (--api-key / --bearer)")
-            self.locked_out = f"agent requires {scheme} and no credentials were supplied"
+            self.record(
+                group,
+                "credentials",
+                Status.SKIP,
+                "no credentials supplied (--api-key / --bearer)",
+            )
+            self.locked_out = (
+                f"agent requires {scheme} and no credentials were supplied"
+            )
             return
         resp = await self.rpc("tasks/get", probe, authenticated=True)
         if resp.status_code in (401, 403):
-            self.record(group, "credentials", Status.FAIL,
-                        f"the supplied credentials were refused (HTTP {resp.status_code})")
+            self.record(
+                group,
+                "credentials",
+                Status.FAIL,
+                f"the supplied credentials were refused (HTTP {resp.status_code})",
+            )
             self.locked_out = "the supplied credentials were refused"
         else:
-            self.record(group, "credentials", Status.PASS, "supplied credentials accepted")
+            self.record(
+                group, "credentials", Status.PASS, "supplied credentials accepted"
+            )
 
     # ── driver ────────────────────────────────────────────────────────────────
 
