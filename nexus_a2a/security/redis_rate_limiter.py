@@ -41,6 +41,7 @@ from nexus_a2a.security.rate_limiter import (
     RateLimitConfig,
     RateLimitError,
 )
+from nexus_a2a.security.redaction import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,7 @@ class RedisRateLimiter(AbstractRateLimiter):
         self._consume = self._redis.register_script(_CONSUME_SCRIPT)
         self._peek = self._redis.register_script(_PEEK_SCRIPT)
         logger.info(
-            "RedisRateLimiter connected: %s (db=%d)", self._url, self._db
+            "RedisRateLimiter connected: %s (db=%d)", redact_url(self._url), self._db
         )
 
     async def disconnect(self) -> None:

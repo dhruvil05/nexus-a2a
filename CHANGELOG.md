@@ -7,6 +7,168 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.0.0] — Unreleased
+
+### Fixed — security
+
+- **Webhook SSRF via DNS rebinding.** Webhook URLs were checked once, when they
+  were registered, and resolved again by httpx at delivery. A hostname that
+  resolved to a public address at registration and to `169.254.169.254` or
+  `127.0.0.1` at delivery got the task posted to an internal address.
+  `WebhookDispatcher` now re-resolves on every attempt, requires every
+  resolved address to be public, and connects to the address it checked. The
+  original `Host` header and TLS SNI/certificate name are kept.
+- **Webhook address policy missed `100.64.0.0/10`.** That range includes
+  Alibaba Cloud's metadata service at `100.100.100.200`. Addresses are now
+  accepted only when `is_global` is true; IPv4-mapped IPv6 is unwrapped first.
+- **Webhook validation blocked the event loop.** Registration now resolves
+  asynchronously with a timeout, using the new `resolve_webhook_url()`.
+  Webhook URLs containing control characters or spaces are refused.
+- **The rate limiter could be bypassed by changing a header.** Buckets were
+  keyed on the self-asserted `X-Nexus-Caller` header, so a fresh value on
+  every request bought a fresh bucket. Now:
+  - A caller whose identity is verified gets its own bucket, keyed by its URL.
+  - Everyone else is limited by client address (`ip:<addr>`), or the
+    `client_ip_header=` value when the server sits behind a proxy.
+  - Failed authentication attempts use up the address's bucket.
+- **Trust rules relied on a header anyone can set.** With no auth, or a single
+  shared key, any caller could claim an allowed URL. Trust is now evaluated
+  only against a *verified* caller: one whose URL has its own registered
+  credential, or that sends a JWT whose `sub` equals the URL. Other callers
+  get `UnverifiedCallerError` (HTTP 403), or a warning in `trust_warn_only`
+  mode.
+- **Trust wildcards matched look-alike domains.** `fnmatch`'s `*` crossed `.`,
+  `/` and `@`, so `http://internal-*` matched
+  `http://internal-x.attacker.example`. A `*` now stays within one host label or
+  path segment. A bare `*` still matches everything.
+- **PyJWT floor raised to 2.15** to clear PYSEC-2026-4140..4152, -4183 and
+  GHSA-pxh4-856f-4h89. The lockfile now pins 2.15.1.
+- **Request bodies were read in full before the size check.** With no
+  `PayloadValidator`, there was no limit at all. `A2AServer` now reads the
+  body with a hard cap and refuses an oversized one with 413 as soon as it
+  crosses the limit. The cap is `max_body_bytes=`, default 10 MiB; a smaller
+  validator `max_bytes` wins.
+- **Any caller holding a task id could act on that task.** This covered
+  reading it, cancelling it, answering its prompt, redirecting its webhook,
+  or following its stream. A task created by a *verified* caller is now
+  bound to that caller, and anyone else gets "task not found". Tasks created
+  without a verified identity (no auth, or one shared key) stay open, as
+  before. The new `Task.owner` field is kept server-side and never sent on
+  the wire or in webhooks.
+- **Internal exception text reached clients.** It was returned in
+  `Internal error: ...` responses and in `/ready` failure reasons, on both
+  `A2AServer` and `AgentServer`. Responses are now generic; the details are
+  logged.
+- **Webhook delivery could be used to exhaust resources.**
+  - The response body is no longer read.
+  - Each attempt has one overall deadline (`timeout`), not a per-phase one.
+  - Deliveries in flight are capped (`WebhookConfig.max_concurrent`, 100),
+    and so is the queue behind them.
+  - The delivery log is bounded (`max_log_entries`, 1000).
+- **Webhook authenticity:**
+  - The per-task `PushNotificationConfig.token` is now actually sent, as
+    `X-A2A-Notification-Token`.
+  - Deliveries carry `X-Nexus-Delivery-Id` and `X-Nexus-Timestamp`.
+  - Deliveries carry a timestamped signature,
+    `X-Nexus-Signature-256-Timestamped`. Verify it with the new
+    `WebhookDispatcher.verify_timestamped_signature()`, which rejects replays
+    outside a 5-minute window.
+  - `X-Nexus-Signature-256` is unchanged, for existing receivers.
+- **Webhook URLs (and any tokens in their query) were logged.** Logs and error
+  messages now show them redacted (`nexus_a2a.security.redaction.redact_url`).
+- **The public `/ready` and `/metrics` endpoints scanned the whole task
+  store** on every request. `/ready` now does a keyed probe
+  (`AbstractTaskStore.ping()`), and `/metrics` caches its counts for 5 s.
+  The timeout watchdog queries by state (`list_by_state`) rather than loading
+  every task.
+- **New opt-in `TaskManager(input_timeout_sec=...)`** fails tasks left
+  `SUBMITTED` or `INPUT_REQUIRED` longer than this, so abandoned
+  conversations cannot pile up. It is off by default, so human-in-the-loop
+  replies are unaffected.
+- **Dependencies:**
+  - New floors: `certifi>=2026.10.18`, `anyio>=4.14.2`,
+    `cryptography>=50.0` (in the `jwks` and `all` extras), and pytest
+    `>=9.0.3` (dev).
+  - The `adk` extra now floors `urllib3`, `pyasn1`, `authlib`, `joserfc` and
+    `opentelemetry-api` at their fixed versions, which moves the lockfile's
+    `google-adk` to 2.14.0. The adapter's API usage is unchanged.
+  - The security workflow now also audits `uv.lock` and runs on pull
+    requests.
+
+- **Caller identity and shared key material.** A registered credential proves
+  the caller only when no other registration, and not the default, shares the
+  same API key, HMAC secret, public key or JWKS URL. Shared material (for
+  example one identity provider for every agent) proves identity only through
+  a JWT whose `sub` equals the caller URL.
+- **Rate limiting before signature checks.** An address that has used up its
+  allowance is now refused before any signature check or JWKS lookup is done.
+- **Webhook addresses:** `64:ff9b::/96` (NAT64) is judged by the IPv4 address
+  it embeds, and deprecated `::a.b.c.d` addresses are refused.
+- **Webhooks behind an egress proxy.** When an HTTP proxy applies
+  (`HTTP(S)_PROXY`, `NO_PROXY`), delivery is not pinned to an IP, so TLS and
+  the proxy's allow-lists still see the hostname. In that setup the proxy
+  must enforce the egress policy.
+- **Webhook URL paths are hidden in logs,** since Slack- and Discord-style
+  hooks carry their secret in the path. Use
+  `redact_url(url, keep_path=False)`.
+- **JWKS:** during an outage, stale keys are served for at most `max_stale`
+  seconds past their TTL (default 3600). A key the issuer has revoked cannot
+  stay valid indefinitely.
+- **mTLS:** `verify_peer_certificate()` now really parses the certificate and
+  checks it against the CA bundle. Before, it returned made-up "valid" data.
+- **The `nexus` CLI and `nexus verify` cap response bodies at 10 MiB.** They
+  ask for uncompressed responses and refuse compressed ones, so a hostile
+  agent cannot exhaust the CLI's memory with a huge or zip-bomb reply. See
+  `nexus_a2a.transport.limits.capped_client`.
+- **`verify_peer_certificate(..., intermediates=[...])`** follows chains of
+  up to 4 intermediate CA certificates presented by the peer. Each must be in
+  date and marked CA:TRUE, and the chain must end at the CA bundle.
+- **mTLS client certificates can prove the caller's identity:**
+  - Use `SecurityMiddleware(mtls=MutualTLSConfig(...))`.
+  - The certificate's SAN must name the caller:
+    `URI:<X-Nexus-Caller URL>` or `DNS:<caller host>`.
+  - The certificate is read from the ASGI `tls` extension, or behind a
+    TLS-terminating proxy from `client_cert_header=`, e.g. nginx's
+    `$ssl_client_escaped_cert`.
+  - A caller proven this way can own tasks and pass trust rules, like one
+    with a per-caller key.
+- **Admin token protection:** `nexus trace` / `nexus replay` refuse to send
+  the admin token to a non-loopback URL that came from `nexus.toml` (https
+  included), unless you pass `--agent` or set `NEXUS_OPS_URL`.
+
+### Changed — breaking
+
+- **An agent with no security now refuses to start on a public address.**
+  `A2AServer.start()` raises `InsecureServerError`, replacing the 1.9
+  `FutureWarning`. This applies to non-loopback binds with no auth, trust,
+  rate limit or payload validation. Behind an authenticating gateway, set
+  `allow_insecure=True` or `[security] allow_insecure = true`.
+- **JWTs must carry `exp`.** Tokens without an expiry are rejected.
+  `issue_jwt()` always sets one.
+- **`A2AHttpClient` caps responses at 10 MiB and SSE lines at 1 MiB.** Raise
+  them with `max_response_bytes=` and `max_sse_line=`.
+- **Trust wildcards no longer cross `.`, `/` or `@`.** Use one `*` per label:
+  `"http://10.0.*.*"` rather than `"http://10.0.*"`.
+- **`verify_peer_certificate()` needs `cryptography`** (`pip install
+  nexus-a2a[jwks]`), and fails closed without it. Intermediate CAs must be in
+  the bundle.
+- **Routing follows the registered URL** when an agent's `card.url` points to
+  a different origin. To keep a separate card host and endpoint host, pass
+  `AgentRegistry(trusted_card_origins=["https://api.example.com"])`, or add
+  the origin to `network.registry.trusted_card_origins`. `"*"` restores the
+  old behaviour.
+- `trust_mode = "strict"` in `nexus.toml` now requires `auth_scheme = "jwt"`,
+  and raises `ConfigError` otherwise. Callers must send a JWT whose `sub`
+  equals their `X-Nexus-Caller` URL. A shared HS256 secret stops outsiders,
+  but anyone holding it can mint any `sub`. Where peers must not be able to
+  impersonate each other, use per-agent keys or JWKS.
+- `set_limit(caller_url, ...)` now only applies to verified callers. To give
+  an unauthenticated client a custom limit, use `set_limit("ip:<addr>", ...)`.
+- `WebhookDispatcher` used on its own now enforces the address policy as well.
+  Pass `WebhookConfig(allow_private_urls=True)` for local development.
+
+---
+
 ## [1.9.0] — Configuration, tooling, and the road to 2.0 — Unreleased
 
 This is the last minor release before 2.0. It makes `nexus.toml` do what it was

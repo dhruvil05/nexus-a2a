@@ -479,23 +479,43 @@ class TestSecurityAuth:
 # ── Security: trust ───────────────────────────────────────────────────────────
 
 
+# Trust is only evaluated against a caller whose URL its credentials prove.
+TRUSTED_HEADERS = {CALLER_HEADER: CALLER_URL, "X-API-Key": "caller-key"}
+
+
 class TestSecurityTrust:
     def _client(self, allow_caller: bool, skills: list[str] | None = None):
+        auth = AuthManager()
+        auth.register_agent(
+            CALLER_URL,
+            AgentCredentialConfig(scheme=AuthScheme.API_KEY, api_key="caller-key"),
+        )
         trust = TrustBoundary()
         if allow_caller:
             trust.allow(CALLER_URL, SERVER_URL, skills=skills)
         return make_client(
+            security=SecurityMiddleware(auth=auth, trust=trust, server_url=SERVER_URL)
+        )
+
+    def test_unverified_caller_header_rejected_403(self):
+        """Trust must not be satisfied by merely claiming an allowed URL."""
+        trust = TrustBoundary()
+        trust.allow(CALLER_URL, SERVER_URL)
+        client = make_client(
             security=SecurityMiddleware(trust=trust, server_url=SERVER_URL)
         )
+        resp = send_text(client, headers={CALLER_HEADER: CALLER_URL})
+        assert resp.status_code == 403
+        assert "not verified" in resp.json()["detail"]
 
     def test_untrusted_caller_rejected_403(self):
         resp = send_text(self._client(allow_caller=False),
-                         headers={CALLER_HEADER: CALLER_URL})
+                         headers=TRUSTED_HEADERS)
         assert resp.status_code == 403
 
     def test_trusted_caller_allowed(self):
         resp = send_text(self._client(allow_caller=True),
-                         headers={CALLER_HEADER: CALLER_URL})
+                         headers=TRUSTED_HEADERS)
         assert resp.status_code == 200
 
     def test_skill_outside_acl_rejected_403(self):
@@ -507,7 +527,7 @@ class TestSecurityTrust:
                 "message": Message.user_text("x").model_dump(mode="json"),
                 "skillId": "echo",
             },
-            headers={CALLER_HEADER: CALLER_URL},
+            headers=TRUSTED_HEADERS,
         )
         assert resp.status_code == 403
 
@@ -520,7 +540,7 @@ class TestSecurityTrust:
                 "message": Message.user_text("x").model_dump(mode="json"),
                 "skillId": "echo",
             },
-            headers={CALLER_HEADER: CALLER_URL},
+            headers=TRUSTED_HEADERS,
         )
         assert resp.status_code == 200
 
@@ -552,12 +572,53 @@ class TestSecurityRateLimit:
         assert resp.status_code == 429
         assert int(resp.headers["Retry-After"]) >= 1
 
-    def test_limits_are_per_caller(self):
+    def test_rotating_caller_header_does_not_bypass_limit(self):
+        """An unverified X-Nexus-Caller must not select the rate bucket."""
         client = self._client()
+        codes = [
+            send_text(client, headers={CALLER_HEADER: f"http://spoof-{i}:1"}).status_code
+            for i in range(3)
+        ]
+        assert codes == [200, 200, 429]
+
+    def test_verified_callers_have_their_own_buckets(self):
+        auth = AuthManager()
+        for url, key in ((CALLER_URL, "k1"), ("http://other:1", "k2")):
+            auth.register_agent(
+                url, AgentCredentialConfig(scheme=AuthScheme.API_KEY, api_key=key)
+            )
+        client = make_client(
+            security=SecurityMiddleware(
+                auth=auth,
+                rate_limiter=RateLimiter(RateLimitConfig(rate=0.001, burst=2)),
+            )
+        )
         for _ in range(3):
-            send_text(client, headers={CALLER_HEADER: CALLER_URL})
-        other = send_text(client, headers={CALLER_HEADER: "http://other:1"})
+            send_text(client, headers={CALLER_HEADER: CALLER_URL, "X-API-Key": "k1"})
+        other = send_text(
+            client, headers={CALLER_HEADER: "http://other:1", "X-API-Key": "k2"}
+        )
         assert other.status_code == 200
+
+    def test_failed_auth_spends_the_address_bucket(self):
+        """Guessing credentials is throttled per address, whatever header is sent."""
+        auth = AuthManager()
+        auth.register_agent(
+            CALLER_URL, AgentCredentialConfig(scheme=AuthScheme.API_KEY, api_key="k")
+        )
+        client = make_client(
+            security=SecurityMiddleware(
+                auth=auth,
+                rate_limiter=RateLimiter(RateLimitConfig(rate=0.001, burst=2)),
+            )
+        )
+        codes = [
+            send_text(
+                client, headers={CALLER_HEADER: CALLER_URL, "X-API-Key": f"guess{i}"}
+            ).status_code
+            for i in range(3)
+        ]
+        assert codes == [401, 401, 429]
 
 
 # ── Security: payload ─────────────────────────────────────────────────────────

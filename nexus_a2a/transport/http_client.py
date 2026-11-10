@@ -32,7 +32,11 @@ import httpx
 
 from nexus_a2a.models.agent import AgentCard
 from nexus_a2a.models.task import Message, PushNotificationConfig, Task
-from nexus_a2a.transport.sse import StreamEvent, iter_sse_events
+from nexus_a2a.transport.sse import (
+    DEFAULT_MAX_SSE_LINE,
+    StreamEvent,
+    iter_sse_events,
+)
 from nexus_a2a.transport.tracing import Tracer, TraceStore
 
 logger = logging.getLogger(__name__)
@@ -73,8 +77,18 @@ def _build_send_params(
         )
     return params
 
+
 # Default HTTP status codes that should trigger a retry
 DEFAULT_RETRY_ON = {500, 502, 503, 504}
+
+#: Largest (decoded) response body read from a remote agent, in bytes.
+DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+# How much of an error body is read when a stream fails to open; only the
+# first 200 characters are reported.
+_ERROR_BODY_PREVIEW_BYTES = 4096
+# Request extension marking a streaming request, whose body must not be
+# buffered by the size-limit hook.
+_STREAM_EXTENSION = "nexus_a2a.stream"
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -103,6 +117,15 @@ class RemoteAgentError(TransportError):
         self.code = code
         self.message = message
         self.task_id = task_id
+
+
+class ResponseTooLargeError(AgentUnreachableError):
+    """
+    A remote agent sent a response body or SSE line over the configured limit.
+
+    Subclasses AgentUnreachableError so code that already handles an agent it
+    cannot talk to (health checks, retries in callers) handles this too.
+    """
 
 
 class CircuitOpenError(TransportError):
@@ -284,6 +307,13 @@ class A2AHttpClient:
                          and to evaluate trust rules, which are 'caller ->
                          target'. Without it the call is anonymous, and a
                          server with auth or trust enabled will reject it.
+        max_response_bytes: Largest response body read from the agent
+                         (default 10 MiB, checked against Content-Length and
+                         while reading). None disables the cap.
+        max_sse_line:    Longest SSE line accepted from stream_message()
+                         (default 1 MiB). None disables the cap.
+
+    Exceeding either limit raises ResponseTooLargeError.
     """
 
     def __init__(
@@ -296,8 +326,13 @@ class A2AHttpClient:
         trace_id: str | None = None,
         trace_store: TraceStore | None = None,
         caller_url: str | None = None,
+        *,
+        max_response_bytes: int | None = DEFAULT_MAX_RESPONSE_BYTES,
+        max_sse_line: int | None = DEFAULT_MAX_SSE_LINE,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._max_response_bytes = max_response_bytes
+        self._max_sse_line = max_sse_line
         self._timeout = timeout
         self._retry = retry or RetryConfig()
         self._cb = circuit_breaker  # None = disabled
@@ -324,6 +359,7 @@ class A2AHttpClient:
                 **trace_headers,
                 **self._extra_headers,
             },
+            event_hooks={"response": [self._limit_response_body]},
         )
         return self
 
@@ -504,15 +540,17 @@ class A2AHttpClient:
                 "/",
                 json=payload,
                 headers={"Accept": "text/event-stream"},
+                extensions={_STREAM_EXTENSION: True},
             ) as response:
                 if response.status_code >= 400:
-                    await response.aread()
+                    preview = await _read_preview(response)
                     raise AgentUnreachableError(
                         self._base_url,
-                        f"HTTP {response.status_code} opening stream: "
-                        f"{response.text[:200]}",
+                        f"HTTP {response.status_code} opening stream: {preview[:200]}",
                     )
-                async for event in iter_sse_events(response):
+                async for event in iter_sse_events(
+                    response, max_line=self._max_sse_line
+                ):
                     yield event
                     if event.is_terminal:
                         return
@@ -652,6 +690,43 @@ class A2AHttpClient:
                     await asyncio.sleep(self._retry.delay_for(attempt))
         raise AgentUnreachableError(self._base_url, last_error)
 
+    async def _limit_response_body(self, response: httpx.Response) -> None:
+        """
+        httpx response hook: read the body here, before httpx does, so an
+        oversized one is rejected instead of being buffered in full.
+
+        Runs before httpx's own read for non-streaming requests. The bytes
+        counted are the decoded ones, so a compressed body cannot expand past
+        the limit either. Streaming requests (stream_message) are skipped;
+        their lines are bounded by max_sse_line instead.
+        """
+        limit = self._max_response_bytes
+        if not limit or limit <= 0:
+            return
+        if response.request.extensions.get(_STREAM_EXTENSION):
+            return
+
+        declared = response.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            raise self._too_large(limit)
+
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > limit:
+                raise self._too_large(limit)
+            chunks.append(chunk)
+        # httpx keeps a read body here; aread() (which client.post/get call
+        # next) returns it instead of reading the now-consumed stream again.
+        response._content = b"".join(chunks)
+
+    def _too_large(self, limit: int) -> ResponseTooLargeError:
+        return ResponseTooLargeError(
+            self._base_url,
+            f"response body exceeds the {limit}-byte limit (max_response_bytes)",
+        )
+
     def _require_client(self) -> httpx.AsyncClient:
         if self._client is None:
             raise RuntimeError(
@@ -659,3 +734,14 @@ class A2AHttpClient:
                 "async with A2AHttpClient(...) as client:"
             )
         return self._client
+
+
+async def _read_preview(response: httpx.Response) -> str:
+    """Read at most _ERROR_BODY_PREVIEW_BYTES of an error body, as text."""
+    data = b""
+    async for chunk in response.aiter_bytes():
+        data += chunk
+        if len(data) >= _ERROR_BODY_PREVIEW_BYTES:
+            data = data[:_ERROR_BODY_PREVIEW_BYTES]
+            break
+    return data.decode(response.encoding or "utf-8", errors="replace")

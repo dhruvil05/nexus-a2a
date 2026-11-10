@@ -26,6 +26,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from nexus_a2a.security.redaction import redact_url
+
 if TYPE_CHECKING:
     from nexus_a2a.core.dead_letter import DLQEntry
 
@@ -193,7 +195,9 @@ class RedisDLQStore(AbstractDLQStore):
             decode_responses=True,
         )
         await self._redis.ping()
-        logger.info("RedisDLQStore connected: %s (db=%d)", self._url, self._db)
+        logger.info(
+            "RedisDLQStore connected: %s (db=%d)", redact_url(self._url), self._db
+        )
 
     async def disconnect(self) -> None:
         """Close the Redis connection pool. An injected client is left open."""

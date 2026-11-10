@@ -55,6 +55,29 @@ class AbstractTaskStore(ABC):
     async def list_all(self) -> list[Task]:
         """Return every task currently in the store."""
 
+    async def list_by_state(self, state: str) -> list[Task]:
+        """
+        Return tasks in one state ("working", "input_required", ...).
+
+        Backends with an index (PostgresTaskStore) override this; the default
+        filters list_all().
+        """
+        return [t for t in await self.list_all() if _state_str(t) == state]
+
+    async def ping(self) -> None:
+        """
+        Cheap liveness probe: raise if the backend is unreachable.
+
+        Used by GET /ready instead of list_all(), which loaded every stored
+        task on each (unauthenticated) probe. The default is one keyed lookup.
+        """
+        await self.get("__nexus_ready_probe__")
+
+
+def _state_str(task: Task) -> str:
+    state = task.state
+    return state.value if hasattr(state, "value") else str(state)
+
 
 # ── In-memory implementation (Phase 2 default) ───────────────────────────────
 

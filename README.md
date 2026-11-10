@@ -1425,10 +1425,12 @@ description = "Searches the web for a given query."
 tags        = ["search", "web"]
 
 [security]
-auth_scheme       = "api_key"    # none | api_key | jwt
-auth_secret       = "change-me"  # one shared credential for every caller
+auth_scheme       = "jwt"        # none | api_key | jwt
+auth_secret       = "change-me-to-32+-random-bytes"  # shared HS256 secret
 trust_mode        = "strict"     # off | warn | strict ([network].agents only)
-rate_limit        = 10           # requests/sec per caller; 0 = off
+                                 # strict needs jwt: callers send a token whose
+                                 # 'sub' equals their X-Nexus-Caller URL
+rate_limit        = 10           # requests/sec per verified caller, else per IP; 0 = off
 rate_burst        = 20
 max_payload_bytes = 1048576      # 0 = off
 allow_insecure    = false        # see "Preparing for 2.0"
@@ -1652,7 +1654,10 @@ ruff format nexus_a2a
 
 2.0 turns four 1.9 warnings into errors:
 
-- an unsecured agent on a non-loopback address;
+- an unsecured agent on a non-loopback address (`A2AServer.start()` raises
+  `InsecureServerError`). Behind a gateway that authenticates for you —
+  common in containers bound to `0.0.0.0` — accept it explicitly with
+  `allow_insecure=True` or `[security] allow_insecure = true`;
 - `AuthManager(allow_unregistered=True)`;
 - HS256 secrets shorter than 32 bytes;
 - unknown `nexus.toml` keys.

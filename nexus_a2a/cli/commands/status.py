@@ -20,6 +20,7 @@ import httpx
 
 from nexus_a2a.cli.context import NexusContext, pass_ctx
 from nexus_a2a.cli.output import print_error, print_warning, render_status
+from nexus_a2a.transport.limits import capped_client
 
 # Checked in order; the first one present wins.
 QUEUE_DEPTH_METRICS = ("nexus_a2a_tasks_active",)
@@ -104,7 +105,7 @@ async def _probe_agent(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
 
 
 async def _probe_all(urls: list[str]) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient() as client:
+    async with capped_client() as client:
         tasks = [_probe_agent(client, url) for url in urls]
         return await asyncio.gather(*tasks)
 

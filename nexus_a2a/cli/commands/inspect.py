@@ -16,11 +16,12 @@ import httpx
 
 from nexus_a2a.cli.context import NexusContext, pass_ctx
 from nexus_a2a.cli.output import print_error, render_inspect
+from nexus_a2a.transport.limits import capped_client
 
 
 async def _fetch_card(url: str) -> dict[str, Any]:
     url = url.rstrip("/")
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with capped_client(timeout=10.0) as client:
         resp = await client.get(f"{url}/.well-known/agent-card.json")
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()

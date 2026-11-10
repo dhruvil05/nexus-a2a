@@ -8,10 +8,12 @@ All display logic lives here — command modules call these helpers and stay lea
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Any, TextIO
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -59,6 +61,36 @@ def ensure_safe_output() -> None:
             pass  # already detached or not reconfigurable — leave it
 
 
+# ── Untrusted text ─────────────────────────────────────────────────────────────
+
+# C0 controls except \t and \n, DEL, and C1 controls. ESC (\x1b) and CSI
+# (\x9b) start terminal escape sequences; \r can overwrite what was printed.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def clean(value: Any) -> str:
+    """Return value as text with terminal control characters removed."""
+    return _CONTROL_CHARS.sub("", str(value))
+
+
+def safe(value: Any) -> str:
+    """
+    Make a string that came from somewhere else (a remote agent card, a DLQ
+    error, an exception message) safe to embed in Rich markup.
+
+    Rich parses "[...]" as markup, so a hostile agent name such as
+    "[bold green]PASSED" or "[link=...]" would otherwise be rendered as
+    styling, and raw escape sequences would reach the terminal. Ordinary text
+    looks exactly the same after this.
+    """
+    return escape(clean(value))
+
+
+def _cell(value: Any) -> Any:
+    """safe() for a table cell, keeping None (an empty cell) as None."""
+    return None if value is None else safe(value)
+
+
 # ── Icons ──────────────────────────────────────────────────────────────────────
 # ASCII fallbacks for consoles that cannot show the Unicode glyphs.
 _UNICODE_ICONS = _can_encode("✓✗⚠⚡", sys.stdout)
@@ -82,15 +114,15 @@ def print_json(data: Any) -> None:
 
 
 def print_error(msg: str) -> None:
-    err_console.print(f"[bold red]Error:[/bold red] {msg}")
+    err_console.print(f"[bold red]Error:[/bold red] {safe(msg)}")
 
 
 def print_success(msg: str) -> None:
-    console.print(f"{ICON_OK} {msg}")
+    console.print(f"{ICON_OK} {safe(msg)}")
 
 
 def print_warning(msg: str) -> None:
-    console.print(f"{ICON_WARN} {msg}")
+    console.print(f"{ICON_WARN} {safe(msg)}")
 
 
 # ── Ping output ────────────────────────────────────────────────────────────────
@@ -107,7 +139,7 @@ def render_ping(result: dict[str, Any], fmt: str = "table") -> None:
     latency_str = f"{latency:.1f}ms" if latency is not None else "n/a"
 
     table = Table(
-        title=f"Agent Ping — {result.get('url', '')}",
+        title=f"Agent Ping — {safe(result.get('url', ''))}",
         show_header=True,
         header_style="bold cyan",
     )
@@ -117,9 +149,9 @@ def render_ping(result: dict[str, Any], fmt: str = "table") -> None:
     table.add_row(
         "Status", f"{icon} {'healthy' if result.get('healthy') else 'unhealthy'}"
     )
-    table.add_row("Name", result.get("name", "—"))
-    table.add_row("Version", result.get("version", "—"))
-    table.add_row("Skills", str(result.get("skills_count", 0)))
+    table.add_row("Name", _cell(result.get("name", "—")))
+    table.add_row("Version", _cell(result.get("version", "—")))
+    table.add_row("Skills", safe(result.get("skills_count", 0)))
     table.add_row("Latency", latency_str)
     table.add_row(
         "Health endpoint", status_icon(result.get("health_endpoint_present", False))
@@ -155,9 +187,16 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
         print_json(card)
         return
 
-    panel_title = f"[bold cyan]{card.get('name', 'Unknown Agent')}[/bold cyan]  v{card.get('version', '?')}"
+    panel_title = (
+        f"[bold cyan]{safe(card.get('name', 'Unknown Agent'))}[/bold cyan]"
+        f"  v{safe(card.get('version', '?'))}"
+    )
     console.print(
-        Panel(card.get("description", ""), title=panel_title, border_style="cyan")
+        Panel(
+            safe(card.get("description") or ""),
+            title=panel_title,
+            border_style="cyan",
+        )
     )
 
     # Capabilities
@@ -177,9 +216,9 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
     auth_table = Table(show_header=False, box=None, padding=(0, 2))
     auth_table.add_column("Key", style="dim")
     auth_table.add_column("Value")
-    auth_table.add_row("Scheme", auth_scheme_of(auth))
-    auth_table.add_row("Token URL", auth.get("token_url") or "—")
-    auth_table.add_row("Header", auth.get("header_name") or "—")
+    auth_table.add_row("Scheme", safe(auth_scheme_of(auth)))
+    auth_table.add_row("Token URL", safe(auth.get("token_url") or "—"))
+    auth_table.add_row("Header", safe(auth.get("header_name") or "—"))
     console.print(Panel(auth_table, title="Authentication", border_style="dim"))
 
     # Modes
@@ -187,10 +226,10 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
     modes_table.add_column("Key", style="dim")
     modes_table.add_column("Value")
     modes_table.add_row(
-        "Input modes", ", ".join(card.get("input_modes", ["text/plain"]))
+        "Input modes", safe(", ".join(card.get("input_modes", ["text/plain"])))
     )
     modes_table.add_row(
-        "Output modes", ", ".join(card.get("output_modes", ["text/plain"]))
+        "Output modes", safe(", ".join(card.get("output_modes", ["text/plain"])))
     )
     console.print(Panel(modes_table, title="Modes", border_style="dim"))
 
@@ -205,7 +244,9 @@ def render_inspect(card: dict[str, Any], fmt: str = "table") -> None:
         for sk in skills:
             tags = ", ".join(sk.get("tags", []))
             examples = str(len(sk.get("examples", []))) + " example(s)"
-            sk_table.add_row(sk.get("id", ""), sk.get("name", ""), tags, examples)
+            sk_table.add_row(
+                _cell(sk.get("id", "")), _cell(sk.get("name", "")), safe(tags), examples
+            )
         console.print(sk_table)
 
 
@@ -235,12 +276,12 @@ def render_status(
 
     for agent in agents:
         table.add_row(
-            agent.get("name", "—"),
-            agent.get("url", "—"),
+            _cell(agent.get("name", "—")),
+            _cell(agent.get("url", "—")),
             status_icon(agent.get("healthy", False)),
-            _count(agent.get("queue_depth")),
-            _count(agent.get("dlq_pending")),
-            agent.get("last_seen", "—"),
+            safe(_count(agent.get("queue_depth"))),
+            safe(_count(agent.get("dlq_pending"))),
+            _cell(agent.get("last_seen", "—")),
         )
 
     console.print(table)
@@ -249,10 +290,14 @@ def render_status(
     summary_table = Table(show_header=False, box=None, padding=(0, 2))
     summary_table.add_column("Key", style="dim")
     summary_table.add_column("Value", style="bold")
-    summary_table.add_row("Total agents", str(summary.get("total", 0)))
-    summary_table.add_row("Healthy", f"[green]{summary.get('healthy', 0)}[/green]")
-    summary_table.add_row("Unhealthy", f"[red]{summary.get('unhealthy', 0)}[/red]")
-    summary_table.add_row("Total DLQ pending", str(summary.get("total_dlq", 0)))
+    summary_table.add_row("Total agents", safe(summary.get("total", 0)))
+    summary_table.add_row(
+        "Healthy", f"[green]{safe(summary.get('healthy', 0))}[/green]"
+    )
+    summary_table.add_row(
+        "Unhealthy", f"[red]{safe(summary.get('unhealthy', 0))}[/red]"
+    )
+    summary_table.add_row("Total DLQ pending", safe(summary.get("total_dlq", 0)))
     console.print(Panel(summary_table, title="Summary", border_style="dim"))
 
 
@@ -268,7 +313,7 @@ def _hop_label(hop: dict[str, Any]) -> Text:
     error = hop.get("error")
 
     text = Text()
-    text.append(url, style="cyan")
+    text.append(clean(url), style="cyan")
     text.append("  ")
 
     if latency_ms is not None:
@@ -283,15 +328,15 @@ def _hop_label(hop: dict[str, Any]) -> Text:
     elif status == "failed":
         text.append("✗ failed", style="bold red")
         if error:
-            text.append(f": {error}", style="red")
+            text.append(f": {clean(error)}", style="red")
     else:
-        text.append(status, style="dim")
+        text.append(clean(status), style="dim")
 
     return text
 
 
 def _build_tree(trace_id: str, hops: list[dict[str, Any]]) -> Tree:
-    root = Tree(f"[bold]trace: {trace_id}[/bold]")
+    root = Tree(f"[bold]trace: {safe(trace_id)}[/bold]")
     for hop in hops:
         label = _hop_label(hop)
         node = root.add(label)
@@ -311,7 +356,7 @@ def render_trace(trace: dict[str, Any], fmt: str = "table") -> None:
     hops = trace.get("hops", [])
 
     if not hops:
-        console.print(f"[dim]No hops recorded for trace {trace_id}[/dim]")
+        console.print(f"[dim]No hops recorded for trace {safe(trace_id)}[/dim]")
         return
 
     tree = _build_tree(trace_id, hops)
@@ -323,7 +368,8 @@ def render_trace(trace: dict[str, Any], fmt: str = "table") -> None:
         slowest = max(timed, key=lambda h: h["duration_ms"])
         if slowest["duration_ms"] > SLOW_THRESHOLD_MS:
             console.print(
-                f"\n[yellow]Slowest hop:[/yellow] {slowest['url']} — {slowest['duration_ms']:.0f}ms"
+                f"\n[yellow]Slowest hop:[/yellow] {safe(slowest.get('url', 'unknown'))}"
+                f" — {slowest['duration_ms']:.0f}ms"
             )
 
 
@@ -345,11 +391,11 @@ def render_replay_preview(entries: list[dict[str, Any]], fmt: str = "table") -> 
 
     for entry in entries:
         table.add_row(
-            entry.get("task_id", "—"),
-            entry.get("skill_id") or "—",
-            entry.get("failed_at", "—"),
-            str(entry.get("attempts", 1)),
-            entry.get("error", "—")[:60],
+            _cell(entry.get("task_id", "—")),
+            safe(entry.get("skill_id") or "—"),
+            _cell(entry.get("failed_at", "—")),
+            safe(entry.get("attempts", 1)),
+            safe(clean(entry.get("error", "—"))[:60]),
         )
 
     console.print(table)
@@ -392,7 +438,7 @@ def render_verify(report: dict[str, Any], fmt: str = "table") -> None:
         print_json(report)
         return
 
-    table = Table(title=f"Conformance: {report['url']}", header_style="bold cyan")
+    table = Table(title=f"Conformance: {safe(report['url'])}", header_style="bold cyan")
     table.add_column("", justify="center", no_wrap=True)
     table.add_column("Group", style="dim", no_wrap=True)
     table.add_column("Check", no_wrap=True)
@@ -402,9 +448,9 @@ def render_verify(report: dict[str, Any], fmt: str = "table") -> None:
         colour, icon = _VERIFY_STYLE.get(check["status"], ("white", "?"))
         table.add_row(
             icon,
-            check["group"],
-            f"[{colour}]{check['name']}[/{colour}]",
-            check.get("detail", ""),
+            safe(check["group"]),
+            f"[{colour}]{safe(check['name'])}[/{colour}]",
+            _cell(check.get("detail", "")),
         )
     console.print(table)
 

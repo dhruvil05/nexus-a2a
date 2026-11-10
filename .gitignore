@@ -33,3 +33,6 @@ Thumbs.db
 
 # Local secrets
 .env
+
+
+security_audit

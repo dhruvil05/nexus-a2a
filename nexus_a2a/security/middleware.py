@@ -26,13 +26,21 @@ Caller identity:
     itself with the 'X-Nexus-Caller' header, which A2AHttpClient sets when
     constructed with caller_url=... . Requests without it are anonymous;
     set require_caller=True to reject them outright.
+
+    The header is self-asserted. It only becomes a VERIFIED identity when the
+    credentials prove it: the URL has its own registered credential that
+    matched, or the request carries a valid JWT whose 'sub' equals it. Trust
+    rules and per-caller rate limits apply only to verified identities;
+    everything else is rate-limited by client address, never by the header.
 """
 
 from __future__ import annotations
 
 import logging
+import ssl
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from nexus_a2a.models.task import Message
 from nexus_a2a.security.auth import AuthError, AuthManager
@@ -40,7 +48,11 @@ from nexus_a2a.security.rate_limiter import (
     AbstractRateLimiter,
     RateLimitError,
 )
-from nexus_a2a.security.trust import TrustBoundary, TrustError
+from nexus_a2a.security.trust import (
+    TrustBoundary,
+    TrustError,
+    UnverifiedCallerError,
+)
 from nexus_a2a.security.validator import (
     PayloadTooLargeError,
     PayloadValidator,
@@ -52,10 +64,14 @@ logger = logging.getLogger(__name__)
 # Header a calling agent uses to announce its own base URL.
 CALLER_HEADER = "X-Nexus-Caller"
 
-# Rate-limit bucket shared by all callers that did not identify themselves.
-# One shared bucket deliberately caps TOTAL anonymous traffic rather than
-# handing every unidentified caller its own fresh allowance.
+# Rate-limit bucket for requests whose client address is unknown. One shared
+# bucket deliberately caps that traffic in total rather than handing each
+# request a fresh allowance.
 ANONYMOUS_CALLER = "<anonymous>"
+
+# Prefix for rate-limit buckets keyed by network address. Use it to give one
+# address a custom limit: limiter.set_limit("ip:10.0.0.5", RateLimitConfig(...)).
+IP_BUCKET_PREFIX = "ip:"
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -88,16 +104,34 @@ class CallerIdentity:
         url:       The caller's announced base URL, or None if anonymous.
         claims:    Claims returned by AuthManager (empty when auth is off).
         anonymous: True when no caller identity was presented.
+        verified:  True when the credentials PROVE url (see module docs).
+                   False means url is only what the caller claimed.
+        client:    Network bucket key for this request ("ip:<addr>").
     """
 
     url: str | None = None
     claims: dict[str, Any] = field(default_factory=dict)
     anonymous: bool = True
+    verified: bool = False
+    client: str = ANONYMOUS_CALLER
 
     @property
     def label(self) -> str:
-        """A stable string for logs, metrics and rate-limit buckets."""
+        """A stable string for logs and metrics (may be unverified)."""
         return self.url or ANONYMOUS_CALLER
+
+    @property
+    def rate_key(self) -> str:
+        """
+        The rate-limit bucket for this request.
+
+        The verified caller URL when there is one, so set_limit(caller_url)
+        still applies to it; otherwise the client address. Never an unverified
+        header value — rotating that gave every request a fresh bucket.
+        """
+        if self.verified and self.url:
+            return self.url
+        return self.client
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────
@@ -133,6 +167,23 @@ class SecurityMiddleware:
         trust_warn_only: Log trust violations instead of refusing them. For
                         rolling out a trust policy: see what it would block
                         before it blocks anything.
+        mtls:           MutualTLSConfig whose CA bundle verifies client
+                        certificates. A verified certificate whose SAN names
+                        the caller (URI:<caller URL> or DNS:<caller host>)
+                        proves the caller's identity, like a per-caller key.
+        client_cert_header: Header in which a TLS-terminating proxy forwards
+                        the verified client certificate as (URL-escaped) PEM,
+                        e.g. nginx's $ssl_client_escaped_cert. Only set this
+                        when every request passes through that proxy and it
+                        overwrites the header; otherwise it can be forged.
+                        The ASGI 'tls' extension is used when the server
+                        provides it.
+        client_ip_header: Header holding the real client address when the
+                        server sits behind a reverse proxy, e.g.
+                        "X-Forwarded-For" (its LAST entry is used: the one your
+                        proxy appended). Only set this when every request
+                        passes through a proxy that sets it; otherwise clients
+                        can forge it. Default: the TCP peer address.
 
     Raises:
         ValueError: If trust is configured without server_url.
@@ -148,6 +199,9 @@ class SecurityMiddleware:
         caller_header: str = CALLER_HEADER,
         require_caller: bool = False,
         trust_warn_only: bool = False,
+        client_ip_header: str | None = None,
+        mtls: Any = None,
+        client_cert_header: str | None = None,
     ) -> None:
         if trust is not None and not server_url:
             raise ValueError(
@@ -163,6 +217,9 @@ class SecurityMiddleware:
         self.caller_header = caller_header
         self.require_caller = require_caller
         self.trust_warn_only = trust_warn_only
+        self.client_ip_header = client_ip_header
+        self.mtls = mtls
+        self.client_cert_header = client_cert_header
 
     # ── Introspection ─────────────────────────────────────────────────────────
 
@@ -170,6 +227,8 @@ class SecurityMiddleware:
     def enabled(self) -> bool:
         """True if any stage is configured — i.e. this is not a no-op."""
         return (
+            # mtls alone is not listed: it only PROVES identity, it refuses
+            # nothing unless trust/require_caller act on that identity.
             any((self.auth, self.trust, self.rate_limiter, self.validator))
             or self.require_caller
         )
@@ -209,51 +268,83 @@ class SecurityMiddleware:
         self,
         headers: dict[str, str],
         skill_id: str | None = None,
+        client_host: str | None = None,
+        peer_cert_chain: list[str] | None = None,
     ) -> CallerIdentity:
         """
         Rate-limit, authenticate and authorise the caller.
 
         Args:
-            headers:  Inbound HTTP headers.
-            skill_id: Skill being invoked, for skill-level trust ACLs.
+            headers:     Inbound HTTP headers.
+            skill_id:    Skill being invoked, for skill-level trust ACLs.
+            client_host: The TCP peer address (request.client.host). Used to
+                         rate-limit callers whose identity is not verified.
+            peer_cert_chain: PEM client certificate chain (leaf first) from
+                         the ASGI 'tls' extension, if the server provides it.
 
         Returns:
             The established CallerIdentity.
 
         Raises:
-            RateLimitError:     Caller exceeded its request rate.
-            MissingCallerError: Identity required but not presented.
-            AuthError:          Credentials missing, invalid, or expired.
-            TrustError:         Caller may not call this agent or this skill.
+            RateLimitError:        Caller exceeded its request rate.
+            MissingCallerError:    Identity required but not presented.
+            AuthError:             Credentials missing, invalid, or expired.
+            UnverifiedCallerError: Trust is enforced but the announced caller
+                                   URL is not proven by the credentials.
+            TrustError:            Caller may not call this agent or skill.
         """
         caller_url = self._read_caller(headers)
-        identity = CallerIdentity(url=caller_url, anonymous=caller_url is None)
-
-        # ── 2. Rate limit ─────────────────────────────────────────────────────
-        # Before auth so a flood cannot force expensive signature checks.
-        if self.rate_limiter is not None:
-            await self.rate_limiter.check(identity.label)
+        identity = CallerIdentity(
+            url=caller_url,
+            anonymous=caller_url is None,
+            client=self._client_key(headers, client_host),
+        )
 
         # A default credential (one shared key for every caller) does not need
-        # to know who is calling — the announced URL is self-asserted anyway,
-        # so it would add nothing to a shared-secret check. Per-caller
-        # credentials and trust rules still require the identity.
+        # to know who is calling. Per-caller credentials and trust rules do.
         auth_needs_identity = self.auth is not None and not self.auth.has_default
         needs_identity = (
             self.require_caller or auth_needs_identity or self.trust is not None
         )
-        if needs_identity and caller_url is None:
-            raise MissingCallerError(self.caller_header)
 
-        # ── 3. Authenticate ───────────────────────────────────────────────────
-        if self.auth is not None:
-            # An anonymous caller here is checked against the default
-            # credential; AuthManager still fails closed on a wrong secret.
-            identity.claims = await self.auth.verify(caller_url or "", headers)
+        if self.auth is None:
+            # No credential check: limit by address, BEFORE any work.
+            await self._rate_limit(identity.client)
+            if needs_identity and caller_url is None:
+                raise MissingCallerError(self.caller_header)
+            identity.verified = self._cert_proves_caller(
+                caller_url, headers, peer_cert_chain
+            )
+        else:
+            if needs_identity and caller_url is None:
+                await self._rate_limit(identity.client)
+                raise MissingCallerError(self.caller_header)
+            # Shed an address that has already used up its allowance (on
+            # failed or unverified requests) BEFORE paying for signature
+            # checks or a JWKS lookup.
+            await self._shed_if_exhausted(identity.client)
+            try:
+                # An anonymous caller here is checked against the default
+                # credential; AuthManager still fails closed on a wrong secret.
+                identity.claims = await self.auth.verify(caller_url or "", headers)
+            except AuthError:
+                # Failed attempts spend the ADDRESS's allowance, so guessing
+                # credentials is throttled without letting a forged caller
+                # header pick (or drain) somebody else's bucket.
+                await self._rate_limit(identity.client)
+                raise
+            identity.verified = self._proves_caller(
+                caller_url, identity.claims
+            ) or self._cert_proves_caller(caller_url, headers, peer_cert_chain)
+            await self._rate_limit(identity.rate_key)
 
-        # ── 4. Trust ──────────────────────────────────────────────────────────
+        # ── Trust ─────────────────────────────────────────────────────────────
         if self.trust is not None:
             try:
+                if not identity.verified:
+                    raise UnverifiedCallerError(
+                        str(caller_url), str(self.server_url)
+                    )
                 self.trust.check(
                     caller_url=str(caller_url),
                     target_url=str(self.server_url),
@@ -286,6 +377,105 @@ class SecurityMiddleware:
         return self.validator.validate_dict(raw_message)
 
     # ── Internals ─────────────────────────────────────────────────────────────
+
+    async def _rate_limit(self, key: str) -> None:
+        if self.rate_limiter is not None:
+            await self.rate_limiter.check(key)
+
+    async def _shed_if_exhausted(self, key: str) -> None:
+        """Raise RateLimitError if key's bucket is empty, without consuming."""
+        if self.rate_limiter is None:
+            return
+        available = await self.rate_limiter.available_tokens(key)
+        if available < 1.0:
+            rate = self.rate_limiter.get_config(key).rate
+            raise RateLimitError(key, (1.0 - available) / rate)
+
+    def _client_key(self, headers: dict[str, str], client_host: str | None) -> str:
+        """Bucket key for the network peer: 'ip:<addr>' or the anonymous one."""
+        host = client_host
+        if self.client_ip_header:
+            raw = headers.get(self.client_ip_header) or headers.get(
+                self.client_ip_header.lower()
+            )
+            if raw:
+                # The proxy APPENDS the address it saw; earlier entries came
+                # from the client and can be anything.
+                host = raw.split(",")[-1].strip() or host
+        return f"{IP_BUCKET_PREFIX}{host}" if host else ANONYMOUS_CALLER
+
+    def _cert_proves_caller(
+        self,
+        caller_url: str | None,
+        headers: dict[str, str],
+        peer_cert_chain: list[str] | None,
+    ) -> bool:
+        """
+        Does a verified client certificate name the announced caller?
+
+        Needs mtls= (the CA bundle). The chain comes from the ASGI 'tls'
+        extension or, behind a TLS-terminating proxy, client_cert_header.
+        A certificate that fails verification proves nothing (logged).
+        """
+        if self.mtls is None or caller_url is None:
+            return False
+        chain = list(peer_cert_chain or [])
+        if not chain and self.client_cert_header:
+            raw = headers.get(self.client_cert_header) or headers.get(
+                self.client_cert_header.lower()
+            )
+            if raw:
+                chain = [unquote(raw)]
+        if not chain:
+            return False
+
+        from nexus_a2a.security.mtls import (
+            MtlsCertificateError,
+            verify_peer_certificate,
+        )
+
+        try:
+            ders = [ssl.PEM_cert_to_DER_cert(pem.strip()) for pem in chain]
+            info = verify_peer_certificate(self.mtls, ders[0], intermediates=ders[1:])
+        except (MtlsCertificateError, ValueError) as exc:
+            logger.warning("Client certificate not accepted: %s", exc)
+            return False
+
+        host = (urlsplit(caller_url).hostname or "").lower()
+        for entry in info.san:
+            kind, _, value = entry.partition(":")
+            if kind == "URI" and value.rstrip("/") == caller_url:
+                return True
+            if kind == "DNS" and host and value.lower() == host:
+                return True
+        logger.warning(
+            "Client certificate (%s) does not name caller %s in its SAN",
+            info.subject,
+            caller_url,
+        )
+        return False
+
+    def _proves_caller(self, caller_url: str | None, claims: dict[str, Any]) -> bool:
+        """
+        Did the credentials that just verified prove the announced caller URL?
+
+        Yes when the URL is registered with key material no other caller has
+        (verify() used it and it matched), or when the credential is a JWT
+        whose 'sub' names the URL. Key material shared between callers — one
+        JWKS issuer, one HMAC secret, one API key — proves only membership, so
+        then the token must name the caller. Any holder of a shared HS256
+        secret can still mint a token for any 'sub'; use per-caller keys or an
+        issuer that controls 'sub' where peers must not impersonate each other.
+        A shared API key carries no identity at all, so it never proves one.
+        """
+        if caller_url is None or self.auth is None:
+            return False
+        if self.auth.has_own_credentials(caller_url):
+            return True
+        if self.auth.jwt_applies(caller_url):
+            sub = claims.get("sub")
+            return isinstance(sub, str) and sub.rstrip("/") == caller_url
+        return False
 
     def _read_caller(self, headers: dict[str, str]) -> str | None:
         """Read the caller URL header, case-insensitively."""

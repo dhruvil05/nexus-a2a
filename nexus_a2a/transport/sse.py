@@ -112,7 +112,89 @@ def parse_sse_data(raw: str) -> StreamEvent | None:
     return StreamEvent(type=event_type, data=payload, raw=raw)
 
 
-async def iter_sse_events(response: httpx.Response) -> AsyncIterator[StreamEvent]:
+#: Longest SSE line (in characters) accepted from a remote agent. A line that
+#: never ends would otherwise be buffered in memory without limit.
+DEFAULT_MAX_SSE_LINE = 1024 * 1024
+
+# The line breaks str.splitlines() honours — the same set httpx's own
+# Response.aiter_lines() splits on, so parsing is unchanged.
+_NEWLINE_CHARS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85  "
+
+
+def _line_too_long(response: httpx.Response, limit: int) -> Exception:
+    # Imported here: http_client imports this module.
+    from nexus_a2a.security.redaction import redact_url
+    from nexus_a2a.transport.http_client import ResponseTooLargeError
+
+    try:
+        url = redact_url(str(response.request.url))
+    except RuntimeError:  # response built without a request
+        url = "<unknown>"
+    return ResponseTooLargeError(
+        url, f"SSE line exceeds the {limit}-character limit (max_sse_line)"
+    )
+
+
+async def _aiter_bounded_lines(
+    response: httpx.Response, max_line: int | None
+) -> AsyncIterator[str]:
+    """
+    Response.aiter_lines() with a cap on how much of one line is buffered.
+
+    Mirrors httpx's LineDecoder (same line breaks, same handling of a "\\r"
+    split across chunks, same flush at end of stream), adding only the check.
+    max_line=None or <= 0 disables the cap.
+    """
+    limit = max_line if max_line and max_line > 0 else None
+    buffer: list[str] = []
+    buffered = 0
+    trailing_cr = False
+
+    async for text in response.aiter_text():
+        if trailing_cr:
+            text = "\r" + text
+            trailing_cr = False
+        if text.endswith("\r"):
+            trailing_cr = True
+            text = text[:-1]
+        if not text:
+            continue
+
+        trailing_newline = text[-1] in _NEWLINE_CHARS
+        lines = text.splitlines()
+
+        if len(lines) == 1 and not trailing_newline:
+            buffer.append(lines[0])
+            buffered += len(lines[0])
+            if limit is not None and buffered > limit:
+                raise _line_too_long(response, limit)
+            continue
+
+        if buffer:
+            lines[0] = "".join(buffer) + lines[0]
+            buffer = []
+            buffered = 0
+
+        if not trailing_newline:
+            last = lines.pop()
+            buffer = [last]
+            buffered = len(last)
+
+        for line in lines:
+            if limit is not None and len(line) > limit:
+                raise _line_too_long(response, limit)
+            yield line
+        if limit is not None and buffered > limit:
+            raise _line_too_long(response, limit)
+
+    if buffer or trailing_cr:
+        yield "".join(buffer)
+
+
+async def iter_sse_events(
+    response: httpx.Response,
+    max_line: int | None = DEFAULT_MAX_SSE_LINE,
+) -> AsyncIterator[StreamEvent]:
     """
     Yield StreamEvents from a streaming httpx response.
 
@@ -124,8 +206,14 @@ async def iter_sse_events(response: httpx.Response) -> AsyncIterator[StreamEvent
         data: {"type": "task_status", "state": "working"}
         (blank line separates events)
         : heartbeat        <- comment line, keep-alive
+
+    Args:
+        response: The open streaming response.
+        max_line: Longest line accepted, in characters (default 1 MiB).
+                  A longer line raises ResponseTooLargeError (a subclass of
+                  AgentUnreachableError). None disables the cap.
     """
-    async for line in response.aiter_lines():
+    async for line in _aiter_bounded_lines(response, max_line):
         line = line.strip()
         if not line:
             continue  # blank line = event separator
@@ -161,6 +249,9 @@ class SSEStreamer:
         base_url:      The remote agent's base URL.
         timeout:       Max seconds to wait for the next event before giving up.
         headers:       Extra headers (e.g. auth) to include in the request.
+        max_line:      Longest SSE line accepted, in characters. Default 1 MiB;
+                       None disables the cap. Exceeding it raises
+                       ResponseTooLargeError.
     """
 
     def __init__(
@@ -168,10 +259,13 @@ class SSEStreamer:
         base_url: str,
         timeout: float = 60.0,
         headers: dict[str, str] | None = None,
+        *,
+        max_line: int | None = DEFAULT_MAX_SSE_LINE,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._headers = headers or {}
+        self._max_line = max_line
 
     async def stream(
         self,
@@ -213,7 +307,7 @@ class SSEStreamer:
         response: httpx.Response,
     ) -> AsyncIterator[StreamEvent]:
         """Parse raw SSE lines from the HTTP response body."""
-        async for event in iter_sse_events(response):
+        async for event in iter_sse_events(response, max_line=self._max_line):
             yield event
 
     @staticmethod
