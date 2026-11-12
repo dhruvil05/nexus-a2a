@@ -27,7 +27,17 @@ from click.testing import CliRunner
 from nexus_a2a.cli.context import NexusContext, pass_ctx
 from nexus_a2a.cli.main import cli
 
-COMMANDS = ["dev", "inspect", "ping", "replay", "run", "status", "trace", "verify"]
+COMMANDS = [
+    "dashboard",
+    "dev",
+    "inspect",
+    "ping",
+    "replay",
+    "run",
+    "status",
+    "trace",
+    "verify",
+]
 COMMANDS_DIR = Path(__file__).resolve().parents[1] / "nexus_a2a" / "cli" / "commands"
 
 

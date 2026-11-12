@@ -220,7 +220,7 @@ from nexus_a2a.transport.webhook import (
 try:
     __version__ = _pkg_version("nexus-a2a")
 except PackageNotFoundError:  # running from a source tree without an install
-    __version__ = "2.0.0"
+    __version__ = "2.1.0"
 
 
 # ── What gets exported when someone does: from nexus_a2a import * ─────────────

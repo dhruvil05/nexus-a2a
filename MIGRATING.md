@@ -1,5 +1,12 @@
 # Migrating
 
+## 2.0 → 2.1
+
+Nothing to change: 2.1 only adds things, and the dashboard is off unless
+enabled. If you turn it on, `[dashboard] enabled = true` needs `[ops] port` and
+`[ops] admin_token`. `nexus.toml` rejects the section otherwise, the same way
+it rejects any other incomplete setting.
+
 ## 1.9 → 2.0
 
 2.0 is a security release. Most changes only affect deployments that relied

@@ -622,6 +622,7 @@ class TestToDict:
             "observability",
             "push",
             "ops",
+            "dashboard",
         }
         assert set(d.keys()) == expected_keys
 

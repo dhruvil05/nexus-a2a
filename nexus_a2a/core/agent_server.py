@@ -64,6 +64,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
 if TYPE_CHECKING:
+    from nexus_a2a.dashboard import Dashboard
     from nexus_a2a.network import AgentNetwork
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,8 @@ class AgentServer:
                     NEXUS_ADMIN_TOKEN environment variable. When neither is
                     set those endpoints return 403 and only /health, /ready
                     and /metrics are served.
+        dashboard:  Optional Dashboard served under /ui (nexus-a2a 2.1). It
+                    needs the admin token too; without one it stays off.
 
     Example::
 
@@ -113,8 +116,10 @@ class AgentServer:
         port: int = 8080,
         log_level: str = "warning",
         admin_token: str | None = None,
+        dashboard: Dashboard | None = None,
     ) -> None:
         self.network = network
+        self.dashboard = dashboard
         self.host = host
         self.port = port
         self.log_level = log_level
@@ -134,6 +139,9 @@ class AgentServer:
         self._server: uvicorn.Server | None = None
         self._serve_task: asyncio.Task[None] | None = None
 
+        if self.dashboard is not None:
+            self.dashboard.attach()
+
         # Build the ASGI app
         self._app = self._build_app()
 
@@ -152,12 +160,18 @@ class AgentServer:
         if self._serve_task is not None and not self._serve_task.done():
             raise RuntimeError("AgentServer is already running.")
 
+        if self.dashboard is not None:
+            self.dashboard.attach()
+
         config = uvicorn.Config(
             app=self._app,
             host=self.host,
             port=self.port,
             log_level=self.log_level,
             loop="asyncio",
+            # Never rewrite the client address from X-Forwarded-For: the
+            # dashboard's loopback check and login throttle depend on it.
+            proxy_headers=False,
         )
         self._server = uvicorn.Server(config)
         self._started_at = time.monotonic()
@@ -196,6 +210,8 @@ class AgentServer:
 
         self._serve_task = None
         self._server = None
+        if self.dashboard is not None:
+            self.dashboard.detach()
         logger.info("AgentServer stopped.")
 
     @property
@@ -259,6 +275,8 @@ class AgentServer:
                 "AgentServer: rejected unauthorised admin request to %s",
                 request.url.path,
             )
+            if self.dashboard is not None:
+                self.dashboard.record_admin_denied(request)
             return JSONResponse({"error": "Forbidden"}, status_code=403)
 
         return None
@@ -310,6 +328,7 @@ class AgentServer:
                 Route("/traces/{trace_id}", trace_lookup),
                 Route("/dlq", dlq_list),
                 Route("/dlq/replay", dlq_replay, methods=["POST"]),
+                *(self.dashboard.routes() if self.dashboard is not None else []),
             ],
         )
 

@@ -572,7 +572,16 @@ class DeadLetterQueue:
         except Exception as exc:
             error = str(exc)
             await self._persist(entry)
-            logger.warning("DLQ replay failed for task %s: %s", entry.task_id, error)
+            logger.warning(
+                "DLQ replay failed for task %s: %s",
+                entry.task_id,
+                error,
+                extra={
+                    "nexus_public_message": (
+                        f"DLQ replay failed for task {entry.task_id}"
+                    )
+                },
+            )
             if entry.retry_count >= self._max_retries:
                 logger.error(
                     "DLQ task %s exhausted %d retries — giving up",

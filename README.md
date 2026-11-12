@@ -47,6 +47,7 @@ Agent A  ──HTTP/JSON-RPC──▶  Agent B  ──▶  Agent C
 - [Streaming & Webhooks](#streaming--webhooks)
 - [Framework Adapters](#framework-adapters)
 - [Observability & CLI](#observability--cli)
+- [Dashboard](#dashboard)
 - [Configuration (nexus.toml)](#configuration-nexustoml)
 - [Error Handling Reference](#error-handling-reference)
 - [Testing](#testing)
@@ -1404,6 +1405,80 @@ print(tracer.format_tree(trace))
 
 ---
 
+## Dashboard
+
+New in 2.1: a browser dashboard for a running agent. It shows what the agent is
+doing right now and lets you act on problems without a terminal.
+
+| Page | Shows | Actions |
+|---|---|---|
+| Overview | Tasks in flight, completed/failed in the last 5 min, error rate, p50/p95 latency, DLQ size, security events, webhook deliveries, a 30-minute throughput chart | — |
+| Agents | This agent's card, skills and capabilities; registered peers and their health | Check peer health |
+| Tasks | Live task list (filter by state, skill or text); per-task summary, timeline, trace and messages | Cancel, Retry |
+| Issues | Failed tasks, the dead-letter queue, security events (failed logins, refused requests, refused webhooks), webhook failures | Retry, replay the DLQ |
+| Logs | Live `nexus_a2a` log lines, filterable by level and text (paste a task id) | Pause / resume |
+
+Turn it on in `nexus.toml`. It is served by the ops server, never on the
+agent's public port, and the ops admin token is the login:
+
+```toml
+[ops]
+port        = 9100
+admin_token = "a-long-random-token"
+
+[dashboard]
+enabled = true
+```
+
+```bash
+nexus run --module agent:MyAgent
+nexus dashboard            # opens http://127.0.0.1:9100/ui/
+```
+
+In development, `nexus dev --dashboard` gives every dev agent its own dashboard
+and prints a one-time login token.
+
+**Safe by default**
+
+- Only this machine can open it, and only under a `localhost` / `127.0.0.1`
+  address, so a malicious web page cannot reach it through DNS rebinding.
+  `allow_remote = true` changes that; use HTTPS and list your host names in
+  `allowed_hosts`. Behind a reverse proxy, the proxy is the client:
+  `X-Forwarded-For` is never trusted.
+- Login exchanges the admin token for a short-lived HttpOnly, SameSite=Strict
+  cookie. Wrong tokens, from the login form or the `X-Admin-Token` header, are
+  throttled and appear as security events. Logging out also ends live streams.
+- Every action needs a CSRF token and a same-origin request, asks for
+  confirmation, and is logged.
+- Message and artifact content is hidden unless `show_content = true`. That
+  includes error messages and log lines, which often quote the input. Prompts
+  often contain personal data.
+- `allow_replay = false` turns off Retry and DLQ replay.
+- A strict Content-Security-Policy is applied, and nothing is loaded from the
+  internet.
+
+The dashboard reads live events rather than scanning the task store, so it adds
+almost no load. In 2.1 it shows one process: with several replicas, each has its
+own dashboard. The JSON API behind it is documented in
+`nexus_a2a/dashboard/API.md`. Scripts can call it with an `X-Admin-Token`
+header.
+
+Without `nexus.toml`:
+
+```python
+from nexus_a2a import A2AServer, AgentNetwork, AgentServer
+from nexus_a2a.dashboard import Dashboard, DashboardConfig
+
+server = A2AServer(MyAgent, host="127.0.0.1", port=8001)
+network = AgentNetwork(task_manager=server.tasks)
+dashboard = Dashboard(admin_token=TOKEN, server=server, network=network,
+                      config=DashboardConfig(show_content=False))
+ops = AgentServer(network=network, host="127.0.0.1", port=9100,
+                  admin_token=TOKEN, dashboard=dashboard)
+```
+
+---
+
 ## Configuration (nexus.toml)
 
 One file configures the agent `nexus run` serves: auth, trust, rate limits,
@@ -1452,6 +1527,14 @@ port        = 8080               # start the health/metrics/admin server; 0 = of
 host        = ""                 # default: same host as the agent
 url         = "http://localhost:8080"   # where `nexus trace` / `nexus replay` go
 admin_token = "ops-secret"
+
+[dashboard]
+enabled         = false          # browser dashboard at <ops url>/ui; needs [ops] port + admin_token
+allow_replay    = true           # Retry / DLQ replay from the UI
+show_content    = false          # show message content (may contain personal data)
+allow_remote    = false          # serve clients other than this machine (use HTTPS)
+allowed_hosts   = []             # with allow_remote: accepted Host names, e.g. ["ops.example.com"]
+session_ttl_min = 60             # idle minutes before a login expires
 
 [reliability]
 task_timeout_sec          = 120.0
@@ -1678,6 +1761,7 @@ and how to keep the old behaviour where that is safe.
 | **v0.4.0** | `Orchestrator` (sequential/parallel/dag), SSE streaming, `WebhookDispatcher`, `AgentNetwork` |
 | **v1.0.0** | LangGraph/CrewAI/AutoGen/GoogleADK adapters, `RedisTaskStore`, `AuditLogger`, `MetricsCollector` |
 | **v1.1.0** | Task timeout watchdog, `InputHandler`, `DeadLetterQueue`, `CircuitBreaker`, `Tracer`, `CapabilityGuard` |
+| **v2.1.0** | Browser dashboard on the ops server: live overview, agents, tasks (cancel/retry), issues (DLQ replay, security events), logs; `nexus dashboard`, `nexus dev --dashboard` |
 | **v2.0.0** | Security release: verified caller identity (per-caller keys, JWT `sub`, mTLS), task ownership, DNS-rebinding-safe webhooks with timestamped signatures, body/response size caps, unsecured public binds refused, the four 1.9 warnings now errors, dependencies cleared of known advisories |
 | **v1.9.0** | `nexus.toml` drives `nexus run` (`AgentRuntime`), `nexus verify`, `nexus dev`, live `GET /stream`, `/metrics` on agents, bounded task store; fixes the never-checked config secret, cards hiding their auth, and four CLI commands broken against real servers |
 | **v1.8.0** | Production scale: durable DLQ and push targets, distributed rate limiting (atomic via Lua), asymmetric JWT + JWKS with algorithm-confusion prevention |
