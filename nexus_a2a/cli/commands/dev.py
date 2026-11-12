@@ -23,7 +23,10 @@ every agent, with these development overrides:
   - every dev agent is added to [network].agents, so trust_mode="strict"
     lets them call one another;
   - webhooks may target loopback, so agents can push to each other;
-  - no ops servers start — they would all want the same port.
+  - no ops servers start — they would all want the same port — unless
+    --dashboard is given: then each agent gets its own ops server on a free
+    port with the dashboard on, and one login token is generated for the
+    session and printed.
 
 --verify runs `nexus verify` against each agent once they are up.
 """
@@ -32,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import secrets
 import socket
 from dataclasses import dataclass
 from typing import Any
@@ -101,20 +105,37 @@ def plan_agents(
 
 
 def dev_config_for(
-    raw: dict[str, Any], agent: DevAgent, peers: list[str]
+    raw: dict[str, Any],
+    agent: DevAgent,
+    peers: list[str],
+    dashboard_port: int | None = None,
+    dashboard_token: str | None = None,
 ) -> dict[str, Any]:
     """
     Raw config for one dev agent: the shared file, minus what must differ.
 
     [agent] is replaced so each agent keeps its own name and gets its own
-    address; [ops] is dropped so the agents do not fight over one port.
+    address; [ops] is dropped so the agents do not fight over one port. With
+    a dashboard port, [ops] is replaced by a private one on that port with
+    the dashboard on (content shown unless the file says otherwise — this is
+    your own machine and data).
     """
     cfg = {
         key: dict(value) if isinstance(value, dict) else value
         for key, value in raw.items()
-        if key not in ("agent", "ops", "dev")
+        if key not in ("agent", "ops", "dev", "dashboard")
     }
     cfg["agent"] = {"url": agent.url}
+    if dashboard_port is not None and dashboard_token:
+        cfg["ops"] = {
+            "port": dashboard_port,
+            "host": DEV_HOST,
+            "admin_token": dashboard_token,
+        }
+        dashboard = dict(raw.get("dashboard", {}))
+        dashboard["enabled"] = True
+        dashboard.setdefault("show_content", True)
+        cfg["dashboard"] = dashboard
 
     network = cfg.setdefault("network", {})
     known = list(network.get("agents", []))
@@ -126,19 +147,35 @@ def dev_config_for(
 
 
 def build_runtimes(
-    raw: dict[str, Any], planned: list[DevAgent]
+    raw: dict[str, Any],
+    planned: list[DevAgent],
+    dashboard_token: str | None = None,
 ) -> list[tuple[DevAgent, Any]]:
-    """Import every agent and build its runtime. Raises on the first problem."""
+    """
+    Import every agent and build its runtime. Raises on the first problem.
+
+    With dashboard_token, each agent also gets an ops server with the
+    dashboard on a free port.
+    """
     from nexus_a2a.cli.commands.run import _load_agent_class, build_config
 
     peers = [agent.url for agent in planned]
     runtimes = []
     for agent in planned:
         cls = _load_agent_class(agent.module)
-        cfg = build_config(dev_config_for(raw, agent, peers), cls)
+        port = _free_port() if dashboard_token else None
+        cfg = build_config(
+            dev_config_for(raw, agent, peers, port, dashboard_token), cls
+        )
         runtime = cfg.build_runtime(cls, host=DEV_HOST, port=agent.port)
         runtimes.append((agent, runtime))
     return runtimes
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((DEV_HOST, 0))
+        return int(sock.getsockname()[1])
 
 
 def _port_free(port: int) -> bool:
@@ -159,16 +196,23 @@ def _describe(runtimes: list[tuple[DevAgent, Any]]) -> None:
     table.add_column("Skills", style="dim")
     table.add_column("Security", style="dim")
     table.add_column("Module", style="dim")
+    with_dashboard = any(rt.ops is not None for _, rt in runtimes)
+    if with_dashboard:
+        table.add_column("Dashboard", style="green")
     for agent, runtime in runtimes:
         server = runtime.server
         active = [n for n, on in server.security.summary().items() if on]
-        table.add_row(
+        row = [
             server.card.name,
             agent.url,
             ", ".join(server.card.skill_ids()) or "—",
             ", ".join(active) or "none",
             agent.module,
-        )
+        ]
+        if with_dashboard:
+            ops = runtime.ops
+            row.append(f"http://{ops.host}:{ops.port}/ui" if ops else "—")
+        table.add_row(*row)
     console.print(table)
 
 
@@ -196,12 +240,18 @@ async def _serve(
     raw: dict[str, Any],
     run_verify: bool,
     fmt: str,
+    dashboard_token: str | None = None,
 ) -> None:
     async with contextlib.AsyncExitStack() as stack:
         for _, runtime in runtimes:
             await stack.enter_async_context(runtime)
 
         _describe(runtimes)
+        if dashboard_token:
+            console.print(
+                "\n[bold]Dashboard login token[/bold] (this session only): "
+                f"[green]{dashboard_token}[/green]"
+            )
         if run_verify:
             ok = await _verify_all(runtimes, raw, fmt)
             if not ok:
@@ -232,12 +282,20 @@ async def _serve(
     default=False,
     help="Run conformance checks against each agent once it is up.",
 )
+@click.option(
+    "--dashboard",
+    "with_dashboard",
+    is_flag=True,
+    default=False,
+    help="Give each agent a dashboard (http://127.0.0.1:<port>/ui).",
+)
 @pass_ctx
 def dev(
     ctx: NexusContext,
     agents: tuple[str, ...],
     base_port: int,
     run_verify: bool,
+    with_dashboard: bool,
 ) -> None:
     """Run several agents locally in one process.
 
@@ -246,6 +304,7 @@ def dev(
       nexus dev
       nexus dev --agent agents.research:Research --agent agents.summary:Summary
       nexus dev --verify
+      nexus dev --dashboard
     """
     from nexus_a2a.config import ConfigError
 
@@ -263,13 +322,14 @@ def dev(
         print_error(f"Port(s) already in use: {', '.join(map(str, busy))}")
         raise SystemExit(1)
 
+    token = secrets.token_urlsafe(24) if with_dashboard else None
     try:
-        runtimes = build_runtimes(raw, planned)
+        runtimes = build_runtimes(raw, planned, dashboard_token=token)
     except (ConfigError, TypeError, ValueError) as e:
         print_error(str(e))
         raise SystemExit(1) from e
 
     try:
-        asyncio.run(_serve(runtimes, raw, run_verify, ctx.fmt))
+        asyncio.run(_serve(runtimes, raw, run_verify, ctx.fmt, token))
     except KeyboardInterrupt:
         console.print("\n[dim]Stopping all agents...[/dim]")

@@ -83,6 +83,7 @@ def cli(ctx: click.Context, config: str, verbose: bool, fmt: str) -> None:
 
 
 def _register_commands() -> None:
+    from nexus_a2a.cli.commands.dashboard import dashboard
     from nexus_a2a.cli.commands.dev import dev
     from nexus_a2a.cli.commands.inspect import inspect
     from nexus_a2a.cli.commands.ping import ping
@@ -100,6 +101,7 @@ def _register_commands() -> None:
     cli.add_command(run)
     cli.add_command(verify)
     cli.add_command(dev)
+    cli.add_command(dashboard)
 
 
 _register_commands()

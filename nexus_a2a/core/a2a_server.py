@@ -133,6 +133,7 @@ from nexus_a2a.security.middleware import (
     SecurityMiddleware,
     http_status_for,
 )
+from nexus_a2a.security.redaction import redact_url
 from nexus_a2a.security.validator import PayloadTooLargeError
 from nexus_a2a.storage.push_store import AbstractPushStore, InMemoryPushStore
 from nexus_a2a.transport.sse import SSEFormatter, StreamEventType
@@ -144,6 +145,7 @@ from nexus_a2a.transport.webhook import (
 )
 
 if TYPE_CHECKING:
+    from nexus_a2a.dashboard.events import EventHub
     from nexus_a2a.storage.task_store import AbstractTaskStore
 
 logger = logging.getLogger(__name__)
@@ -156,6 +158,15 @@ DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
 
 # Push deliveries queued behind the dispatcher's in-flight limit.
 _MAX_PENDING_DELIVERIES = 10_000
+
+# Security event kind recorded for each refusal status.
+_SECURITY_KIND = {
+    400: "bad_request",
+    401: "auth_failed",
+    403: "forbidden",
+    413: "payload_too_large",
+    429: "rate_limited",
+}
 
 # How long /metrics may reuse its task counts.
 _METRICS_CACHE_SEC = 5.0
@@ -448,6 +459,11 @@ class A2AServer:
         # Deliveries run detached; keep references so they are not GC'd
         # mid-flight, and so tests can await them.
         self._push_tasks: set[asyncio.Task[None]] = set()
+        # Runs started outside a request (dashboard retries).
+        self._background: set[asyncio.Task[Any]] = set()
+        # Optional observer for security and webhook events (the dashboard's
+        # EventHub). None costs nothing.
+        self.event_hub: EventHub | None = None
         self.security = security or SecurityMiddleware()
         self._watchers = _TaskWatchers()
         self._stream_heartbeat = stream_heartbeat
@@ -769,7 +785,7 @@ class A2AServer:
             raw = await self._read_body(request)
             self.security.check_size(raw)
         except Exception as exc:
-            return self._security_refusal(exc)
+            return self._security_refusal(exc, request)
 
         # ── Parse the envelope ────────────────────────────────────────────────
         try:
@@ -796,7 +812,7 @@ class A2AServer:
                 request, skill_id=skill_id if isinstance(skill_id, str) else None
             )
         except Exception as exc:
-            return self._security_refusal(exc)
+            return self._security_refusal(exc, request)
 
         # ── Dispatch ──────────────────────────────────────────────────────────
         owner = _owner_of(identity)
@@ -907,6 +923,10 @@ class A2AServer:
             )
         except WebhookUrlError as exc:
             logger.warning("Refused webhook registration: %s", exc)
+            if self.event_hub is not None:
+                self.event_hub.record_security(
+                    "webhook_refused", f"task {task_id}: {exc}"
+                )
             return ERR_PUSH_INVALID_URL, str(exc)
 
         await self._push_targets.save(task_id, config)
@@ -949,12 +969,22 @@ class A2AServer:
                     # dispatcher written against the older signature keeps
                     # working for webhooks registered without a token.
                     if config.token is None:
-                        await self.push.dispatch_silent(
+                        record = await self.push.dispatch_silent(
                             config.url, payload_task, event=event
                         )
                     else:
-                        await self.push.dispatch_silent(
+                        record = await self.push.dispatch_silent(
                             config.url, payload_task, event=event, token=config.token
+                        )
+                    if self.event_hub is not None:
+                        self.event_hub.record_webhook(
+                            task.id,
+                            event,
+                            redact_url(config.url, keep_path=False),
+                            bool(getattr(record, "succeeded", False)),
+                            int(getattr(record, "status_code", 0) or 0),
+                            int(getattr(record, "attempts", 0) or 0),
+                            getattr(record, "error", None),
                         )
                 except Exception:  # noqa: BLE001 - detached, must never escape
                     logger.exception("Push notification failed for task %s", task.id)
@@ -1173,9 +1203,16 @@ class A2AServer:
             # the task. Report the current state rather than running it twice.
             return _rpc_result(rpc_id, _task_dict(task))
 
-        # An agent that raises is a FAILED task, not an RPC error: the caller
-        # still gets a Task back and can inspect .error, and the DLQ can
-        # capture it.
+        return _rpc_result(rpc_id, _task_dict(await self._execute(task)))
+
+    async def _execute(self, task: Task) -> Task:
+        """
+        Run the agent on a started task and record the outcome.
+
+        An agent that raises is a FAILED task, not an RPC error: the caller
+        still gets a Task back and can inspect .error, and the DLQ can
+        capture it.
+        """
         try:
             # A streaming agent must still work over message/send — awaiting an
             # async generator raises TypeError, so drain it and fold the chunks.
@@ -1190,11 +1227,66 @@ class A2AServer:
             failed = await self.tasks.fail(task.id, f"{type(exc).__name__}: {exc}")
             await self._notify(failed, "task_failed")
             self._publish_outcome(failed)
-            return _rpc_result(rpc_id, _task_dict(failed))
+            return failed
 
         finished = await self._finish(task, output)
         self._publish_outcome(finished, output)
-        return _rpc_result(rpc_id, _task_dict(finished))
+        return finished
+
+    # ── Operator actions (dashboard) ──────────────────────────────────────────
+
+    async def retry_task(self, task_id: str) -> Task:
+        """
+        Run a new task with the same first message, skill and context as an
+        existing one, in the background. Returns the new task immediately.
+
+        The original task is left as it is. A multi-turn task is retried from
+        its first message only. The new task keeps the original's owner, so
+        the caller that created it can still see the retry.
+
+        Raises:
+            TaskNotFoundError: Unknown task.
+            ValueError:        The task has no message to retry with.
+        """
+        original = await self.tasks.get(task_id)
+        first = next((m for m in original.history if m.role == "user"), None)
+        if first is None:
+            raise ValueError(f"Task '{task_id}' has no user message to retry.")
+
+        create_kwargs: dict[str, Any] = {
+            "initial_message": first,
+            "skill_id": original.skill_id,
+            "context_id": original.context_id,
+        }
+        if original.owner is not None:
+            create_kwargs["owner"] = original.owner
+        task = await self.tasks.create(**create_kwargs)
+        task = await self.tasks.start(task.id)
+        logger.info("Task %s retried as %s", task_id, task.id)
+
+        async def run() -> None:
+            try:
+                await self._execute(task)
+            except Exception:  # noqa: BLE001 - detached, must never escape
+                logger.exception("Retried task %s crashed", task.id)
+
+        job = asyncio.create_task(run())
+        self._background.add(job)
+        job.add_done_callback(self._background.discard)
+        return task
+
+    async def cancel_task(self, task_id: str) -> Task:
+        """
+        Cancel a task as an operator (no ownership check) and notify its
+        webhook, exactly as tasks/cancel does.
+
+        Raises:
+            TaskNotFoundError:   Unknown task.
+            TaskAlreadyDoneError: The task already finished.
+        """
+        task = await self.tasks.cancel(task_id)
+        await self._notify(task, "task_cancelled")
+        return task
 
     def _publish_outcome(self, task: Task, output: Any = None) -> None:
         """
@@ -1373,7 +1465,7 @@ class A2AServer:
             self.security.check_size(b"")
             identity = await self._authorize(request)
         except Exception as exc:
-            return self._security_refusal(exc)
+            return self._security_refusal(exc, request)
         owner = _owner_of(identity)
 
         task_id = request.query_params.get("taskId") or request.query_params.get("id")
@@ -1464,6 +1556,12 @@ class A2AServer:
                 self._card.name,
                 task_id,
             )
+            if self.event_hub is not None:
+                self.event_hub.record_security(
+                    "ownership_denied",
+                    f"access to task {task_id} refused: caller does not own it",
+                    caller=owner,
+                )
             return None
         return task
 
@@ -1552,7 +1650,9 @@ class A2AServer:
 
     # ── Security refusals ─────────────────────────────────────────────────────
 
-    def _security_refusal(self, exc: Exception) -> Response:
+    def _security_refusal(
+        self, exc: Exception, request: Request | None = None
+    ) -> Response:
         """
         Turn a security failure into an HTTP response.
 
@@ -1571,6 +1671,18 @@ class A2AServer:
             status,
             exc,
         )
+        if self.event_hub is not None:
+            caller = client = None
+            if request is not None:
+                caller = request.headers.get(self.security.caller_header)
+                client = request.client.host if request.client else None
+            self.event_hub.record_security(
+                _SECURITY_KIND.get(status, "bad_request"),
+                str(exc),
+                status=status,
+                caller=caller[:300] if caller else None,
+                client=client,
+            )
         headers: dict[str, str] = {}
         retry_after = getattr(exc, "retry_after", None)
         if status == 429 and isinstance(retry_after, (int, float)):

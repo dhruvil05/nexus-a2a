@@ -7,6 +7,51 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.0] — Dashboard — 2026-11-12
+
+A browser dashboard for a running agent. Nothing that worked in 2.0 changes:
+the dashboard is off unless you enable it.
+
+### Added
+
+- **Dashboard** at `<ops server>/ui`, enabled with `[dashboard] enabled = true`
+  (needs `[ops] port` and `admin_token`), or `NEXUS_DASHBOARD=1`.
+  - Pages:
+    - Overview: live counts, error rate, p50/p95 latency, throughput, DLQ,
+      security events, webhooks.
+    - Agents: this agent's card and registered peers with their health.
+    - Tasks: a live list plus per-task detail (timeline, trace, messages),
+      with Cancel and Retry.
+    - Issues: failed tasks, DLQ replay, security events, webhook failures.
+    - Logs: a live, filterable tail.
+  - Login with the ops admin token. The token is exchanged for an HttpOnly,
+    SameSite=Strict session cookie, and login attempts are throttled.
+  - Every action requires a CSRF token and a same-origin request, and is
+    logged.
+  - Loopback-only by default, with a Host-header check against DNS
+    rebinding (`allowed_hosts` for remote use). The ops server ignores
+    `X-Forwarded-For`.
+  - Message content, including error text and log lines that quote it, is
+    hidden unless `show_content = true`. Strict CSP, and no external assets.
+  - Hardened before release by an independent review. Covered: static files
+    served only by exact name (a Windows `D:` name could read local files),
+    throttling and recording of wrong `X-Admin-Token` values, live streams
+    ending at logout, failed-only login throttling, and de-duplicated,
+    capped DLQ replay.
+  - Single process: with replicas, each serves its own view.
+- **`nexus dashboard`** opens it. **`nexus dev --dashboard`** gives every dev
+  agent a dashboard and prints a one-time login token.
+- `nexus_a2a.dashboard`: `Dashboard`, `DashboardConfig`, `EventHub`,
+  `RingLogHandler`, and `AgentServer(dashboard=...)`. The JSON API is
+  documented in `nexus_a2a/dashboard/API.md`.
+- `TaskManager.add_listener()` / `remove_listener()` observe every lifecycle
+  change (created, started, input_required, resumed, completed, failed,
+  cancelled, timed_out) without polling the store.
+- `A2AServer.retry_task()` and `A2AServer.cancel_task()` let an operator
+  retry or cancel a task. `A2AServer.event_hub` reports security and webhook
+  events.
+- `AgentRegistry.entries()`.
+
 ## [2.0.0] — Security release — 2026-11-10
 
 A security-focused major release. It fixes the findings of a full security

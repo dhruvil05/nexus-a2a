@@ -24,6 +24,7 @@ Environment variable overrides (container-friendly):
     NEXUS_ADMIN_TOKEN       — overrides [ops].admin_token
     NEXUS_OPS_PORT          — overrides [ops].port
     NEXUS_OPS_URL           — overrides [ops].url
+    NEXUS_DASHBOARD         — 1/true enables [dashboard] (0/false disables)
 
 All NEXUS_* env vars are read after the TOML file is parsed,
 so they always take precedence — ideal for container deployments.
@@ -116,6 +117,16 @@ KNOWN_KEYS: dict[str, frozenset[str]] = {
     "observability": frozenset({"tracing", "metrics", "log_level"}),
     "push": frozenset({"signing_secret", "allow_private_urls", "max_retries"}),
     "ops": frozenset({"port", "host", "url", "admin_token"}),
+    "dashboard": frozenset(
+        {
+            "enabled",
+            "allow_replay",
+            "show_content",
+            "allow_remote",
+            "allowed_hosts",
+            "session_ttl_min",
+        }
+    ),
     "dev": frozenset({"agents"}),  # read by `nexus dev`
 }
 _SKILL_KEYS = frozenset({"id", "name", "description", "tags", "examples"})
@@ -255,6 +266,27 @@ class OpsConfig:
 
 
 @dataclass
+class DashboardSectionConfig:
+    """
+    [dashboard] section — the browser dashboard on the ops server (2.1).
+
+    enabled:         Serve it at <ops url>/ui. Needs [ops] port and admin_token.
+    allow_replay:    Retry tasks and replay the DLQ from the UI.
+    show_content:    Show message/artifact content (may contain personal data).
+    allow_remote:    Serve clients other than this machine (use HTTPS).
+    allowed_hosts:   With allow_remote, the Host names accepted (empty = any).
+    session_ttl_min: Idle minutes before a login expires.
+    """
+
+    enabled: bool = False
+    allow_replay: bool = True
+    show_content: bool = False
+    allow_remote: bool = False
+    allowed_hosts: list[str] = field(default_factory=list)
+    session_ttl_min: int = 60
+
+
+@dataclass
 class ObservabilityConfig:
     """[observability] section."""
 
@@ -285,6 +317,7 @@ class NexusConfig:
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     push: PushConfig = field(default_factory=PushConfig)
     ops: OpsConfig = field(default_factory=OpsConfig)
+    dashboard: DashboardSectionConfig = field(default_factory=DashboardSectionConfig)
 
     # ── Factory methods ───────────────────────────────────────────────────────
 
@@ -364,6 +397,7 @@ class NexusConfig:
             observability=cls._parse_observability(raw.get("observability", {})),
             push=cls._parse_push(raw.get("push", {})),
             ops=cls._parse_ops(raw.get("ops", {})),
+            dashboard=cls._parse_dashboard(raw.get("dashboard", {})),
         )
 
     @staticmethod
@@ -495,6 +529,28 @@ class NexusConfig:
         )
 
     @staticmethod
+    def _parse_dashboard(raw: dict[str, Any]) -> DashboardSectionConfig:
+        ttl = int(_number(raw, "session_ttl_min", 60, "dashboard.session_ttl_min"))
+        if ttl <= 0:
+            raise ConfigError(
+                "session_ttl_min must be > 0", "dashboard.session_ttl_min"
+            )
+        hosts = raw.get("allowed_hosts", [])
+        if not isinstance(hosts, list) or not all(isinstance(h, str) for h in hosts):
+            raise ConfigError(
+                "allowed_hosts must be a list of host names",
+                "dashboard.allowed_hosts",
+            )
+        return DashboardSectionConfig(
+            enabled=bool(raw.get("enabled", False)),
+            allow_replay=bool(raw.get("allow_replay", True)),
+            show_content=bool(raw.get("show_content", False)),
+            allow_remote=bool(raw.get("allow_remote", False)),
+            allowed_hosts=hosts,
+            session_ttl_min=ttl,
+        )
+
+    @staticmethod
     def _parse_observability(raw: dict[str, Any]) -> ObservabilityConfig:
         level = raw.get("log_level", "INFO").upper()
         valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -586,6 +642,16 @@ class NexusConfig:
                     "ops.port",
                 ) from exc
 
+        # [dashboard]
+        if (flag := os.environ.get("NEXUS_DASHBOARD")) is not None:
+            value = flag.strip().lower()
+            if value not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
+                raise ConfigError(
+                    f"NEXUS_DASHBOARD='{flag}' must be true or false",
+                    "dashboard.enabled",
+                )
+            self.dashboard.enabled = value in ("1", "true", "yes", "on")
+
         # [observability]
         if level := os.environ.get("NEXUS_LOG_LEVEL"):
             level_upper = level.upper()
@@ -621,6 +687,21 @@ class NexusConfig:
                 f"Agent URL '{url}' must start with 'http://' or 'https://'.",
                 "agent.url",
             )
+
+        # The dashboard is served by the ops server and needs its admin token.
+        if self.dashboard.enabled:
+            if not self.ops.port:
+                raise ConfigError(
+                    "[dashboard] enabled needs the ops server: set [ops] port "
+                    "(or NEXUS_OPS_PORT).",
+                    "dashboard.enabled",
+                )
+            if not self.ops.admin_token.strip():
+                raise ConfigError(
+                    "[dashboard] enabled needs [ops] admin_token (or "
+                    "NEXUS_ADMIN_TOKEN): it is the dashboard's login.",
+                    "dashboard.enabled",
+                )
 
         # Auth: jwt and api_key require a secret
         if self.security.auth_scheme in ("jwt", "api_key"):
@@ -951,11 +1032,29 @@ class NexusConfig:
         ops = None
         if self.ops.port:
             network = AgentNetwork(task_manager=manager, dlq_store=dlq_store)
+            dashboard = None
+            if self.dashboard.enabled:
+                from nexus_a2a.dashboard import Dashboard, DashboardConfig
+
+                dashboard = Dashboard(
+                    admin_token=self.ops.admin_token or None,
+                    server=server,
+                    network=network,
+                    config=DashboardConfig(
+                        enabled=True,
+                        allow_replay=self.dashboard.allow_replay,
+                        show_content=self.dashboard.show_content,
+                        allow_remote=self.dashboard.allow_remote,
+                        allowed_hosts=tuple(self.dashboard.allowed_hosts),
+                        session_ttl_sec=self.dashboard.session_ttl_min * 60.0,
+                    ),
+                )
             ops = AgentServer(
                 network=network,
                 host=self.ops.host or bind_host,
                 port=self.ops.port,
                 admin_token=self.ops.admin_token or None,
+                dashboard=dashboard,
             )
 
         return AgentRuntime(
@@ -1054,6 +1153,14 @@ class NexusConfig:
                 "host": self.ops.host,
                 "url": self.ops.url,
                 "admin_token": "***REDACTED***" if self.ops.admin_token else "",
+            },
+            "dashboard": {
+                "enabled": self.dashboard.enabled,
+                "allow_replay": self.dashboard.allow_replay,
+                "show_content": self.dashboard.show_content,
+                "allow_remote": self.dashboard.allow_remote,
+                "allowed_hosts": list(self.dashboard.allowed_hosts),
+                "session_ttl_min": self.dashboard.session_ttl_min,
             },
             "observability": {
                 "tracing": self.observability.tracing,

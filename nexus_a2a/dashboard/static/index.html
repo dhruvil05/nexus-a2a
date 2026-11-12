@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>nexus-a2a dashboard</title>
+  <link rel="stylesheet" href="/ui/static/app.css">
+  <script src="/ui/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">nx</span>
+      <span class="brand-name" id="agent-name">nexus-a2a</span>
+      <span class="brand-version" id="nexus-version"></span>
+      <span class="flag" id="flag-content" hidden>content hidden</span>
+      <span class="flag" id="flag-replay" hidden>replay disabled</span>
+    </div>
+    <div class="topbar-right" id="app-controls" hidden>
+      <span class="live" id="live" data-state="offline" role="status" aria-live="polite">
+        <span class="live-dot" aria-hidden="true"></span><span id="live-text">Offline</span>
+      </span>
+      <button type="button" class="btn btn-ghost" id="logout">Log out</button>
+    </div>
+    <nav class="nav" id="nav" aria-label="Main" hidden>
+      <a href="#/overview" data-route="overview">Overview</a>
+      <a href="#/agents" data-route="agents">Agents</a>
+      <a href="#/tasks" data-route="tasks">Tasks</a>
+      <a href="#/issues" data-route="issues">Issues</a>
+      <a href="#/logs" data-route="logs">Logs</a>
+    </nav>
+  </header>
+
+  <main id="login" class="login" hidden>
+    <form id="login-form" class="card login-card" autocomplete="off">
+      <h1>Sign in</h1>
+      <p class="muted">Enter the admin token configured for this agent's dashboard.</p>
+      <label for="login-token">Admin token</label>
+      <input id="login-token" name="token" type="password" required autocomplete="off" spellcheck="false">
+      <p class="form-error" id="login-error" role="alert"></p>
+      <button type="submit" class="btn btn-primary" id="login-submit">Sign in</button>
+    </form>
+  </main>
+
+  <main id="view" class="view" tabindex="-1" hidden></main>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <dialog id="confirm" class="dialog" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button type="submit" value="cancel" class="btn">Back</button>
+        <button type="submit" value="ok" class="btn btn-danger" id="confirm-ok">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

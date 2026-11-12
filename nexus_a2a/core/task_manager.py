@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 
 # Callback type: called when a task times out
 TimeoutCallback = Callable[[Task], Awaitable[None]]
+# Called synchronously after every persisted lifecycle change with the task
+# and an event name. Must be fast and must not block: it runs inline.
+TaskListener = Callable[[Task, str], None]
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -120,6 +123,33 @@ class TaskManager:
         self._watchdog_interval = watchdog_interval
         self._on_timeout = on_timeout
         self._watchdog_task: asyncio.Task[None] | None = None
+        self._listeners: list[TaskListener] = []
+
+    # ── Listeners ─────────────────────────────────────────────────────────────
+
+    def add_listener(self, listener: TaskListener) -> None:
+        """
+        Observe every lifecycle change: listener(task, event) is called after
+        the change is persisted. Events: created, started, completed, failed,
+        cancelled, input_required, resumed, timed_out.
+
+        Listeners run inline and must not block; an exception in one is
+        logged and never affects the task. Used by the dashboard's event hub.
+        """
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    def remove_listener(self, listener: TaskListener) -> None:
+        """Stop calling a listener added with add_listener()."""
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
+    def _emit(self, task: Task, event: str) -> None:
+        for listener in list(self._listeners):
+            try:
+                listener(task, event)
+            except Exception:  # noqa: BLE001 - observers must never break tasks
+                logger.debug("TaskManager listener failed", exc_info=True)
 
     # ── Async context manager ─────────────────────────────────────────────────
 
@@ -208,6 +238,7 @@ class TaskManager:
             try:
                 task.transition(TaskState.FAILED, error=reason)
                 await self._store.save(task)
+                self._emit(task, "timed_out")
                 failed += 1
                 logger.warning("Watchdog timed out task %s (age=%.0fs)", task.id, age)
                 if self._on_timeout:
@@ -235,6 +266,7 @@ class TaskManager:
             owner=owner,
         )
         await self._store.save(task)
+        self._emit(task, "created")
         logger.info("Task created: id=%s skill=%s", task.id, skill_id)
         return task
 
@@ -265,6 +297,7 @@ class TaskManager:
         task = await self._get_active(task_id)
         task.transition(TaskState.WORKING)
         await self._store.save(task)
+        self._emit(task, "started")
         logger.info("Task started: id=%s", task_id)
         return task
 
@@ -282,6 +315,7 @@ class TaskManager:
             task.add_artifact(artifact)
         task.transition(TaskState.COMPLETED)
         await self._store.save(task)
+        self._emit(task, "completed")
         logger.info("Task completed: id=%s", task_id)
         return task
 
@@ -290,7 +324,15 @@ class TaskManager:
         task = await self._get_active(task_id)
         task.transition(TaskState.FAILED, error=error)
         await self._store.save(task)
-        logger.warning("Task failed: id=%s error=%r", task_id, error)
+        self._emit(task, "failed")
+        logger.warning(
+            "Task failed: id=%s error=%r",
+            task_id,
+            error,
+            # The error often quotes agent input; the dashboard shows this
+            # form when message content is hidden.
+            extra={"nexus_public_message": f"Task failed: id={task_id}"},
+        )
         return task
 
     async def cancel(self, task_id: str) -> Task:
@@ -298,6 +340,7 @@ class TaskManager:
         task = await self._get_active(task_id)
         task.transition(TaskState.CANCELLED)
         await self._store.save(task)
+        self._emit(task, "cancelled")
         logger.info("Task cancelled: id=%s", task_id)
         return task
 
@@ -307,6 +350,7 @@ class TaskManager:
         task.add_message(prompt)
         task.transition(TaskState.INPUT_REQUIRED)
         await self._store.save(task)
+        self._emit(task, "input_required")
         return task
 
     async def provide_input(self, task_id: str, message: Message) -> Task:
@@ -319,6 +363,7 @@ class TaskManager:
         task.add_message(message)
         task.transition(TaskState.WORKING)
         await self._store.save(task)
+        self._emit(task, "resumed")
         return task
 
     # ── Helpers ───────────────────────────────────────────────────────────────

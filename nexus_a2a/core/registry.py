@@ -279,6 +279,10 @@ class AgentRegistry:
         """Return AgentCards for all registered agents (healthy or not)."""
         return [e.card for e in self._entries.values()]
 
+    def entries(self) -> list[RegistryEntry]:
+        """All registry entries: card, health, last seen, registered URL."""
+        return list(self._entries.values())
+
     def list_healthy(self) -> list[AgentCard]:
         """Return AgentCards for all agents that are currently marked healthy."""
         return [e.card for e in self._entries.values() if e.healthy]
