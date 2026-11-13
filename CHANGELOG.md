@@ -11,6 +11,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Fixes for problems found by building a multi-agent app on nexus-a2a.
 
+### Added
+
+- `py.typed` marker and the `Typing :: Typed` classifier. Type checkers now
+  use nexus-a2a's annotations instead of reporting `import-untyped` and
+  treating every name as `Any`.
+
 ### Fixed
 
 - README: the "Auth fails closed" example used
