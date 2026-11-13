@@ -644,9 +644,16 @@ except AuthError as e:
 > authentication entirely.
 >
 > ```python
+> from nexus_a2a import AgentCredentialConfig, AuthManager, AuthScheme
+>
 > auth = AuthManager()                              # unregistered -> raises
-> auth = AuthManager(allow_unregistered=True)       # old behaviour, dev only
+>
+> # Dev only: let callers you never registered through without credentials.
+> auth = AuthManager(default=AgentCredentialConfig(scheme=AuthScheme.NONE))
 > ```
+>
+> `AuthManager(allow_unregistered=True)`, the pre-2.0 spelling of the last
+> line, raises `TypeError` since 2.0.
 >
 > This applies to inbound verification only. `build_auth_headers()` still
 > returns `{}` for unknown agents, so outbound calls to agents you hold no
@@ -1741,7 +1748,8 @@ ruff format nexus_a2a
   `InsecureServerError`). Behind a gateway that authenticates for you —
   common in containers bound to `0.0.0.0` — accept it explicitly with
   `allow_insecure=True` or `[security] allow_insecure = true`;
-- `AuthManager(allow_unregistered=True)`;
+- `AuthManager(allow_unregistered=True)` (use
+  `AuthManager(default=AgentCredentialConfig(scheme=AuthScheme.NONE))`);
 - HS256 secrets shorter than 32 bytes;
 - unknown `nexus.toml` keys.
 

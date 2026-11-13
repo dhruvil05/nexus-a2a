@@ -7,6 +7,17 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Unreleased]
+
+Fixes for problems found by building a multi-agent app on nexus-a2a.
+
+### Fixed
+
+- README: the "Auth fails closed" example used
+  `AuthManager(allow_unregistered=True)`, which raises `TypeError` since 2.0.
+  It now shows `AuthManager(default=AgentCredentialConfig(scheme=AuthScheme.NONE))`,
+  and the "Upgrading to 2.0" list names the replacement.
+
 ## [2.1.0] — Dashboard — 2026-11-12
 
 A browser dashboard for a running agent. Nothing that worked in 2.0 changes:
