@@ -24,6 +24,13 @@ a request (see Changed).
   instead of "is unreachable". Covers `send_message`, `get_task`,
   `cancel_task`, the push-config calls and `stream_message`. Other 4xx
   responses still raise a plain `AgentUnreachableError`.
+- **`SqliteTaskStore`** (`nexus_a2a.storage.sqlite_store`, exported from
+  `nexus_a2a`): a task store that survives restarts with no server, for local
+  development and single-machine agents. Standard library only, no extra to
+  install. Same table layout and query methods as `PostgresTaskStore`
+  (`list_by_state`, `list_by_context`, `count`, `count_by_state`,
+  `delete_older_than`, `clear`). Also available as
+  `[storage] backend = "sqlite"` with `url` set to the database file.
 - `py.typed` marker and the `Typing :: Typed` classifier. Type checkers now
   use nexus-a2a's annotations instead of reporting `import-untyped` and
   treating every name as `Any`.

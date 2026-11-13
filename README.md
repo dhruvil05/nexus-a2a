@@ -864,6 +864,22 @@ after they finish, and the oldest go first once the store exceeds
 store kept every task forever, so a long-running server's memory grew with
 every request.
 
+### SQLite
+
+Durable across restarts with no server to run: one file, standard library
+only. For local development and single-machine agents; use Redis or
+PostgreSQL when several replicas share tasks.
+
+```python
+from nexus_a2a import SqliteTaskStore
+
+store = SqliteTaskStore("var/tasks.db")   # opened on first use; connect() optional
+...
+await store.disconnect()
+```
+
+In `nexus.toml`: `[storage] backend = "sqlite"`, `url = "var/tasks.db"`.
+
 ### Redis
 
 ```python
@@ -1520,8 +1536,8 @@ max_payload_bytes = 1048576      # 0 = off
 allow_insecure    = false        # see "Upgrading to 2.0"
 
 [storage]
-backend            = "redis"     # memory | redis | postgres
-url                = "redis://localhost:6379"
+backend            = "redis"     # memory | sqlite | redis | postgres
+url                = "redis://localhost:6379"   # sqlite: the database file path
 ttl_sec            = 3600        # Redis key TTL
 task_retention_sec = 3600        # memory backend: keep finished tasks this long (0 = forever)
 max_tasks          = 10000       # memory backend: cap, finished tasks evicted first (0 = no cap)

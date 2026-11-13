@@ -253,7 +253,7 @@ class TestNexusConfigValidationErrors:
 
     def test_invalid_storage_backend_raises(self):
         raw = minimal_raw()
-        raw["storage"] = {"backend": "sqlite"}
+        raw["storage"] = {"backend": "mongodb"}
         with pytest.raises(ConfigError, match="backend"):
             NexusConfig.from_dict(raw)
 
@@ -444,7 +444,7 @@ class TestEnvOverrides:
                 NexusConfig.from_dict(minimal_raw())
 
     def test_invalid_nexus_storage_backend_raises(self):
-        with patch.dict(os.environ, {"NEXUS_STORAGE_BACKEND": "sqlite"}):
+        with patch.dict(os.environ, {"NEXUS_STORAGE_BACKEND": "mongodb"}):
             with pytest.raises(ConfigError, match="NEXUS_STORAGE_BACKEND"):
                 NexusConfig.from_dict(minimal_raw())
 
