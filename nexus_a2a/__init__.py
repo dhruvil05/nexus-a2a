@@ -186,6 +186,7 @@ from nexus_a2a.storage.task_store import AbstractTaskStore, InMemoryTaskStore
 from nexus_a2a.transport.http_client import (
     A2AHttpClient,
     AgentCardFetchError,
+    AgentRefusedError,
     AgentUnreachableError,
     CircuitBreaker,
     CircuitOpenError,
@@ -253,6 +254,7 @@ __all__ = [
     "AbstractTaskStore",
     "A2AHttpClient",
     "AgentUnreachableError",
+    "AgentRefusedError",
     "AgentCardFetchError",
     "RemoteAgentError",
     "TransportError",

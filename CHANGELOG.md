@@ -15,6 +15,15 @@ a request (see Changed).
 
 ### Added
 
+- **`AgentRefusedError`**, raised by `A2AHttpClient` when an agent answers
+  401, 403, 413 or 429 (credentials refused, trust rule denied, body too
+  large, rate limited). It carries `status_code`, the server's `detail`, and
+  `retry_after` from a 429's `Retry-After`. It subclasses
+  `AgentUnreachableError`, which these responses raised before, so existing
+  `except` clauses still catch it; the message now says "refused the request"
+  instead of "is unreachable". Covers `send_message`, `get_task`,
+  `cancel_task`, the push-config calls and `stream_message`. Other 4xx
+  responses still raise a plain `AgentUnreachableError`.
 - `py.typed` marker and the `Typing :: Typed` classifier. Type checkers now
   use nexus-a2a's annotations instead of reporting `import-untyped` and
   treating every name as `Any`.

@@ -367,7 +367,9 @@ and a pause arrives as a `message` event followed by
 Transport-level rejections that happen *before* dispatch return real HTTP
 status codes — `401` auth, `403` trust, `413` too large, `429` rate limit (with
 `Retry-After`), `400` malformed. Proxies and dashboards can see them, and the
-client will not retry a rejected credential.
+client will not retry a rejected credential: `A2AHttpClient` raises
+`AgentRefusedError` for 401/403/413/429, with `status_code`, the server's
+`detail` and, for 429, `retry_after`.
 
 Application-level failures *after* dispatch return JSON-RPC error objects —
 `-32601` method not found, `-32602` invalid params, `-32001` task not found —
@@ -1608,6 +1610,7 @@ Every error in nexus-a2a is typed. Catch specific exceptions rather than bare `E
 
 ```python
 from nexus_a2a import (
+    AgentRefusedError,       # agent answered 401/403/413/429 (subclass of the next)
     AgentUnreachableError,   # agent is down / DNS failure
     AgentCardFetchError,     # /.well-known/agent-card.json failed
     RemoteAgentError,        # agent returned JSON-RPC error
@@ -1619,6 +1622,8 @@ try:
     task = await client.send_message(msg)
 except CircuitOpenError as e:
     print(f"Circuit open. Retry in {e.retry_after}s")
+except AgentRefusedError as e:           # before AgentUnreachableError
+    print(f"{e.url} refused: HTTP {e.status_code} {e.detail}")
 except AgentUnreachableError as e:
     print(f"Cannot reach {e.url}: {e.reason}")
 except RemoteAgentError as e:
