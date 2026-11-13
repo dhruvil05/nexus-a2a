@@ -241,7 +241,8 @@ class RetryConfig:
     Configuration for retry behaviour.
 
     Args:
-        max_retries:  Maximum number of attempts (including the first).
+        max_retries:  Maximum number of attempts, INCLUDING the first, so 1
+                      means "no retries". Must be at least 1.
         retry_on:     Set of HTTP status codes that trigger a retry.
                       Default: {500, 502, 503, 504}.
         base_delay:   Initial retry delay in seconds. Doubles each attempt.
@@ -257,6 +258,16 @@ class RetryConfig:
         max_delay: float = 30.0,
         jitter: bool = True,
     ) -> None:
+        if isinstance(max_retries, bool) or not isinstance(max_retries, int):
+            raise TypeError(
+                f"RetryConfig.max_retries must be an int, got {max_retries!r}"
+            )
+        if max_retries < 1:
+            raise ValueError(
+                f"RetryConfig.max_retries must be at least 1, got {max_retries}. "
+                "It counts attempts including the first, so max_retries=1 "
+                "means one request and no retries."
+            )
         self.max_retries = max_retries
         self.retry_on = retry_on
         self.base_delay = base_delay

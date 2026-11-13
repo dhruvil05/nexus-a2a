@@ -442,7 +442,7 @@ async with A2AHttpClient(
     "http://localhost:8001",
     timeout=30.0,
     retry=RetryConfig(
-        max_retries=3,
+        max_retries=3,           # attempts INCLUDING the first; 1 = no retries
         base_delay=0.5,
         max_delay=30.0,
         jitter=True,
@@ -1545,7 +1545,7 @@ session_ttl_min = 60             # idle minutes before a login expires
 
 [reliability]
 task_timeout_sec          = 120.0
-max_retries               = 3
+max_retries               = 3    # attempts including the first; must be >= 1
 retry_on                  = [500, 502, 503, 504]
 circuit_breaker_threshold = 5
 circuit_recovery_sec      = 30.0

@@ -727,9 +727,10 @@ class NexusConfig:
                 "task_timeout_sec must be greater than 0.",
                 "reliability.task_timeout_sec",
             )
-        if self.reliability.max_retries < 0:
+        if self.reliability.max_retries < 1:
             raise ConfigError(
-                "max_retries cannot be negative.",
+                "max_retries must be at least 1: it counts attempts including "
+                "the first, so 1 means no retries.",
                 "reliability.max_retries",
             )
         # Security limits

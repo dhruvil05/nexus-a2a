@@ -9,13 +9,25 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Fixes for problems found by building a multi-agent app on nexus-a2a.
+Fixes for problems found by building a multi-agent app on nexus-a2a. Code
+that worked in 2.1 keeps working, except `max_retries = 0`, which never sent
+a request (see Changed).
 
 ### Added
 
 - `py.typed` marker and the `Typing :: Typed` classifier. Type checkers now
   use nexus-a2a's annotations instead of reporting `import-untyped` and
   treating every name as `Any`.
+
+### Changed
+
+- `RetryConfig(max_retries=...)` must be an int of at least 1; anything else
+  raises `ValueError` (or `TypeError` for a non-int). The value counts
+  attempts including the first, so `0` used to send no request and then
+  raise `AgentUnreachableError("... unreachable: unknown")`. Use
+  `max_retries=1` for a single attempt with no retries.
+  `[reliability] max_retries = 0` in `nexus.toml` is now a `ConfigError`
+  for the same reason.
 
 ### Fixed
 
