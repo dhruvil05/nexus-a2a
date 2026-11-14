@@ -7,7 +7,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [Unreleased]
+## [2.1.1] — 2026-11-14
 
 Fixes for problems found by building a multi-agent app on nexus-a2a. Code
 that worked in 2.1 keeps working, except `max_retries = 0`, which never sent

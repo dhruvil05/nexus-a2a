@@ -1790,6 +1790,7 @@ and how to keep the old behaviour where that is safe.
 | **v0.4.0** | `Orchestrator` (sequential/parallel/dag), SSE streaming, `WebhookDispatcher`, `AgentNetwork` |
 | **v1.0.0** | LangGraph/CrewAI/AutoGen/GoogleADK adapters, `RedisTaskStore`, `AuditLogger`, `MetricsCollector` |
 | **v1.1.0** | Task timeout watchdog, `InputHandler`, `DeadLetterQueue`, `CircuitBreaker`, `Tracer`, `CapabilityGuard` |
+| **v2.1.1** | Fixes from building a multi-agent app: `AgentRefusedError` for 401/403/413/429, `SqliteTaskStore` (`[storage] backend = "sqlite"`), `py.typed`, `RetryConfig(max_retries<1)` rejected, README auth example corrected |
 | **v2.1.0** | Browser dashboard on the ops server: live overview, agents, tasks (cancel/retry), issues (DLQ replay, security events), logs; `nexus dashboard`, `nexus dev --dashboard` |
 | **v2.0.0** | Security release: verified caller identity (per-caller keys, JWT `sub`, mTLS), task ownership, DNS-rebinding-safe webhooks with timestamped signatures, body/response size caps, unsecured public binds refused, the four 1.9 warnings now errors, dependencies cleared of known advisories |
 | **v1.9.0** | `nexus.toml` drives `nexus run` (`AgentRuntime`), `nexus verify`, `nexus dev`, live `GET /stream`, `/metrics` on agents, bounded task store; fixes the never-checked config secret, cards hiding their auth, and four CLI commands broken against real servers |
