@@ -20,6 +20,7 @@ protecting the rest of the pipeline from cascade failures.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
@@ -117,6 +118,62 @@ class RemoteAgentError(TransportError):
         self.code = code
         self.message = message
         self.task_id = task_id
+
+
+# HTTP statuses a server sends when it is up but declines this request: bad or
+# missing credentials, a trust rule, a body over its limit, or a rate limit.
+REFUSAL_STATUSES = frozenset({401, 403, 413, 429})
+
+# Longest server explanation kept on an AgentRefusedError.
+_REFUSAL_DETAIL_CHARS = 500
+
+_REFUSAL_LABEL = {
+    401: "unauthorized",
+    403: "forbidden",
+    413: "payload too large",
+    429: "rate limited",
+}
+
+
+class AgentRefusedError(AgentUnreachableError):
+    """
+    The agent answered, but refused the request: HTTP 401, 403, 413 or 429.
+
+    401 means the credentials were missing or wrong, 403 that a trust rule
+    denied this caller or skill, 413 that the body was over the server's
+    limit, and 429 that the caller was rate limited. Retrying with the same
+    request does not help (wait ``retry_after`` seconds for a 429).
+
+    Subclasses AgentUnreachableError, which these responses raised before, so
+    existing ``except AgentUnreachableError`` / ``except TransportError``
+    clauses still catch it.
+
+    Attributes:
+        url:         The agent's base URL.
+        status_code: The HTTP status the server sent.
+        detail:      The server's explanation (its ``detail`` field), if any.
+        retry_after: Seconds from the ``Retry-After`` header (429), if any.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        status_code: int,
+        detail: str = "",
+        retry_after: float | None = None,
+    ) -> None:
+        label = _REFUSAL_LABEL.get(status_code, "client error")
+        reason = f"HTTP {status_code} ({label})"
+        if detail:
+            reason = f"{reason}: {detail}"
+        # Bypass AgentUnreachableError's "is unreachable" wording: the agent
+        # was reached, it said no.
+        TransportError.__init__(self, f"Agent at '{url}' refused the request: {reason}")
+        self.url = url
+        self.reason = reason
+        self.status_code = status_code
+        self.detail = detail
+        self.retry_after = retry_after
 
 
 class ResponseTooLargeError(AgentUnreachableError):
@@ -241,7 +298,8 @@ class RetryConfig:
     Configuration for retry behaviour.
 
     Args:
-        max_retries:  Maximum number of attempts (including the first).
+        max_retries:  Maximum number of attempts, INCLUDING the first, so 1
+                      means "no retries". Must be at least 1.
         retry_on:     Set of HTTP status codes that trigger a retry.
                       Default: {500, 502, 503, 504}.
         base_delay:   Initial retry delay in seconds. Doubles each attempt.
@@ -257,6 +315,16 @@ class RetryConfig:
         max_delay: float = 30.0,
         jitter: bool = True,
     ) -> None:
+        if isinstance(max_retries, bool) or not isinstance(max_retries, int):
+            raise TypeError(
+                f"RetryConfig.max_retries must be an int, got {max_retries!r}"
+            )
+        if max_retries < 1:
+            raise ValueError(
+                f"RetryConfig.max_retries must be at least 1, got {max_retries}. "
+                "It counts attempts including the first, so max_retries=1 "
+                "means one request and no retries."
+            )
         self.max_retries = max_retries
         self.retry_on = retry_on
         self.base_delay = base_delay
@@ -544,6 +612,8 @@ class A2AHttpClient:
             ) as response:
                 if response.status_code >= 400:
                     preview = await _read_preview(response)
+                    if response.status_code in REFUSAL_STATUSES:
+                        raise _refused(self._base_url, response, preview)
                     raise AgentUnreachableError(
                         self._base_url,
                         f"HTTP {response.status_code} opening stream: {preview[:200]}",
@@ -613,6 +683,8 @@ class A2AHttpClient:
                     last_error = f"HTTP {response.status_code} (client error)"
                     if self._cb:
                         self._cb.on_failure()
+                    if response.status_code in REFUSAL_STATUSES:
+                        raise _refused(self._base_url, response, response.text)
                     raise AgentUnreachableError(self._base_url, last_error)
 
                 # ── Success: unwrap JSON-RPC ───────────────────────────────
@@ -734,6 +806,33 @@ class A2AHttpClient:
                 "async with A2AHttpClient(...) as client:"
             )
         return self._client
+
+
+def _refused(url: str, response: httpx.Response, body: str) -> AgentRefusedError:
+    """Build an AgentRefusedError from a refusal response and its body text."""
+    detail = body.strip()
+    try:
+        parsed = json.loads(detail)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        # A2AServer refusals are {"error": <exception name>, "detail": <text>}.
+        found = parsed.get("detail") or parsed.get("error")
+        if isinstance(found, str):
+            detail = found
+    retry_after: float | None = None
+    header = response.headers.get("Retry-After")
+    if header is not None:
+        try:
+            retry_after = float(header)
+        except ValueError:
+            retry_after = None  # an HTTP-date; not worth parsing here
+    return AgentRefusedError(
+        url,
+        response.status_code,
+        detail=detail[:_REFUSAL_DETAIL_CHARS],
+        retry_after=retry_after,
+    )
 
 
 async def _read_preview(response: httpx.Response) -> str:

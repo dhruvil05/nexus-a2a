@@ -367,7 +367,9 @@ and a pause arrives as a `message` event followed by
 Transport-level rejections that happen *before* dispatch return real HTTP
 status codes — `401` auth, `403` trust, `413` too large, `429` rate limit (with
 `Retry-After`), `400` malformed. Proxies and dashboards can see them, and the
-client will not retry a rejected credential.
+client will not retry a rejected credential: `A2AHttpClient` raises
+`AgentRefusedError` for 401/403/413/429, with `status_code`, the server's
+`detail` and, for 429, `retry_after`.
 
 Application-level failures *after* dispatch return JSON-RPC error objects —
 `-32601` method not found, `-32602` invalid params, `-32001` task not found —
@@ -442,7 +444,7 @@ async with A2AHttpClient(
     "http://localhost:8001",
     timeout=30.0,
     retry=RetryConfig(
-        max_retries=3,
+        max_retries=3,           # attempts INCLUDING the first; 1 = no retries
         base_delay=0.5,
         max_delay=30.0,
         jitter=True,
@@ -644,9 +646,16 @@ except AuthError as e:
 > authentication entirely.
 >
 > ```python
+> from nexus_a2a import AgentCredentialConfig, AuthManager, AuthScheme
+>
 > auth = AuthManager()                              # unregistered -> raises
-> auth = AuthManager(allow_unregistered=True)       # old behaviour, dev only
+>
+> # Dev only: let callers you never registered through without credentials.
+> auth = AuthManager(default=AgentCredentialConfig(scheme=AuthScheme.NONE))
 > ```
+>
+> `AuthManager(allow_unregistered=True)`, the pre-2.0 spelling of the last
+> line, raises `TypeError` since 2.0.
 >
 > This applies to inbound verification only. `build_auth_headers()` still
 > returns `{}` for unknown agents, so outbound calls to agents you hold no
@@ -854,6 +863,22 @@ after they finish, and the oldest go first once the store exceeds
 `max_tasks`. **Running and paused tasks are never evicted.** Before 1.9.0 this
 store kept every task forever, so a long-running server's memory grew with
 every request.
+
+### SQLite
+
+Durable across restarts with no server to run: one file, standard library
+only. For local development and single-machine agents; use Redis or
+PostgreSQL when several replicas share tasks.
+
+```python
+from nexus_a2a import SqliteTaskStore
+
+store = SqliteTaskStore("var/tasks.db")   # opened on first use; connect() optional
+...
+await store.disconnect()
+```
+
+In `nexus.toml`: `[storage] backend = "sqlite"`, `url = "var/tasks.db"`.
 
 ### Redis
 
@@ -1511,8 +1536,8 @@ max_payload_bytes = 1048576      # 0 = off
 allow_insecure    = false        # see "Upgrading to 2.0"
 
 [storage]
-backend            = "redis"     # memory | redis | postgres
-url                = "redis://localhost:6379"
+backend            = "redis"     # memory | sqlite | redis | postgres
+url                = "redis://localhost:6379"   # sqlite: the database file path
 ttl_sec            = 3600        # Redis key TTL
 task_retention_sec = 3600        # memory backend: keep finished tasks this long (0 = forever)
 max_tasks          = 10000       # memory backend: cap, finished tasks evicted first (0 = no cap)
@@ -1538,7 +1563,7 @@ session_ttl_min = 60             # idle minutes before a login expires
 
 [reliability]
 task_timeout_sec          = 120.0
-max_retries               = 3
+max_retries               = 3    # attempts including the first; must be >= 1
 retry_on                  = [500, 502, 503, 504]
 circuit_breaker_threshold = 5
 circuit_recovery_sec      = 30.0
@@ -1601,6 +1626,7 @@ Every error in nexus-a2a is typed. Catch specific exceptions rather than bare `E
 
 ```python
 from nexus_a2a import (
+    AgentRefusedError,       # agent answered 401/403/413/429 (subclass of the next)
     AgentUnreachableError,   # agent is down / DNS failure
     AgentCardFetchError,     # /.well-known/agent-card.json failed
     RemoteAgentError,        # agent returned JSON-RPC error
@@ -1612,6 +1638,8 @@ try:
     task = await client.send_message(msg)
 except CircuitOpenError as e:
     print(f"Circuit open. Retry in {e.retry_after}s")
+except AgentRefusedError as e:           # before AgentUnreachableError
+    print(f"{e.url} refused: HTTP {e.status_code} {e.detail}")
 except AgentUnreachableError as e:
     print(f"Cannot reach {e.url}: {e.reason}")
 except RemoteAgentError as e:
@@ -1741,7 +1769,8 @@ ruff format nexus_a2a
   `InsecureServerError`). Behind a gateway that authenticates for you —
   common in containers bound to `0.0.0.0` — accept it explicitly with
   `allow_insecure=True` or `[security] allow_insecure = true`;
-- `AuthManager(allow_unregistered=True)`;
+- `AuthManager(allow_unregistered=True)` (use
+  `AuthManager(default=AgentCredentialConfig(scheme=AuthScheme.NONE))`);
 - HS256 secrets shorter than 32 bytes;
 - unknown `nexus.toml` keys.
 
@@ -1761,6 +1790,7 @@ and how to keep the old behaviour where that is safe.
 | **v0.4.0** | `Orchestrator` (sequential/parallel/dag), SSE streaming, `WebhookDispatcher`, `AgentNetwork` |
 | **v1.0.0** | LangGraph/CrewAI/AutoGen/GoogleADK adapters, `RedisTaskStore`, `AuditLogger`, `MetricsCollector` |
 | **v1.1.0** | Task timeout watchdog, `InputHandler`, `DeadLetterQueue`, `CircuitBreaker`, `Tracer`, `CapabilityGuard` |
+| **v2.1.1** | Fixes from building a multi-agent app: `AgentRefusedError` for 401/403/413/429, `SqliteTaskStore` (`[storage] backend = "sqlite"`), `py.typed`, `RetryConfig(max_retries<1)` rejected, README auth example corrected |
 | **v2.1.0** | Browser dashboard on the ops server: live overview, agents, tasks (cancel/retry), issues (DLQ replay, security events), logs; `nexus dashboard`, `nexus dev --dashboard` |
 | **v2.0.0** | Security release: verified caller identity (per-caller keys, JWT `sub`, mTLS), task ownership, DNS-rebinding-safe webhooks with timestamped signatures, body/response size caps, unsecured public binds refused, the four 1.9 warnings now errors, dependencies cleared of known advisories |
 | **v1.9.0** | `nexus.toml` drives `nexus run` (`AgentRuntime`), `nexus verify`, `nexus dev`, live `GET /stream`, `/metrics` on agents, bounded task store; fixes the never-checked config secret, cards hiding their auth, and four CLI commands broken against real servers |

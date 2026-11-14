@@ -15,7 +15,7 @@ Environment variable overrides (container-friendly):
     NEXUS_AGENT_URL         — overrides [agent].url
     NEXUS_AUTH_SCHEME       — overrides [security].auth_scheme
     NEXUS_AUTH_SECRET       — JWT secret or API key value
-    NEXUS_STORAGE_BACKEND   — overrides [storage].backend (memory|redis|postgres)
+    NEXUS_STORAGE_BACKEND   — overrides [storage].backend (memory|sqlite|redis|postgres)
     NEXUS_STORAGE_URL       — overrides [storage].url
     NEXUS_TASK_TIMEOUT      — overrides [reliability].task_timeout_sec
     NEXUS_LOG_LEVEL         — overrides [observability].log_level
@@ -230,8 +230,8 @@ class SecurityConfig:
 class StorageConfig:
     """[storage] section."""
 
-    backend: str = "memory"  # "memory" | "redis" | "postgres"
-    url: str = ""  # redis:// or postgres:// connection URL
+    backend: str = "memory"  # "memory" | "sqlite" | "redis" | "postgres"
+    url: str = ""  # redis:// or postgres:// URL, or the sqlite file path
     ttl_sec: int = 3600  # TTL for Redis keys (ignored for memory/postgres)
     # In-memory backend only: how long a finished task stays retrievable, and
     # the most tasks held. 0 means "no limit" for either.
@@ -495,7 +495,7 @@ class NexusConfig:
     @staticmethod
     def _parse_storage(raw: dict[str, Any]) -> StorageConfig:
         backend = raw.get("backend", "memory").lower()
-        valid_backends = {"memory", "redis", "postgres"}
+        valid_backends = {"memory", "sqlite", "redis", "postgres"}
         if backend not in valid_backends:
             raise ConfigError(
                 f"Invalid storage backend '{backend}'. Must be one of: {valid_backends}",
@@ -594,7 +594,7 @@ class NexusConfig:
         # [storage]
         if backend := os.environ.get("NEXUS_STORAGE_BACKEND"):
             backend_lower = backend.lower()
-            valid = {"memory", "redis", "postgres"}
+            valid = {"memory", "sqlite", "redis", "postgres"}
             if backend_lower not in valid:
                 raise ConfigError(
                     f"NEXUS_STORAGE_BACKEND='{backend}' is invalid. Must be: {valid}",
@@ -712,11 +712,16 @@ class NexusConfig:
                     "security.auth_secret",
                 )
 
-        # Storage: redis/postgres require a URL
-        if self.storage.backend in ("redis", "postgres"):
+        # Storage: redis/postgres require a URL, sqlite a file path
+        if self.storage.backend in ("sqlite", "redis", "postgres"):
             if not self.storage.url.strip():
+                what = (
+                    "a database file path"
+                    if self.storage.backend == "sqlite"
+                    else "a connection URL"
+                )
                 raise ConfigError(
-                    f"storage.backend='{self.storage.backend}' requires a connection URL. "
+                    f"storage.backend='{self.storage.backend}' requires {what}. "
                     "Set [storage].url in nexus.toml or NEXUS_STORAGE_URL env var.",
                     "storage.url",
                 )
@@ -727,9 +732,10 @@ class NexusConfig:
                 "task_timeout_sec must be greater than 0.",
                 "reliability.task_timeout_sec",
             )
-        if self.reliability.max_retries < 0:
+        if self.reliability.max_retries < 1:
             raise ConfigError(
-                "max_retries cannot be negative.",
+                "max_retries must be at least 1: it counts attempts including "
+                "the first, so 1 means no retries.",
                 "reliability.max_retries",
             )
         # Security limits
@@ -781,7 +787,8 @@ class NexusConfig:
         Instantiate the configured storage backend.
 
         Returns:
-            InMemoryTaskStore, RedisTaskStore, or PostgresTaskStore
+            InMemoryTaskStore, SqliteTaskStore, RedisTaskStore, or
+            PostgresTaskStore
             depending on [storage].backend.
 
         Raises:
@@ -797,6 +804,11 @@ class NexusConfig:
                 retention_sec=self.storage.task_retention_sec or None,
                 max_tasks=self.storage.max_tasks or None,
             )
+
+        if backend == "sqlite":
+            from nexus_a2a.storage.sqlite_store import SqliteTaskStore
+
+            return SqliteTaskStore(self.storage.url)
 
         if backend == "redis":
             try:

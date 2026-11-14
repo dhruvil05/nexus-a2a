@@ -86,7 +86,7 @@ frame-ancestors 'none'; base-uri 'none'; form-action 'self'`. So: no inline
 
 ### `GET /ui/api/session`  (no auth needed)
 ```json
-{ "authenticated": false, "csrf": null, "agent": "EchoAgent", "version": "2.1.0",
+{ "authenticated": false, "csrf": null, "agent": "EchoAgent", "version": "2.1.1",
   "allow_replay": true, "show_content": false }
 ```
 
@@ -102,7 +102,7 @@ frame-ancestors 'none'; base-uri 'none'; form-action 'self'`. So: no inline
 ```jsonc
 {
   "agent": { "name": "EchoAgent", "url": "http://127.0.0.1:8001", "version": "1.0.0" },
-  "nexus_version": "2.1.0",
+  "nexus_version": "2.1.1",
   "uptime_seconds": 3600.5,
   "health": { "store": "ok|error", "registry": "ok|no_agents|degraded" },
   "tasks": {

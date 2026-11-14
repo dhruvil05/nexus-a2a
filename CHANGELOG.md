@@ -7,6 +7,51 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.1] — 2026-11-14
+
+Fixes for problems found by building a multi-agent app on nexus-a2a. Code
+that worked in 2.1 keeps working, except `max_retries = 0`, which never sent
+a request (see Changed).
+
+### Added
+
+- **`AgentRefusedError`**, raised by `A2AHttpClient` when an agent answers
+  401, 403, 413 or 429 (credentials refused, trust rule denied, body too
+  large, rate limited). It carries `status_code`, the server's `detail`, and
+  `retry_after` from a 429's `Retry-After`. It subclasses
+  `AgentUnreachableError`, which these responses raised before, so existing
+  `except` clauses still catch it; the message now says "refused the request"
+  instead of "is unreachable". Covers `send_message`, `get_task`,
+  `cancel_task`, the push-config calls and `stream_message`. Other 4xx
+  responses still raise a plain `AgentUnreachableError`.
+- **`SqliteTaskStore`** (`nexus_a2a.storage.sqlite_store`, exported from
+  `nexus_a2a`): a task store that survives restarts with no server, for local
+  development and single-machine agents. Standard library only, no extra to
+  install. Same table layout and query methods as `PostgresTaskStore`
+  (`list_by_state`, `list_by_context`, `count`, `count_by_state`,
+  `delete_older_than`, `clear`). Also available as
+  `[storage] backend = "sqlite"` with `url` set to the database file.
+- `py.typed` marker and the `Typing :: Typed` classifier. Type checkers now
+  use nexus-a2a's annotations instead of reporting `import-untyped` and
+  treating every name as `Any`.
+
+### Changed
+
+- `RetryConfig(max_retries=...)` must be an int of at least 1; anything else
+  raises `ValueError` (or `TypeError` for a non-int). The value counts
+  attempts including the first, so `0` used to send no request and then
+  raise `AgentUnreachableError("... unreachable: unknown")`. Use
+  `max_retries=1` for a single attempt with no retries.
+  `[reliability] max_retries = 0` in `nexus.toml` is now a `ConfigError`
+  for the same reason.
+
+### Fixed
+
+- README: the "Auth fails closed" example used
+  `AuthManager(allow_unregistered=True)`, which raises `TypeError` since 2.0.
+  It now shows `AuthManager(default=AgentCredentialConfig(scheme=AuthScheme.NONE))`,
+  and the "Upgrading to 2.0" list names the replacement.
+
 ## [2.1.0] — Dashboard — 2026-11-12
 
 A browser dashboard for a running agent. Nothing that worked in 2.0 changes:

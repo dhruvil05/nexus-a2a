@@ -182,10 +182,12 @@ from nexus_a2a.storage.push_store import (
     RedisPushStore,
 )
 from nexus_a2a.storage.redis_store import RedisTaskStore
+from nexus_a2a.storage.sqlite_store import SqliteTaskStore
 from nexus_a2a.storage.task_store import AbstractTaskStore, InMemoryTaskStore
 from nexus_a2a.transport.http_client import (
     A2AHttpClient,
     AgentCardFetchError,
+    AgentRefusedError,
     AgentUnreachableError,
     CircuitBreaker,
     CircuitOpenError,
@@ -220,7 +222,7 @@ from nexus_a2a.transport.webhook import (
 try:
     __version__ = _pkg_version("nexus-a2a")
 except PackageNotFoundError:  # running from a source tree without an install
-    __version__ = "2.1.0"
+    __version__ = "2.1.1"
 
 
 # ── What gets exported when someone does: from nexus_a2a import * ─────────────
@@ -253,6 +255,7 @@ __all__ = [
     "AbstractTaskStore",
     "A2AHttpClient",
     "AgentUnreachableError",
+    "AgentRefusedError",
     "AgentCardFetchError",
     "RemoteAgentError",
     "TransportError",
@@ -354,6 +357,7 @@ __all__ = [
     "AutoGenAdapter",
     "RedisTaskStore",
     "PostgresTaskStore",
+    "SqliteTaskStore",
     "AuditLogger",
     "AuditEvent",
     "AuditEntry",
